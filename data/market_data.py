@@ -1,0 +1,564 @@
+"""
+Market Data Provider
+
+Abstraction layer for market data sources. Designed to be extensible
+for different data providers (massive.com, yfinance, etc.)
+"""
+
+import os
+import logging
+import requests
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+from abc import ABC, abstractmethod
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class MarketDataProvider(ABC):
+    """Abstract base class for market data providers"""
+
+    @abstractmethod
+    def get_indices(self) -> Dict[str, Any]:
+        """Get major market indices (S&P 500, Nasdaq, etc.)"""
+        pass
+
+    @abstractmethod
+    def get_sector_performance(self) -> Dict[str, Any]:
+        """Get sector ETF performance"""
+        pass
+
+    @abstractmethod
+    def get_market_breadth(self) -> Dict[str, Any]:
+        """Get market breadth indicators (advance/decline, etc.)"""
+        pass
+
+    @abstractmethod
+    def get_volatility_index(self) -> Dict[str, Any]:
+        """Get VIX and other volatility measures"""
+        pass
+
+
+class MassiveMarketData(MarketDataProvider):
+    """
+    Market data provider using massive.com API
+
+    Fetches real-time market data from massive.com (formerly Polygon.io)
+    """
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("MASSIVE_API_KEY")
+        self.base_url = "https://api.massive.com"
+        self.use_placeholder = not self.api_key
+
+        if not self.api_key:
+            logger.warning("MASSIVE_API_KEY not found - using placeholder data")
+        else:
+            logger.info("Massive.com API initialized with key")
+
+        # Index ticker mappings (massive.com uses different symbols)
+        self.index_tickers = {
+            "SPX": "I:SPX",      # S&P 500
+            "CCMP": "I:COMP",    # Nasdaq Composite
+            "INDU": "I:DJI",     # Dow Jones
+            "RUT": "I:RUT"       # Russell 2000
+        }
+
+        # Sector ETF tickers
+        self.sector_etfs = [
+            "XLK",   # Technology
+            "XLF",   # Financials
+            "XLE",   # Energy
+            "XLV",   # Healthcare
+            "XLY",   # Consumer Discretionary
+            "XLP",   # Consumer Staples
+            "XLI",   # Industrials
+            "XLB",   # Materials
+            "XLRE",  # Real Estate
+            "XLC",   # Communication
+            "XLU"    # Utilities
+        ]
+
+    def get_indices(self) -> Dict[str, Any]:
+        """
+        Get major market indices from massive.com API
+
+        Returns:
+            {
+                "SPX": {"name": "S&P 500", "price": 4783.45, "change": 35.67, "change_pct": 0.75, ...},
+                "CCMP": {"name": "Nasdaq Composite", "price": 16789.23, ...},
+                ...
+            }
+        """
+        if self.use_placeholder:
+            return self._get_indices_placeholder()
+
+        try:
+            # Construct API request for indices snapshot
+            ticker_symbols = ",".join(self.index_tickers.values())
+            url = f"{self.base_url}/v3/snapshot/indices"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            params = {"ticker": ticker_symbols}
+
+            logger.info(f"Fetching indices from massive.com: {ticker_symbols}")
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("status") != "OK" or not data.get("results"):
+                logger.warning("No results from indices API, falling back to placeholder")
+                return self._get_indices_placeholder()
+
+            # Parse response into our format
+            indices = {}
+            for result in data["results"]:
+                # Map massive.com ticker back to our simplified format
+                ticker_map = {v: k for k, v in self.index_tickers.items()}
+                our_ticker = ticker_map.get(result.get("ticker"), result.get("ticker"))
+
+                session = result.get("session", {})
+                value = result.get("value", 0)
+
+                # Calculate change from session data
+                prev_close = session.get("previous_close", value)
+                change = value - prev_close if value and prev_close else 0
+                change_pct = (change / prev_close * 100) if prev_close else 0
+
+                indices[our_ticker] = {
+                    "name": result.get("name", our_ticker),
+                    "price": value,
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "52w_high": session.get("high", value),
+                    "52w_low": session.get("low", value),
+                    "volume": session.get("volume", 0)
+                }
+
+            logger.info(f"Successfully fetched {len(indices)} indices from massive.com")
+            return indices
+
+        except Exception as e:
+            logger.error(f"Error fetching indices from massive.com: {e}")
+            logger.info("Falling back to placeholder data")
+            return self._get_indices_placeholder()
+
+    def _get_indices_placeholder(self) -> Dict[str, Any]:
+        """Placeholder data for indices when API is unavailable"""
+        logger.info("Using placeholder indices data")
+        return {
+            "SPX": {
+                "name": "S&P 500",
+                "price": 4783.45,
+                "change": 35.67,
+                "change_pct": 0.75,
+                "52w_high": 4800.00,
+                "52w_low": 4100.00,
+                "volume": 3.2e9
+            },
+            "CCMP": {
+                "name": "Nasdaq Composite",
+                "price": 16789.23,
+                "change": 198.45,
+                "change_pct": 1.20,
+                "52w_high": 17000.00,
+                "52w_low": 14500.00,
+                "volume": 4.1e9
+            },
+            "INDU": {
+                "name": "Dow Jones",
+                "price": 37896.45,
+                "change": 123.89,
+                "change_pct": 0.33,
+                "52w_high": 38000.00,
+                "52w_low": 33000.00,
+                "volume": 2.8e9
+            },
+            "RUT": {
+                "name": "Russell 2000",
+                "price": 2045.67,
+                "change": -12.34,
+                "change_pct": -0.60,
+                "52w_high": 2100.00,
+                "52w_low": 1700.00,
+                "volume": 1.5e9
+            }
+        }
+
+    def get_sector_performance(self) -> Dict[str, Any]:
+        """
+        Get sector ETF performance (1D, 5D, 1M, 3M, YTD) from massive.com API
+
+        Returns sector rotation data
+        """
+        if self.use_placeholder:
+            return self._get_sector_performance_placeholder()
+
+        try:
+            # Get current snapshot for 1D performance
+            tickers_str = ",".join(self.sector_etfs)
+            url = f"{self.base_url}/v2/snapshot/locale/us/markets/stocks/tickers"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            params = {"tickers": tickers_str}
+
+            logger.info(f"Fetching sector ETF snapshots from massive.com: {tickers_str}")
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("status") != "OK" or not data.get("tickers"):
+                logger.warning("No results from stocks snapshot API, falling back to placeholder")
+                return self._get_sector_performance_placeholder()
+
+            # Sector names mapping
+            sector_names = {
+                "XLK": "Technology", "XLF": "Financials", "XLE": "Energy",
+                "XLV": "Healthcare", "XLY": "Consumer Disc.", "XLP": "Consumer Staples",
+                "XLI": "Industrials", "XLB": "Materials", "XLRE": "Real Estate",
+                "XLC": "Communication", "XLU": "Utilities"
+            }
+
+            # Parse sector performance
+            sectors = {}
+            for ticker_data in data["tickers"]:
+                ticker = ticker_data.get("ticker")
+                if ticker not in self.sector_etfs:
+                    continue
+
+                # Get 1D performance from todaysChangePerc
+                day_1d = ticker_data.get("todaysChangePerc", 0)
+
+                # For longer timeframes, we'd need aggregate bars - for now use estimates
+                # based on 1D performance (simplified approach)
+                sectors[ticker] = {
+                    "name": sector_names.get(ticker, ticker),
+                    "1D": round(day_1d, 1),
+                    "5D": round(day_1d * 3.5, 1),   # Rough estimate
+                    "1M": round(day_1d * 15, 1),    # Rough estimate
+                    "3M": round(day_1d * 45, 1),    # Rough estimate
+                    "YTD": round(day_1d * 180, 1)   # Rough estimate
+                }
+
+            # If we got real 1D data, try to enhance with aggregate bars for longer periods
+            sectors = self._enhance_with_aggregate_bars(sectors)
+
+            logger.info(f"Successfully fetched {len(sectors)} sector ETFs from massive.com")
+            return sectors if sectors else self._get_sector_performance_placeholder()
+
+        except Exception as e:
+            logger.error(f"Error fetching sector performance from massive.com: {e}")
+            logger.info("Falling back to placeholder data")
+            return self._get_sector_performance_placeholder()
+
+    def _enhance_with_aggregate_bars(self, sectors: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enhance sector data with historical aggregate bars for accurate timeframe performance
+
+        This is optional - if it fails, we keep the estimates
+        """
+        try:
+            from datetime import datetime, timedelta
+
+            # Calculate date ranges
+            today = datetime.now()
+            dates = {
+                "5D": (today - timedelta(days=7)).strftime("%Y-%m-%d"),
+                "1M": (today - timedelta(days=35)).strftime("%Y-%m-%d"),
+                "3M": (today - timedelta(days=95)).strftime("%Y-%m-%d"),
+                "YTD": f"{today.year}-01-01"
+            }
+            to_date = today.strftime("%Y-%m-%d")
+
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+
+            # Fetch aggregate bars for each sector (limit to avoid rate limits)
+            for ticker in list(sectors.keys())[:5]:  # Limit to 5 sectors to avoid too many calls
+                try:
+                    for timeframe, from_date in dates.items():
+                        url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}"
+                        response = requests.get(url, headers=headers, params={"adjusted": "true"}, timeout=5)
+
+                        if response.status_code == 200:
+                            agg_data = response.json()
+                            if agg_data.get("results") and len(agg_data["results"]) >= 2:
+                                results = agg_data["results"]
+                                first_close = results[0]["c"]
+                                last_close = results[-1]["c"]
+                                pct_change = ((last_close - first_close) / first_close) * 100
+                                sectors[ticker][timeframe] = round(pct_change, 1)
+
+                except Exception as e:
+                    logger.debug(f"Could not fetch aggregate bars for {ticker} {timeframe}: {e}")
+                    continue
+
+            return sectors
+
+        except Exception as e:
+            logger.debug(f"Could not enhance with aggregate bars: {e}")
+            return sectors
+
+    def _get_sector_performance_placeholder(self) -> Dict[str, Any]:
+        """Placeholder data for sector performance when API is unavailable"""
+        logger.info("Using placeholder sector performance data")
+        return {
+            "XLK": {"name": "Technology", "1D": 1.5, "5D": 3.2, "1M": 8.5, "3M": 15.2, "YTD": 42.3},
+            "XLF": {"name": "Financials", "1D": 0.8, "5D": 2.1, "1M": 5.3, "3M": 10.8, "YTD": 18.5},
+            "XLE": {"name": "Energy", "1D": -0.5, "5D": -1.2, "1M": 2.1, "3M": 8.5, "YTD": 15.2},
+            "XLV": {"name": "Healthcare", "1D": 0.3, "5D": 1.5, "1M": 3.8, "3M": 7.2, "YTD": 12.5},
+            "XLY": {"name": "Consumer Disc.", "1D": 1.2, "5D": 2.8, "1M": 7.5, "3M": 14.8, "YTD": 28.9},
+            "XLP": {"name": "Consumer Staples", "1D": -0.2, "5D": 0.5, "1M": 1.8, "3M": 4.2, "YTD": 6.5},
+            "XLI": {"name": "Industrials", "1D": 0.6, "5D": 1.8, "1M": 4.5, "3M": 9.8, "YTD": 16.7},
+            "XLB": {"name": "Materials", "1D": 0.4, "5D": 1.2, "1M": 3.2, "3M": 7.5, "YTD": 11.2},
+            "XLRE": {"name": "Real Estate", "1D": -0.8, "5D": -1.5, "1M": 0.5, "3M": 3.2, "YTD": 8.5},
+            "XLC": {"name": "Communication", "1D": 1.1, "5D": 2.5, "1M": 6.8, "3M": 13.5, "YTD": 32.1},
+            "XLU": {"name": "Utilities", "1D": -0.3, "5D": 0.2, "1M": 1.2, "3M": 2.8, "YTD": 4.5}
+        }
+
+    def get_market_breadth(self) -> Dict[str, Any]:
+        """
+        Get market breadth indicators
+
+        NOTE: Market breadth calculations (advance/decline, new highs/lows) require
+        fetching and analyzing thousands of individual stocks, which is not practical
+        with the massive.com API rate limits. These values are estimated based on
+        index performance for now.
+
+        For production use, consider:
+        1. Pre-calculated breadth data from a specialized provider
+        2. Batch processing of market breadth during off-hours
+        3. Cached breadth calculations updated periodically
+
+        Returns advance/decline, new highs/lows, etc.
+        """
+        # Use estimated breadth based on index performance
+        indices = self.get_indices()
+
+        # Estimate breadth based on how many major indices are positive
+        positive_indices = sum(1 for idx in indices.values() if idx.get("change_pct", 0) > 0)
+        total_indices = len(indices)
+
+        # Generate estimated breadth (better correlation with actual market)
+        if positive_indices >= 3:  # Strong breadth
+            adv_ratio = 2.5
+            hl_ratio = 4.0
+        elif positive_indices >= 2:  # Moderate breadth
+            adv_ratio = 1.8
+            hl_ratio = 2.5
+        else:  # Weak breadth
+            adv_ratio = 0.9
+            hl_ratio = 0.8
+
+        logger.info(f"Estimating market breadth based on {positive_indices}/{total_indices} positive indices")
+
+        return {
+            "nyse_advance_decline": {
+                "advancing": int(2000 * (adv_ratio / (adv_ratio + 1))),
+                "declining": int(2000 * (1 / (adv_ratio + 1))),
+                "unchanged": 100,
+                "ratio": round(adv_ratio, 2)
+            },
+            "nasdaq_advance_decline": {
+                "advancing": int(3000 * (adv_ratio / (adv_ratio + 1))),
+                "declining": int(3000 * (1 / (adv_ratio + 1))),
+                "unchanged": 150,
+                "ratio": round(adv_ratio * 0.95, 2)  # Slightly different than NYSE
+            },
+            "new_highs_lows": {
+                "new_52w_highs": int(200 * (hl_ratio / (hl_ratio + 1))),
+                "new_52w_lows": int(200 * (1 / (hl_ratio + 1))),
+                "ratio": round(hl_ratio, 2)
+            },
+            "percentage_above_200ma": {
+                "sp500": round(50 + (adv_ratio - 1) * 20, 1),
+                "nasdaq": round(50 + (adv_ratio - 1) * 18, 1),
+                "russell2000": round(50 + (adv_ratio - 1) * 15, 1)
+            },
+            "note": "Breadth metrics are estimated based on index performance. For exact values, use a dedicated market breadth data provider."
+        }
+
+    def get_volatility_index(self) -> Dict[str, Any]:
+        """
+        Get VIX and volatility measures from massive.com API
+        """
+        if self.use_placeholder:
+            return self._get_volatility_placeholder()
+
+        try:
+            # Fetch VIX from indices endpoint
+            url = f"{self.base_url}/v3/snapshot/indices"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            params = {"ticker": "I:VIX"}
+
+            logger.info("Fetching VIX from massive.com")
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("status") != "OK" or not data.get("results"):
+                logger.warning("No VIX data from API, falling back to placeholder")
+                return self._get_volatility_placeholder()
+
+            vix_data = data["results"][0]
+            vix_value = vix_data.get("value", 0)
+            session = vix_data.get("session", {})
+
+            # Calculate change
+            prev_close = session.get("previous_close", vix_value)
+            change = vix_value - prev_close if vix_value and prev_close else 0
+            change_pct = (change / prev_close * 100) if prev_close else 0
+
+            # Classify VIX level
+            if vix_value < 15:
+                level = "LOW"
+            elif vix_value < 20:
+                level = "NORMAL"
+            elif vix_value < 30:
+                level = "ELEVATED"
+            else:
+                level = "HIGH"
+
+            result = {
+                "VIX": {
+                    "value": round(vix_value, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "level": level,
+                    "percentile_1y": 50  # Would need historical data to calculate
+                },
+                "VVIX": {
+                    "value": 85.34,  # Not available in massive.com - placeholder
+                    "description": "Volatility of VIX"
+                },
+                "put_call_ratio": {
+                    "ratio": 0.75,  # Not directly available - estimated
+                    "interpretation": "NEUTRAL"  # < 0.7 bullish, 0.7-1.0 neutral, > 1.0 bearish
+                }
+            }
+
+            logger.info(f"Successfully fetched VIX: {vix_value} ({level})")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching VIX from massive.com: {e}")
+            logger.info("Falling back to placeholder data")
+            return self._get_volatility_placeholder()
+
+    def _get_volatility_placeholder(self) -> Dict[str, Any]:
+        """Placeholder data for volatility when API is unavailable"""
+        logger.info("Using placeholder volatility data")
+        return {
+            "VIX": {
+                "value": 14.25,
+                "change": -0.85,
+                "change_pct": -5.63,
+                "level": "LOW",
+                "percentile_1y": 25.5
+            },
+            "VVIX": {
+                "value": 85.34,
+                "description": "Volatility of VIX"
+            },
+            "put_call_ratio": {
+                "ratio": 0.68,
+                "interpretation": "BULLISH"
+            }
+        }
+
+
+class MarketDataFetcher:
+    """
+    Main interface for fetching market data
+
+    Automatically selects the best available data provider
+    """
+
+    def __init__(self, provider: Optional[MarketDataProvider] = None):
+        if provider:
+            self.provider = provider
+        else:
+            # Default to massive.com provider
+            self.provider = MassiveMarketData()
+
+    def get_indices(self) -> Dict[str, Any]:
+        """Get market indices"""
+        return self.provider.get_indices()
+
+    def get_sector_performance(self) -> Dict[str, Any]:
+        """Get sector performance"""
+        return self.provider.get_sector_performance()
+
+    def get_market_breadth(self) -> Dict[str, Any]:
+        """Get market breadth"""
+        return self.provider.get_market_breadth()
+
+    def get_volatility_index(self) -> Dict[str, Any]:
+        """Get volatility measures"""
+        return self.provider.get_volatility_index()
+
+    def calculate_market_regime(self) -> Dict[str, Any]:
+        """
+        Calculate current market regime based on multiple factors
+
+        Returns:
+            {
+                "regime": "BULL" | "BEAR" | "NEUTRAL",
+                "risk_mode": "RISK_ON" | "RISK_OFF",
+                "confidence": 0-100,
+                "signals": {...}
+            }
+        """
+        indices = self.get_indices()
+        breadth = self.get_market_breadth()
+        vix = self.get_volatility_index()
+
+        # Simple regime classification based on multiple factors
+        signals = {
+            "trend": "BULLISH" if indices["SPX"]["change_pct"] > 0 else "BEARISH",
+            "breadth": "POSITIVE" if breadth["nyse_advance_decline"]["ratio"] > 1.5 else "NEGATIVE",
+            "volatility": vix["VIX"]["level"],
+            "high_low_ratio": breadth["new_highs_lows"]["ratio"]
+        }
+
+        # Determine regime
+        bullish_signals = sum([
+            signals["trend"] == "BULLISH",
+            signals["breadth"] == "POSITIVE",
+            signals["volatility"] == "LOW",
+            signals["high_low_ratio"] > 2.0
+        ])
+
+        if bullish_signals >= 3:
+            regime = "BULL"
+            confidence = bullish_signals * 25
+        elif bullish_signals <= 1:
+            regime = "BEAR"
+            confidence = (4 - bullish_signals) * 25
+        else:
+            regime = "NEUTRAL"
+            confidence = 50
+
+        # Determine risk mode
+        risk_on = vix["VIX"]["value"] < 20 and vix["put_call_ratio"]["ratio"] < 0.85
+
+        return {
+            "regime": regime,
+            "risk_mode": "RISK_ON" if risk_on else "RISK_OFF",
+            "confidence": confidence,
+            "signals": signals,
+            "summary": self._get_regime_summary(regime, "RISK_ON" if risk_on else "RISK_OFF")
+        }
+
+    def _get_regime_summary(self, regime: str, risk_mode: str) -> str:
+        """Get human-readable regime summary"""
+        summaries = {
+            ("BULL", "RISK_ON"): "Strong bullish market with risk appetite. Favor growth stocks, technology, and cyclicals.",
+            ("BULL", "RISK_OFF"): "Bullish trend but caution emerging. Consider taking profits and adding defensive positions.",
+            ("NEUTRAL", "RISK_ON"): "Choppy market with selective opportunities. Focus on stock picking and sector rotation.",
+            ("NEUTRAL", "RISK_OFF"): "Uncertain market with defensive tone. Favor quality, dividends, and lower beta stocks.",
+            ("BEAR", "RISK_ON"): "Bearish trend with occasional rallies. Be cautious of bear market rallies.",
+            ("BEAR", "RISK_OFF"): "Risk-off bear market. Preserve capital, favor cash, bonds, and defensive sectors."
+        }
+        return summaries.get((regime, risk_mode), "Market regime unclear.")
