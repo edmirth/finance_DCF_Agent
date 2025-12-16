@@ -14,7 +14,7 @@ An interactive, conversational agent for financial research that:
 import os
 import logging
 from typing import Optional, List, Dict
-from langchain.agents import AgentExecutor, create_structured_chat_agent
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.memory import ConversationSummaryBufferMemory
@@ -132,59 +132,21 @@ Before using ANY tools, create a step-by-step plan considering:
 
 Remember to be helpful, accurate with dates, and stay within your scope of quick research."""
 
-        # Template portion with tool placeholders (not f-string)
-        template_end = """
+        # Tool calling agent doesn't need explicit JSON format instructions
+        # OpenAI handles function calling natively
+        system_message = intro
 
-You have access to the following tools:
-
-{tools}
-
-Use a json blob to specify a tool by providing an action key (tool name) and an action_input key (tool input).
-
-Valid "action" values: "Final Answer" or {tool_names}
-
-Provide only ONE action per $JSON_BLOB, as shown:
-
-```
-{{
-  "action": $TOOL_NAME,
-  "action_input": $INPUT
-}}
-```
-
-Follow this format:
-
-Question: input question to answer
-Thought: consider previous and subsequent steps
-Action:
-```
-$JSON_BLOB
-```
-Observation: action result
-... (repeat Thought/Action/Observation N times)
-Thought: I know what to respond
-Action:
-```
-{{
-  "action": "Final Answer",
-  "action_input": "Final response to human"
-}}
-```
-
-IMPORTANT: Your FINAL response must ALSO use the JSON blob format above with action="Final Answer"."""
-
-        system_message = intro + template_end
-
-        # Create structured chat prompt template
-        # This agent type is specifically designed for tools with structured JSON inputs
+        # Create tool calling prompt template
+        # This uses OpenAI's native function calling for reliable tool execution
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_message),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "{input}\n\n{agent_scratchpad}"),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        # Create structured chat agent (handles JSON inputs properly)
-        agent = create_structured_chat_agent(
+        # Create tool calling agent (uses OpenAI's native function calling)
+        agent = create_tool_calling_agent(
             llm=self.llm,
             tools=self.tools,
             prompt=prompt
