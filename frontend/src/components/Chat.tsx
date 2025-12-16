@@ -4,7 +4,7 @@ import { streamMessage } from '../api';
 import MessageComponent from './Message';
 import ChatInput from './ChatInput';
 import StatusIndicator from './StatusIndicator';
-import { Sparkles, BarChart3, TrendingUp, Search, Globe } from 'lucide-react';
+import { Sparkles, BarChart3, TrendingUp, Search, Globe, Briefcase } from 'lucide-react';
 
 interface ChatProps {
   agent: Agent;
@@ -17,6 +17,7 @@ const agentIcons: Record<string, any> = {
   analyst: TrendingUp,
   research: Search,
   market: Globe,
+  portfolio: Briefcase,
 };
 
 const getInitialStatus = (agentId: string): string => {
@@ -25,6 +26,7 @@ const getInitialStatus = (agentId: string): string => {
     analyst: 'Initializing equity research...',
     research: 'Looking up financial data...',
     market: 'Fetching market data...',
+    portfolio: 'Analyzing portfolio...',
   };
   return statuses[agentId] || 'Processing...';
 };
@@ -35,6 +37,7 @@ const getProcessingStatus = (agentId: string): string => {
     analyst: 'Analyzing industry and competitors...',
     research: 'Researching company information...',
     market: 'Analyzing market conditions...',
+    portfolio: 'Calculating portfolio metrics...',
   };
   return statuses[agentId] || 'Processing...';
 };
@@ -297,6 +300,23 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
                 </button>
               </>
             )}
+
+            {agent.id === 'portfolio' && (
+              <>
+                <button
+                  onClick={() => setInput("Analyze my portfolio: [{'ticker': 'AAPL', 'shares': 100, 'cost_basis': 150.00}, {'ticker': 'MSFT', 'shares': 50, 'cost_basis': 250.00}, {'ticker': 'GOOGL', 'shares': 25, 'cost_basis': 100.00}]")}
+                  className="w-full p-4 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl text-left transition-colors duration-200 group"
+                >
+                  <p className="text-gray-700 group-hover:text-gray-900">Analyze my tech portfolio (AAPL, MSFT, GOOGL)</p>
+                </button>
+                <button
+                  onClick={() => setInput("What are my tax loss harvesting opportunities in this portfolio: [{'ticker': 'TSLA', 'shares': 100, 'cost_basis': 300.00}, {'ticker': 'NVDA', 'shares': 50, 'cost_basis': 450.00}]")}
+                  className="w-full p-4 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl text-left transition-colors duration-200 group"
+                >
+                  <p className="text-gray-700 group-hover:text-gray-900">Find tax loss harvesting opportunities</p>
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -305,7 +325,7 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
       {messages.length > 0 && (
         <div className="flex-1 overflow-y-auto">
           <div className="min-h-full flex flex-col justify-end">
-            <div className="max-w-4xl mx-auto space-y-6 px-4 pt-8 pb-32">
+            <div className="w-full space-y-6 px-4 pt-8 pb-32">
               {messages.map((message) => (
                 <MessageComponent key={message.id} message={message} agent={agent} />
               ))}
@@ -320,7 +340,7 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
       )}
 
       {/* Input - Fixed at bottom */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent pt-8 pb-8">
+      <div className="fixed bottom-0 left-20 right-0 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent pt-8 pb-8">
         <div className="max-w-3xl mx-auto px-4">
           <ChatInput
             value={input}

@@ -23,6 +23,7 @@ from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.research_assistant_agent import create_research_assistant
 from agents.market_agent import create_market_agent
+from agents.portfolio_agent import create_portfolio_agent
 
 # Load environment variables
 load_dotenv()
@@ -53,6 +54,7 @@ class StreamingCallbackHandler(AsyncCallbackHandler):
     # Friendly tool descriptions (same as reasoning_callback.py)
     TOOL_DESCRIPTIONS = {
         'get_quick_data': '📊 Fetching financial metrics',
+        'get_date_context': '📅 Understanding time period',
         'get_stock_info': 'ℹ️  Getting company information',
         'get_financial_metrics': '📈 Retrieving historical financials',
         'search_web': '🌐 Searching the web for current data',
@@ -72,6 +74,9 @@ class StreamingCallbackHandler(AsyncCallbackHandler):
         'get_value_stocks': '💎 Finding value stocks',
         'get_growth_stocks': '🚀 Finding growth stocks',
         'get_dividend_stocks': '💰 Finding dividend stocks',
+        'calculate_portfolio_metrics': '📊 Calculating portfolio metrics',
+        'analyze_diversification': '🎯 Analyzing diversification',
+        'identify_tax_loss_harvesting': '💸 Finding tax loss opportunities',
     }
 
     async def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> None:
@@ -138,7 +143,7 @@ class ChatMessage(BaseModel):
     """Chat message model"""
     message: str
     agent_type: str = "research"  # dcf, analyst, research, market
-    model: str = "gpt-4-turbo-preview"
+    model: str = "gpt-5.2"
     session_id: Optional[str] = None
 
 
@@ -164,6 +169,8 @@ def get_or_create_agent(agent_type: str, model: str):
                 agents_cache[cache_key] = create_research_assistant(model=model)
             elif agent_type == "market":
                 agents_cache[cache_key] = create_market_agent(model=model)
+            elif agent_type == "portfolio":
+                agents_cache[cache_key] = create_portfolio_agent(model=model)
             else:
                 raise ValueError(f"Unknown agent type: {agent_type}")
         except Exception as e:
@@ -215,6 +222,17 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             else:
                 response = await loop.run_in_executor(None, agent.chat, message)
         elif agent_type == "market":
+            if hasattr(agent, 'agent_executor'):
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: agent.agent_executor.invoke(
+                        {"input": message},
+                        config={"callbacks": [callback]}
+                    )["output"]
+                )
+            else:
+                response = await loop.run_in_executor(None, agent.analyze, message)
+        elif agent_type == "portfolio":
             if hasattr(agent, 'agent_executor'):
                 response = await loop.run_in_executor(
                     None,
@@ -287,7 +305,7 @@ async def root():
         "status": "online",
         "service": "Financial Analysis API",
         "version": "1.0.0",
-        "agents": ["dcf", "analyst", "research", "market"]
+        "agents": ["dcf", "analyst", "research", "market", "portfolio"]
     }
 
 
@@ -319,6 +337,12 @@ async def list_agents():
                 "name": "Market Analyst",
                 "description": "Market conditions, sentiment, and sector analysis",
                 "example": "What's the current market sentiment?"
+            },
+            {
+                "id": "portfolio",
+                "name": "Portfolio Analyzer",
+                "description": "Portfolio analysis with metrics, diversification, and tax optimization",
+                "example": "Analyze my portfolio: [{'ticker': 'AAPL', 'shares': 100, 'cost_basis': 150.00}, {'ticker': 'MSFT', 'shares': 50, 'cost_basis': 250.00}]"
             }
         ]
     }
@@ -348,7 +372,7 @@ async def chat(chat_message: ChatMessage):
     try:
         agent = get_or_create_agent(chat_message.agent_type, chat_message.model)
 
-        # Get response synchronously - research agent uses 'chat' method
+        # Get response synchronously - research agent uses 'chat' method, others use 'analyze'
         if chat_message.agent_type == "research":
             response = agent.chat(chat_message.message)
         else:
@@ -395,7 +419,7 @@ if __name__ == "__main__":
     print("Starting Financial Analysis API Server...")
     print("API will be available at: http://localhost:8000")
     print("API documentation: http://localhost:8000/docs")
-    print("Available agents: DCF, Equity Analyst, Research Assistant, Market Analyst")
+    print("Available agents: DCF, Equity Analyst, Research Assistant, Market Analyst, Portfolio Analyzer")
 
     uvicorn.run(
         "api_server:app",

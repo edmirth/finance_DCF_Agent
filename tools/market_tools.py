@@ -365,6 +365,10 @@ class ScreenStocksInput(BaseModel):
         default=None,
         description="Maximum total debt"
     )
+    industry: Optional[str] = Field(
+        default=None,
+        description="Filter by industry (e.g., 'Electric Vehicles', 'Semiconductors', 'Pharmaceuticals')"
+    )
     limit: int = Field(
         default=20,
         description="Maximum number of results (default: 20)"
@@ -382,11 +386,14 @@ class ScreenStocksTool(BaseTool):
     - Net income (profitability)
     - P/E ratio (valuation)
     - Total debt (financial health)
+    - Industry (e.g., 'Electric Vehicles', 'Semiconductors', 'Pharmaceuticals')
 
     Use this when the user asks:
     - "Find stocks with revenue above $X"
     - "Screen for profitable companies with P/E under Y"
     - "Show me stocks with low debt"
+    - "Find Electric Vehicle stocks"
+    - "Screen for tech companies with revenue over $1B"
     """
     args_schema: type[BaseModel] = ScreenStocksInput
 
@@ -397,13 +404,14 @@ class ScreenStocksTool(BaseTool):
         net_income_min: Optional[float] = None,
         pe_ratio_max: Optional[float] = None,
         total_debt_max: Optional[float] = None,
+        industry: Optional[str] = None,
         limit: int = 20
     ) -> str:
         """Screen stocks with custom criteria"""
         try:
             from data.financial_data import FinancialDataFetcher
 
-            # Build filters
+            # Build filters (only financial metrics - API doesn't support industry filtering)
             filters = []
 
             if revenue_min is not None:
@@ -417,19 +425,62 @@ class ScreenStocksTool(BaseTool):
             if total_debt_max is not None:
                 filters.append({"field": "total_debt", "operator": "lte", "value": total_debt_max})
 
-            if not filters:
-                return "❌ No screening criteria provided. Please specify at least one filter (revenue_min, net_income_min, pe_ratio_max, etc.)"
+            # Industry filtering requires at least one financial filter since API doesn't support industry-only queries
+            if not filters and industry:
+                # Add a very broad filter to get results, then filter by industry
+                filters.append({"field": "revenue", "operator": "gte", "value": 0})
 
-            # Execute screening
+            if not filters:
+                return "❌ No screening criteria provided. Please specify at least one filter (revenue_min, net_income_min, pe_ratio_max, industry, etc.)"
+
+            # Execute screening with higher limit if filtering by industry (need more results to filter)
             fetcher = FinancialDataFetcher()
-            results = fetcher.screen_stocks(filters, limit=limit)
+            fetch_limit = limit * 5 if industry else limit  # Get 5x results if filtering by industry
+            results = fetcher.screen_stocks(filters, limit=fetch_limit)
+
+            # Post-filter by industry if specified (case-insensitive partial matching)
+            if industry and results:
+                industry_lower = industry.lower()
+                filtered_results = [
+                    stock for stock in results
+                    if stock.get("industry") and industry_lower in stock.get("industry", "").lower()
+                ]
+                results = filtered_results[:limit]  # Limit to requested count
 
             if not results:
-                return "❌ No stocks matched your screening criteria. Try adjusting your filters."
+                error_msg = "❌ No stocks matched your screening criteria.\n\n"
+                if industry:
+                    # Try to find similar industries from the unfiltered results
+                    unfiltered_results = fetcher.screen_stocks(filters, limit=100)
+                    found_industries = set()
+                    for stock in unfiltered_results:
+                        if stock.get("industry"):
+                            found_industries.add(stock.get("industry"))
+
+                    error_msg += f"**Note:** No stocks found with '{industry}' in their industry name.\n\n"
+
+                    if found_industries:
+                        # Show actual industries found in the results
+                        error_msg += "**Industries found in your search results:**\n"
+                        for ind in sorted(list(found_industries))[:15]:  # Show top 15
+                            error_msg += f"  • {ind}\n"
+                        error_msg += "\n**Tip:** Try using one of the industries listed above or use partial matching (e.g., 'auto', 'tech', 'pharma')."
+                    else:
+                        error_msg += "**Common Industry Names to Try:**\n"
+                        error_msg += "  • Auto Manufacturers\n"
+                        error_msg += "  • Semiconductors\n"
+                        error_msg += "  • Software - Application\n"
+                        error_msg += "  • Biotechnology\n"
+                        error_msg += "  • Pharmaceuticals\n"
+                else:
+                    error_msg += "Try adjusting your filters (lower thresholds, remove some criteria)."
+                return error_msg
 
             # Format results
             output = f"📊 **STOCK SCREENER RESULTS** ({len(results)} stocks found)\n\n"
             output += "**Screening Criteria:**\n"
+            if industry:
+                output += f"  • Industry: {industry}\n"
             if revenue_min:
                 output += f"  • Revenue ≥ ${revenue_min/1e9:.1f}B\n"
             if revenue_max:
@@ -442,17 +493,22 @@ class ScreenStocksTool(BaseTool):
                 output += f"  • Total Debt ≤ ${total_debt_max/1e9:.1f}B\n"
 
             output += "\n**Results:**\n\n"
-            output += "| Ticker | Revenue | Net Income | P/E | Debt |\n"
-            output += "|--------|---------|------------|-----|------|\n"
+            output += "| Ticker | Industry | Revenue | Net Income | P/E | Debt |\n"
+            output += "|--------|----------|---------|------------|-----|------|\n"
 
             for stock in results[:limit]:
                 ticker = stock.get("ticker", "N/A")
+                stock_industry = stock.get("industry", "N/A")
                 revenue = stock.get("revenue", 0) or 0
                 net_income = stock.get("net_income", 0) or 0
                 pe_ratio = stock.get("pe_ratio", 0) or 0
                 debt = stock.get("total_debt", 0) or 0
 
-                output += f"| **{ticker}** | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} | ${debt/1e9:.1f}B |\n"
+                # Truncate long industry names
+                if len(stock_industry) > 25:
+                    stock_industry = stock_industry[:22] + "..."
+
+                output += f"| **{ticker}** | {stock_industry} | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} | ${debt/1e9:.1f}B |\n"
 
             output += f"\n**Next Steps:** Use Research Assistant or Equity Analyst to deep-dive on promising candidates."
 
@@ -509,16 +565,21 @@ class GetValueStocksTool(BaseTool):
 
             output = f"💎 **VALUE STOCKS** ({len(results)} found, sorted by P/E ratio)\n\n"
             output += "**Criteria:** P/E < 15, Profitable, Revenue > $1B\n\n"
-            output += "| Ticker | Revenue | Net Income | P/E | Yield |\n"
-            output += "|--------|---------|------------|-----|-------|\n"
+            output += "| Ticker | Industry | Revenue | Net Income | P/E |\n"
+            output += "|--------|----------|---------|------------|-----|\n"
 
             for stock in results:
                 ticker = stock.get("ticker", "N/A")
+                stock_industry = stock.get("industry", "N/A")
                 revenue = stock.get("revenue", 0) or 0
                 net_income = stock.get("net_income", 0) or 0
                 pe_ratio = stock.get("pe_ratio", 0) or 0
 
-                output += f"| **{ticker}** | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} | - |\n"
+                # Truncate long industry names
+                if len(stock_industry) > 25:
+                    stock_industry = stock_industry[:22] + "..."
+
+                output += f"| **{ticker}** | {stock_industry} | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} |\n"
 
             return output
 
@@ -571,16 +632,21 @@ class GetGrowthStocksTool(BaseTool):
 
             output = f"🚀 **GROWTH STOCKS** ({len(results)} found, sorted by revenue)\n\n"
             output += "**Criteria:** Revenue > $500M, Profitable\n\n"
-            output += "| Ticker | Revenue | Net Income | P/E | Growth Proxy |\n"
-            output += "|--------|---------|------------|-----|-------------|\n"
+            output += "| Ticker | Industry | Revenue | Net Income | P/E |\n"
+            output += "|--------|----------|---------|------------|-----|\n"
 
             for stock in results:
                 ticker = stock.get("ticker", "N/A")
+                stock_industry = stock.get("industry", "N/A")
                 revenue = stock.get("revenue", 0) or 0
                 net_income = stock.get("net_income", 0) or 0
                 pe_ratio = stock.get("pe_ratio", 0) or 0
 
-                output += f"| **{ticker}** | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} | - |\n"
+                # Truncate long industry names
+                if len(stock_industry) > 25:
+                    stock_industry = stock_industry[:22] + "..."
+
+                output += f"| **{ticker}** | {stock_industry} | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} |\n"
 
             return output
 
@@ -635,17 +701,22 @@ class GetDividendStocksTool(BaseTool):
 
             output = f"💰 **DIVIDEND STOCKS** ({len(results)} found)\n\n"
             output += "**Criteria:** Pays Dividends, Profitable, Revenue > $1B\n\n"
-            output += "| Ticker | Revenue | Net Income | DPS | P/E |\n"
-            output += "|--------|---------|------------|-----|-----|\n"
+            output += "| Ticker | Industry | Revenue | Net Income | DPS | P/E |\n"
+            output += "|--------|----------|---------|------------|-----|-----|\n"
 
             for stock in results:
                 ticker = stock.get("ticker", "N/A")
+                stock_industry = stock.get("industry", "N/A")
                 revenue = stock.get("revenue", 0) or 0
                 net_income = stock.get("net_income", 0) or 0
                 dps = stock.get("dividends_per_common_share", 0) or 0
                 pe_ratio = stock.get("pe_ratio", 0) or 0
 
-                output += f"| **{ticker}** | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | ${dps:.2f} | {pe_ratio:.1f} |\n"
+                # Truncate long industry names
+                if len(stock_industry) > 25:
+                    stock_industry = stock_industry[:22] + "..."
+
+                output += f"| **{ticker}** | {stock_industry} | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | ${dps:.2f} | {pe_ratio:.1f} |\n"
 
             return output
 

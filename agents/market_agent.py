@@ -79,6 +79,20 @@ When users ask about finding stocks or investment opportunities, follow this top
 4. **Present Results**: Show screener results in table format with key metrics
 5. **Suggest Next Steps**: Recommend using Research Assistant or Equity Analyst for deep dive
 
+**IMPORTANT - INDUSTRY NAMES:**
+When screening by industry, use the EXACT industry classification from the financial data API:
+- "Electric Vehicles" → Use "Auto Manufacturers" (includes Tesla, Rivian, etc.)
+- "EV stocks" → Use "Auto Manufacturers"
+- "Tech companies" → Use "Software - Application" or "Semiconductors"
+- "Biotech" → Use "Biotechnology"
+- "Pharma" → Use "Pharmaceuticals"
+- "Banks" → Use "Banks - Regional" or "Banks - Diversified"
+- "Oil companies" → Use "Oil & Gas E&P"
+
+**Common Industry Names:**
+Auto Manufacturers, Semiconductors, Software - Application, Software - Infrastructure,
+Biotechnology, Pharmaceuticals, Banks - Regional, Oil & Gas E&P, Aerospace & Defense
+
 **SCREENING EXAMPLES:**
 
 User: "Find value stocks in a bull market"
@@ -90,9 +104,15 @@ You:
 
 User: "Screen for profitable tech companies with low P/E"
 You:
-  1. screen_stocks with revenue_min=500000000, pe_ratio_max=20, net_income_min=0
+  1. screen_stocks with industry="Semiconductors", pe_ratio_max=20, net_income_min=0
   2. Present results in table format
   3. Recommend: "These 10 candidates look promising. Use Research Assistant to explore NVDA, AMD, or GOOGL further."
+
+User: "Find Electric Vehicle stocks with positive income"
+You:
+  1. screen_stocks with industry="Auto Manufacturers", net_income_min=0
+  2. Present Tesla, Rivian, and other auto manufacturers
+  3. Note: "Auto Manufacturers" industry includes traditional automakers AND EV-focused companies
 
 **EXAMPLE GOOD OUTPUT:**
 ## Market Overview
@@ -122,7 +142,7 @@ class MarketAnalysisAgent:
     to provide investors with actionable market intelligence.
     """
 
-    def __init__(self, model: str = "gpt-4-turbo-preview", temperature: float = 0.1, show_reasoning: bool = True):
+    def __init__(self, model: str = "gpt-5.2", temperature: float = 0.1, show_reasoning: bool = True):
         """
         Initialize the Market Analysis Agent
 
@@ -135,7 +155,7 @@ class MarketAnalysisAgent:
         self.temperature = temperature
         self.show_reasoning = show_reasoning
 
-        # Initialize LLM
+        # Initialize LLM with GPT-5.2
         self.llm = ChatOpenAI(
             model=model,
             temperature=temperature
@@ -326,7 +346,7 @@ class MarketAnalysisAgent:
         return self.analyze(query)
 
 
-def create_market_agent(model: str = "gpt-4-turbo-preview", show_reasoning: bool = True) -> MarketAnalysisAgent:
+def create_market_agent(model: str = "gpt-5.2", show_reasoning: bool = True) -> MarketAnalysisAgent:
     """
     Factory function to create Market Analysis Agent
 

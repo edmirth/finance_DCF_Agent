@@ -50,7 +50,7 @@ class QuickFinancialDataTool(BaseTool):
     - growth: Historical growth rates (revenue, FCF)
     - all: All available metrics
 
-    Example: ticker='AAPL', metrics='revenue,fcf,pe_ratio'
+    Input must be valid JSON with ticker and metrics fields.
     """
     args_schema: type[BaseModel] = QuickDataInput
 
@@ -163,12 +163,17 @@ class QuickFinancialDataTool(BaseTool):
                 # Historical margins (last 5 years)
                 hist_revenue = key_metrics.get('historical_revenue', [])
                 hist_net_income = key_metrics.get('historical_net_income', [])
+                hist_years = key_metrics.get('historical_years', [])
                 if len(hist_revenue) == len(hist_net_income) and len(hist_revenue) > 0:
                     result += f"\n**Historical Net Profit Margins (5Y):**\n"
                     for i, (rev, ni) in enumerate(zip(hist_revenue, hist_net_income)):
                         if rev > 0:
                             margin = (ni / rev) * 100
-                            year_label = f"Year {i+1}" if i > 0 else "Latest"
+                            # Use actual fiscal year if available, otherwise fallback to generic label
+                            if i < len(hist_years) and hist_years[i]:
+                                year_label = hist_years[i]
+                            else:
+                                year_label = f"Year {i+1}" if i > 0 else "Latest"
                             result += f"  {year_label}: {margin:.1f}%\n"
 
             if show_all or 'growth' in requested_metrics:
@@ -571,7 +576,7 @@ class CompanyComparisonTool(BaseTool):
     - size: Revenue, market cap, employees
     - all: Complete comparison
 
-    Example: ticker1='AAPL', ticker2='MSFT', metrics='valuation,profitability'
+    Input must be valid JSON with ticker1, ticker2, and optionally metrics.
     """
     args_schema: type[BaseModel] = ComparisonInput
 
@@ -757,10 +762,176 @@ class CompanyComparisonTool(BaseTool):
         return self._run(ticker1, ticker2, metrics)
 
 
+class DateContextInput(BaseModel):
+    """Input for date context lookup"""
+    query: str = Field(
+        description="Time period query like 'last year', 'last 5 years', 'previous quarter', 'last month', 'YTD', or 'recent'"
+    )
+
+
+class DateContextTool(BaseTool):
+    """Tool for understanding date context and financial reporting periods"""
+
+    name: str = "get_date_context"
+    description: str = """Get current date and interpret time period queries for financial analysis.
+
+    Use this tool when the user asks about:
+    - "last year" / "previous year" / "past year"
+    - "last X years" (e.g., "last 5 years")
+    - "last quarter" / "previous quarter"
+    - "last month" / "recent" / "latest"
+    - "YTD" (year to date)
+    - Any relative time reference
+
+    This tool helps you understand:
+    - What is today's date
+    - What fiscal periods the user is referring to
+    - What financial data is likely available given reporting lag
+    - How to interpret relative time references correctly
+
+    Input: Time period query (e.g., "last 5 years", "previous quarter", "YTD")
+    Output: Detailed date context including what data periods to request
+    """
+    args_schema: type[BaseModel] = DateContextInput
+
+    def _run(self, query: str) -> str:
+        """Get date context for financial queries"""
+        from datetime import datetime
+        import calendar
+
+        # Get current date
+        now = datetime.now()
+        current_year = now.year
+        current_month = now.month
+        current_day = now.day
+
+        # Calculate current quarter
+        current_quarter = (current_month - 1) // 3 + 1
+
+        # Previous quarter
+        if current_quarter == 1:
+            prev_quarter = 4
+            prev_quarter_year = current_year - 1
+        else:
+            prev_quarter = current_quarter - 1
+            prev_quarter_year = current_year
+
+        # Reporting lag: Quarters typically reported 45-60 days after quarter end
+        # Q1 (Jan-Mar): Reported in May
+        # Q2 (Apr-Jun): Reported in August
+        # Q3 (Jul-Sep): Reported in November
+        # Q4 (Oct-Dec): Reported in Feb/March
+
+        # Determine what data is likely available
+        if current_month >= 5:
+            latest_available_quarter = "Q1"
+            latest_available_year = current_year
+        if current_month >= 8:
+            latest_available_quarter = "Q2"
+            latest_available_year = current_year
+        if current_month >= 11:
+            latest_available_quarter = "Q3"
+            latest_available_year = current_year
+        if current_month <= 3:
+            latest_available_quarter = "Q3"
+            latest_available_year = current_year - 1
+        else:
+            latest_available_quarter = "Q3" if current_month >= 11 else f"Q{current_quarter - 1}"
+            latest_available_year = current_year
+
+        # Parse query
+        query_lower = query.lower()
+
+        result = []
+        result.append(f"📅 **DATE CONTEXT**")
+        result.append(f"\n**Current Date:** {now.strftime('%B %d, %Y')}")
+        result.append(f"**Current Quarter:** Q{current_quarter} {current_year}")
+        result.append(f"**Latest Likely Available Data:** {latest_available_quarter} {latest_available_year}")
+        result.append(f"\n---")
+
+        # Interpret the query
+        result.append(f"\n**Interpreting: \"{query}\"**\n")
+
+        if any(word in query_lower for word in ["last year", "previous year", "past year"]):
+            result.append(f"➜ **\"Last Year\"** = Full fiscal year {current_year - 1}")
+            result.append(f"  • Use annual data from {current_year - 1}")
+            result.append(f"  • This data is complete and fully reported")
+
+        elif "last" in query_lower and "years" in query_lower:
+            # Extract number
+            import re
+            match = re.search(r'(\d+)\s*years', query_lower)
+            if match:
+                num_years = int(match.group(1))
+                start_year = current_year - num_years
+                end_year = current_year - 1
+                result.append(f"➜ **\"Last {num_years} Years\"** = {start_year} to {end_year}")
+                result.append(f"  • Use annual data from years: {', '.join(str(y) for y in range(start_year, end_year + 1))}")
+                result.append(f"  • All this historical data is fully reported")
+            else:
+                result.append(f"➜ Could not extract number of years from query")
+
+        elif any(word in query_lower for word in ["last quarter", "previous quarter", "past quarter"]):
+            result.append(f"➜ **\"Last Quarter\"** = Q{prev_quarter} {prev_quarter_year}")
+            if prev_quarter >= current_quarter or prev_quarter_year < current_year:
+                result.append(f"  • This data is likely fully reported")
+            else:
+                result.append(f"  • This data may still be pending - use Q{latest_available_quarter} {latest_available_year} instead")
+
+        elif any(word in query_lower for word in ["ytd", "year to date", "year-to-date"]):
+            result.append(f"➜ **\"YTD\" (Year to Date)** = January 1, {current_year} to {now.strftime('%B %d, %Y')}")
+            result.append(f"  • Use data from {current_year} through {latest_available_quarter}")
+            result.append(f"  • Latest available: {latest_available_quarter} {current_year}")
+
+        elif any(word in query_lower for word in ["recent", "latest", "current", "last month"]):
+            result.append(f"➜ **\"Recent/Latest\"** = Most recently reported data")
+            result.append(f"  • Latest available quarter: {latest_available_quarter} {latest_available_year}")
+            result.append(f"  • Latest annual data: Year {current_year - 1}")
+
+        else:
+            result.append(f"➜ General interpretation:")
+            result.append(f"  • For annual data: Use year {current_year - 1} (most recent complete year)")
+            result.append(f"  • For quarterly data: Use {latest_available_quarter} {latest_available_year}")
+
+        # Add reporting schedule context
+        result.append(f"\n---")
+        result.append(f"\n**📊 REPORTING SCHEDULE (Typical for Public Companies)**")
+        result.append(f"\n• **Q1** (Jan-Mar): Reported in **May**")
+        result.append(f"• **Q2** (Apr-Jun): Reported in **August**")
+        result.append(f"• **Q3** (Jul-Sep): Reported in **November**")
+        result.append(f"• **Q4** (Oct-Dec): Reported in **February/March** of next year")
+
+        result.append(f"\n\n**💡 RECOMMENDATION**")
+        result.append(f"\nFor queries about \"{query}\":")
+
+        if "years" in query_lower:
+            import re
+            match = re.search(r'(\d+)\s*years', query_lower)
+            if match:
+                num_years = int(match.group(1))
+                start_year = current_year - num_years
+                end_year = current_year - 1
+                result.append(f"• Request **annual financials** for years **{start_year}-{end_year}**")
+                result.append(f"• Use tools with parameters covering this period")
+        elif any(word in query_lower for word in ["last year", "previous year"]):
+            result.append(f"• Request **annual financials** for **{current_year - 1}**")
+        elif "quarter" in query_lower:
+            result.append(f"• Request **quarterly data** for **{latest_available_quarter} {latest_available_year}**")
+        else:
+            result.append(f"• Request **{latest_available_quarter} {latest_available_year}** quarterly data")
+            result.append(f"• Or request **{current_year - 1}** annual data")
+
+        return "\n".join(result)
+
+    async def _arun(self, query: str) -> str:
+        return self._run(query)
+
+
 def get_research_assistant_tools() -> List[BaseTool]:
     """Get all research assistant tools"""
     return [
         QuickFinancialDataTool(),
+        DateContextTool(),  # NEW: Temporal awareness for date queries
         FinancialCalculatorTool(),
         RecentNewsTool(),
         CompanyComparisonTool(),

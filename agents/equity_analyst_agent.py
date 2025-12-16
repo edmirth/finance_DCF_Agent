@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class EquityAnalystAgent:
     """AI Agent for comprehensive equity research analysis"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4-turbo-preview", show_reasoning: bool = True):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True):
         """
         Initialize the Equity Analyst Agent
 
@@ -45,7 +45,7 @@ class EquityAnalystAgent:
     def _create_agent(self) -> AgentExecutor:
         """Create the LangChain agent with tools using tool calling pattern"""
 
-        # Initialize LLM
+        # Initialize LLM with GPT-5.2
         llm = ChatOpenAI(
             model=self.model,
             temperature=0,
@@ -368,7 +368,7 @@ Format your final answer as a professional equity research report."""
         return self.analyze(query)
 
 
-def create_equity_analyst_agent(api_key: Optional[str] = None, model: str = "gpt-4-turbo-preview", show_reasoning: bool = True) -> EquityAnalystAgent:
+def create_equity_analyst_agent(api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True) -> EquityAnalystAgent:
     """
     Factory function to create an equity analyst agent
 

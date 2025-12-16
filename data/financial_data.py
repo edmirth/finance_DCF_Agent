@@ -254,6 +254,7 @@ class FinancialDataFetcher:
                 interest_expenses = []
                 income_taxes = []
                 pretax_incomes = []
+                fiscal_years = []
 
                 for stmt in income_statements[:5]:  # Last 5 years
                     revenue = stmt.get("revenue", 0) or stmt.get("revenues", 0) or 0
@@ -263,12 +264,19 @@ class FinancialDataFetcher:
                     tax = stmt.get("income_tax_expense", 0) or 0
                     pretax = stmt.get("pretax_income", 0) or stmt.get("income_before_tax", 0) or 0
 
+                    # Extract fiscal year from various possible fields
+                    fiscal_year = stmt.get("fiscal_period", "") or stmt.get("report_period", "")
+                    if fiscal_year and isinstance(fiscal_year, str):
+                        # Extract year from strings like "2025-FY" or "2025-09-27"
+                        fiscal_year = fiscal_year.split("-")[0]
+
                     revenues.append(float(revenue))
                     net_incomes.append(float(net_income))
                     ebits.append(float(ebit))
                     interest_expenses.append(float(interest))
                     income_taxes.append(float(tax))
                     pretax_incomes.append(float(pretax))
+                    fiscal_years.append(str(fiscal_year) if fiscal_year else "")
 
                 metrics["historical_revenue"] = revenues
                 metrics["latest_revenue"] = revenues[0] if revenues else 0
@@ -277,6 +285,7 @@ class FinancialDataFetcher:
                 metrics["historical_ebit"] = ebits
                 metrics["latest_ebit"] = ebits[0] if ebits else 0
                 metrics["latest_interest_expense"] = interest_expenses[0] if interest_expenses else 0
+                metrics["historical_years"] = fiscal_years
 
                 # Calculate effective tax rate
                 if pretax_incomes[0] > 0 and income_taxes[0] > 0:

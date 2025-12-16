@@ -8,6 +8,7 @@ from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.research_assistant_agent import create_research_assistant, interactive_session
 from agents.market_agent import create_market_agent
+from agents.portfolio_agent import create_portfolio_agent
 import argparse
 
 
@@ -43,19 +44,20 @@ Examples:
   python main.py --mode analyst --interactive
 
 Modes:
-  dcf      - DCF valuation analysis (intrinsic value calculation)
-  analyst  - Comprehensive equity research report (industry, competitors, moat, valuation)
-  market   - Market analysis (indices, sectors, news, sentiment, regime classification)
-  research - Conversational research assistant (ask questions, get suggestions, deep-dive)
+  dcf       - DCF valuation analysis (intrinsic value calculation)
+  analyst   - Comprehensive equity research report (industry, competitors, moat, valuation)
+  market    - Market analysis (indices, sectors, news, sentiment, regime classification)
+  research  - Conversational research assistant (ask questions, get suggestions, deep-dive)
+  portfolio - Portfolio analysis (metrics, diversification, tax optimization)
         """
     )
 
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["dcf", "analyst", "research", "market"],
+        choices=["dcf", "analyst", "research", "market", "portfolio"],
         default="dcf",
-        help="Agent mode: 'dcf', 'analyst', 'research', or 'market' (default: dcf)"
+        help="Agent mode: 'dcf', 'analyst', 'research', 'market', or 'portfolio' (default: dcf)"
     )
 
     parser.add_argument(
@@ -67,8 +69,8 @@ Modes:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4-turbo-preview",
-        help="OpenAI model to use (default: gpt-4-turbo-preview)"
+        default="gpt-5.2",
+        help="OpenAI model to use (default: gpt-5.2)"
     )
 
     parser.add_argument(
@@ -105,6 +107,17 @@ Modes:
             run_market_mode(agent)
         except Exception as e:
             print(f"Error running market agent: {e}")
+            sys.exit(1)
+        return
+
+    # Portfolio mode is always interactive
+    if args.mode == "portfolio":
+        print("Launching Portfolio Analyzer Agent...")
+        try:
+            from agents.portfolio_agent import interactive_session as portfolio_session
+            portfolio_session(model=args.model)
+        except Exception as e:
+            print(f"Error running portfolio agent: {e}")
             sys.exit(1)
         return
 

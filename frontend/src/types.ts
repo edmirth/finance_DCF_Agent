@@ -40,3 +40,10 @@ export interface StreamEvent {
   tool?: string;
   input?: string;
 }
+
+export interface PortfolioHolding {
+  id: string;
+  ticker: string;
+  shares: number;
+  cost_basis: number;
+}

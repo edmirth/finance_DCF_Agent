@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An AI-powered financial analysis system with four specialized agents built using LangChain and LangGraph:
+An AI-powered financial analysis system with five specialized agents built using LangChain and LangGraph:
 
 1. **DCF Agent** - Fast quantitative valuation using Discounted Cash Flow methodology
 2. **Equity Analyst Agent** - Comprehensive equity research reports (industry, competitors, moat, valuation)
 3. **Research Assistant Agent** - Interactive conversational research tool with context memory
 4. **Market Agent** - Market conditions, sentiment, regime classification, and sector analysis
+5. **Portfolio Agent** - Portfolio analysis with performance metrics, diversification, and tax optimization
 
 All agents use the ReAct pattern for autonomous decision-making and tool selection.
 
@@ -113,6 +114,15 @@ python main.py --mode market
 python main.py --mode market --interactive
 ```
 
+### Portfolio Analysis (Performance & Optimization)
+```bash
+# Portfolio analysis mode (always interactive)
+python main.py --mode portfolio
+
+# Custom model
+python main.py --mode portfolio --model gpt-4o
+```
+
 ### Default Mode
 If `--mode` is not specified, defaults to `dcf`:
 ```bash
@@ -141,12 +151,14 @@ finance_dcf_agent/
 │   ├── equity_analyst_agent.py         # Comprehensive research agent (ReAct)
 │   ├── equity_analyst_graph.py         # LangGraph implementation (not integrated)
 │   ├── research_assistant_agent.py     # Interactive conversational agent
-│   └── market_agent.py                 # Market analysis agent
+│   ├── market_agent.py                 # Market analysis agent
+│   └── portfolio_agent.py              # Portfolio analyzer agent
 ├── tools/               # LangChain tool implementations
 │   ├── dcf_tools.py                    # Stock info, financials, DCF, web search
 │   ├── equity_analyst_tools.py         # Industry, competitor, moat analysis
 │   ├── research_assistant_tools.py     # Calculations, comparisons, news
-│   └── market_tools.py                 # Market data, indices, sectors, VIX
+│   ├── market_tools.py                 # Market data, indices, sectors, VIX
+│   └── portfolio_tools.py              # Portfolio metrics, diversification, tax harvesting
 ├── calculators/         # Core calculation engines
 │   └── dcf_calculator.py               # DCF valuation engine with scenarios
 ├── data/                # Data layer
@@ -183,6 +195,11 @@ The system uses **specialized agents** that share common infrastructure but have
 - Focus: Macro market conditions, sentiment, and sector rotation
 - Pattern: ReAct agent for market-level analysis
 
+**Portfolio Agent** (`agents/portfolio_agent.py`)
+- Tools: `calculate_portfolio_metrics`, `analyze_diversification`, `identify_tax_loss_harvesting`
+- Focus: Portfolio performance analysis, risk assessment, and tax optimization
+- Pattern: ReAct agent with systematic portfolio analysis workflow
+
 ### Core Data Flow
 
 All agents follow a similar pattern:
@@ -197,7 +214,7 @@ User Query → Agent (LLM) → Tool Selection → Tool Execution → Observation
    - Creates LangChain ReAct agent with `create_react_agent()`
    - Defines systematic prompt templates with workflow instructions
    - Manages LLM (ChatOpenAI) and tool integration
-   - Default model: `gpt-4-turbo-preview` (configurable via `--model`)
+   - Default model: `gpt-5.2` (configurable via `--model`)
 
 2. **Tools Layer** (`tools/*.py`):
    - All tools inherit from LangChain's `BaseTool`
@@ -241,6 +258,12 @@ User Query → Agent (LLM) → Tool Selection → Tool Execution → Observation
 - Proactively suggests next analyses
 - Can trigger deep-dive agents (DCF, industry, etc.) on demand
 - Interactive loop with `interactive_session()` function
+
+**Portfolio Agent Workflow** (encoded in `agents/portfolio_agent.py:64-137`):
+1. Portfolio Overview - `calculate_portfolio_metrics` for overall performance, P&L, concentration risk
+2. Diversification Assessment - `analyze_diversification` for sector exposure and diversification score
+3. Tax Optimization - `identify_tax_loss_harvesting` for tax-saving opportunities
+4. Final Recommendations - Synthesize findings into prioritized action items
 
 ### DCF Methodology Details
 
@@ -286,7 +309,7 @@ The web interface uses a modern client-server architecture:
 - TailwindCSS for styling
 - Axios for HTTP client with SSE support
 - Real-time streaming of agent thoughts and final responses
-- Agent selection UI (DCF, Analyst, Research, Market)
+- Agent selection UI (DCF, Analyst, Research, Market, Portfolio)
 - Message history and markdown rendering
 
 **Communication Flow**:
@@ -352,6 +375,9 @@ python main.py --mode research
 
 # Market analysis
 python main.py --mode market
+
+# Portfolio analysis
+python main.py --mode portfolio
 ```
 
 ### Testing and Validation
@@ -365,10 +391,13 @@ python test_api.py
 
 ### Using Different Models
 ```bash
-# gpt-4o (recommended for better tool usage)
+# Default model (gpt-5.2)
+python main.py --mode analyst --ticker AAPL
+
+# Use gpt-4o
 python main.py --mode analyst --ticker AAPL --model gpt-4o
 
-# gpt-4 (more expensive but reliable)
+# Use gpt-4
 python main.py --mode dcf --ticker MSFT --model gpt-4
 ```
 
@@ -455,6 +484,32 @@ The `perform_dcf_analysis` tool accepts (`tools/dcf_tools.py:28-64`):
 
 Agents are instructed to pass web-researched values for beta, risk_free_rate, and revenue_growth_rate.
 
+### Portfolio Tool Input Format
+
+The Portfolio Agent expects portfolio data as a JSON string with the following structure (`tools/portfolio_tools.py`):
+```json
+[
+  {
+    "ticker": "AAPL",
+    "shares": 100,
+    "cost_basis": 150.00
+  },
+  {
+    "ticker": "MSFT",
+    "shares": 50,
+    "cost_basis": 250.00
+  }
+]
+```
+
+**Key fields:**
+- `ticker` (str): Stock ticker symbol (required)
+- `shares` (float): Number of shares owned (required)
+- `cost_basis` (float): Original purchase price per share (required for P&L and tax calculations)
+
+The `identify_tax_loss_harvesting` tool also accepts:
+- `min_loss_threshold` (float, default=1000.0): Minimum unrealized loss to flag for harvesting
+
 ## Important Implementation Notes
 
 ### Data & APIs
@@ -474,9 +529,10 @@ Agents are instructed to pass web-researched values for beta, risk_free_rate, an
 - **Error handling**: Tools return error strings rather than raising exceptions
 - **Async methods**: All tools implement `_arun()` but delegate to `_run()` (not truly async)
 - **Max iterations**: ReAct agents limited to 10 iterations by default
-- **Tool usage issues**: `gpt-4-turbo-preview` sometimes refuses to use tools; try `gpt-4o` or `gpt-4`
+- **Tool usage issues**: Some models may refuse to use tools; try `gpt-4o` if issues occur
 - **Reasoning callback**: `agents/reasoning_callback.py` provides friendly tool descriptions for CLI output
 - **Streaming callback**: `backend/api_server.py` has `StreamingCallbackHandler` for web interface SSE
+- **Portfolio Agent**: Always runs in interactive mode, requires portfolio JSON input format
 
 ### LangGraph Status
 - LangGraph implementation exists but has version conflicts with current langchain versions

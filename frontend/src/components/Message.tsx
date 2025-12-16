@@ -1,5 +1,6 @@
 import { Message, Agent } from '../types';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { User, BarChart3, TrendingUp, Search, Globe } from 'lucide-react';
 import ThinkingSteps from './ThinkingSteps';
 
@@ -64,8 +65,8 @@ function MessageComponent({ message, agent }: MessageProps) {
             <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{message.content}</p>
           ) : (
             <>
-              <div className="markdown-content text-[15px] leading-relaxed">
-                <ReactMarkdown>{message.content}</ReactMarkdown>
+              <div className="markdown-content text-[15px] leading-relaxed overflow-x-auto">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
               </div>
               {message.thinkingSteps && message.thinkingSteps.length > 0 && (
                 <details className="mt-4 pt-4 border-t border-gray-100">

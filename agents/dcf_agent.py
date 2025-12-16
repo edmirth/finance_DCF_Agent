@@ -16,13 +16,13 @@ logger = logging.getLogger(__name__)
 class DCFAnalysisAgent:
     """AI Agent for performing DCF analysis on stocks"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4-turbo-preview"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2"):
         """
         Initialize the DCF Analysis Agent
 
         Args:
             api_key: OpenAI API key (if not provided, will use OPENAI_API_KEY env var)
-            model: OpenAI model to use (default: gpt-4-turbo-preview)
+            model: OpenAI model to use (default: gpt-5.2)
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -35,7 +35,7 @@ class DCFAnalysisAgent:
     def _create_agent(self) -> AgentExecutor:
         """Create the LangChain agent with tools"""
 
-        # Initialize LLM
+        # Initialize LLM with GPT-5.2
         llm = ChatOpenAI(
             model=self.model,
             temperature=0,
@@ -216,13 +216,13 @@ Thought: {agent_scratchpad}"""
         return self.analyze(query)
 
 
-def create_dcf_agent(api_key: Optional[str] = None, model: str = "gpt-4-turbo-preview") -> DCFAnalysisAgent:
+def create_dcf_agent(api_key: Optional[str] = None, model: str = "gpt-5.2") -> DCFAnalysisAgent:
     """
     Factory function to create a DCF analysis agent
 
     Args:
         api_key: OpenAI API key
-        model: OpenAI model to use
+        model: OpenAI model to use (default: gpt-5.2)
 
     Returns:
         DCFAnalysisAgent instance
