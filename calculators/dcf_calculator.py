@@ -11,31 +11,37 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DCFAssumptions:
-    """Assumptions for DCF valuation"""
-    # Growth assumptions
-    revenue_growth_rate: float = 0.10  # 10% annual growth
-    terminal_growth_rate: float = 0.025  # 2.5% perpetual growth
+    """
+    Assumptions for DCF valuation
 
-    # Operating assumptions
-    ebit_margin: float = 0.15  # EBIT as % of revenue (Operating margin)
-    tax_rate: float = 0.21  # Corporate tax rate (21% US federal)
+    IMPORTANT: All parameters are REQUIRED. No defaults are provided.
+    This ensures DCF valuations are only performed with actual company-specific data,
+    preventing catastrophic errors from using generic assumptions.
+    """
+    # Growth assumptions - REQUIRED
+    revenue_growth_rate: float  # Annual revenue growth rate (e.g., 0.10 for 10%)
+    terminal_growth_rate: float  # Perpetual growth rate (e.g., 0.025 for 2.5%)
 
-    # Capital intensity
-    capex_to_revenue: float = 0.03  # CapEx as % of revenue
-    depreciation_to_revenue: float = 0.03  # D&A as % of revenue
-    nwc_to_revenue: float = 0.10  # Net Working Capital as % of revenue
+    # Operating assumptions - REQUIRED
+    ebit_margin: float  # EBIT as % of revenue (Operating margin)
+    tax_rate: float  # Corporate tax rate (e.g., 0.21 for 21% US federal)
 
-    # Discount rate components (for Cost of Equity)
-    risk_free_rate: float = 0.04  # 4%
-    market_risk_premium: float = 0.08  # 8%
-    beta: float = 1.0
+    # Capital intensity - REQUIRED
+    capex_to_revenue: float  # CapEx as % of revenue
+    depreciation_to_revenue: float  # D&A as % of revenue
+    nwc_to_revenue: float  # Net Working Capital as % of revenue
 
-    # Debt parameters
-    cost_of_debt: float = 0.05  # Interest rate on debt (5%)
-    debt_to_equity_ratio: float = 0.3  # Target D/E ratio
+    # Discount rate components (for Cost of Equity) - REQUIRED
+    risk_free_rate: float  # Risk-free rate (e.g., 0.04 for 4%)
+    market_risk_premium: float  # Equity risk premium (e.g., 0.08 for 8%)
+    beta: float  # Stock beta coefficient
 
-    # Projection period
-    projection_years: int = 5
+    # Debt parameters - REQUIRED
+    cost_of_debt: float  # Interest rate on debt (e.g., 0.05 for 5%)
+    debt_to_equity_ratio: float  # Target D/E ratio
+
+    # Projection period - REQUIRED
+    projection_years: int  # Number of years to project (typically 5)
 
     def calculate_cost_of_equity(self) -> float:
         """Calculate Cost of Equity using CAPM"""

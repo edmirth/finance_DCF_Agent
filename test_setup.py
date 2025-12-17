@@ -110,18 +110,29 @@ def test_dcf_calculator():
     print("\nTesting DCF calculator...")
 
     try:
-        from dcf_calculator import DCFCalculator, DCFAssumptions
+        from calculators.dcf_calculator import DCFCalculator, DCFAssumptions
 
         calculator = DCFCalculator()
         assumptions = DCFAssumptions(
             revenue_growth_rate=0.10,
-            fcf_margin=0.15,
-            terminal_growth_rate=0.025
+            terminal_growth_rate=0.025,
+            ebit_margin=0.15,
+            tax_rate=0.21,
+            capex_to_revenue=0.03,
+            depreciation_to_revenue=0.03,
+            nwc_to_revenue=0.10,
+            risk_free_rate=0.04,
+            market_risk_premium=0.08,
+            beta=1.0,
+            cost_of_debt=0.05,
+            debt_to_equity_ratio=0.3,
+            projection_years=5
         )
 
-        wacc = assumptions.calculate_wacc()
+        # Test WACC calculation
+        cost_of_equity = assumptions.calculate_cost_of_equity()
         print(f"✓ DCF calculator working")
-        print(f"  Calculated WACC: {wacc * 100:.2f}%")
+        print(f"  Cost of Equity (CAPM): {cost_of_equity * 100:.2f}%")
         return True
 
     except Exception as e:

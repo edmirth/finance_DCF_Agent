@@ -82,12 +82,21 @@ def example_4_direct_api_usage():
     )
     print(f"Historical Revenue Growth: {revenue_growth * 100:.2f}%")
 
-    # Perform DCF with custom assumptions
+    # Perform DCF with custom assumptions - ALL parameters required
     assumptions = DCFAssumptions(
-        revenue_growth_rate=0.15,  # 15% growth
-        fcf_margin=0.12,  # 12% FCF margin
+        revenue_growth_rate=0.15,
         terminal_growth_rate=0.025,
-        beta=metrics.get('beta', 1.0)
+        ebit_margin=0.20,  # 20% EBIT margin for tech company
+        tax_rate=0.21,
+        capex_to_revenue=0.03,
+        depreciation_to_revenue=0.03,
+        nwc_to_revenue=0.10,
+        risk_free_rate=0.04,
+        market_risk_premium=0.08,
+        beta=metrics.get('beta', 1.0),
+        cost_of_debt=0.05,
+        debt_to_equity_ratio=0.3,
+        projection_years=5
     )
 
     calculator = DCFCalculator()
@@ -119,25 +128,52 @@ def example_5_custom_scenarios():
     info = fetcher.get_stock_info(ticker)
     metrics = fetcher.get_key_metrics(ticker)
 
-    # Define custom scenarios
+    # Define custom scenarios - ALL parameters required
     scenarios = {
         "Optimistic AI Boom": DCFAssumptions(
-            revenue_growth_rate=0.30,  # 30% growth
-            fcf_margin=0.25,
+            revenue_growth_rate=0.30,
             terminal_growth_rate=0.04,
-            beta=metrics.get('beta', 1.0)
+            ebit_margin=0.35,
+            tax_rate=0.21,
+            capex_to_revenue=0.05,
+            depreciation_to_revenue=0.04,
+            nwc_to_revenue=0.12,
+            risk_free_rate=0.04,
+            market_risk_premium=0.08,
+            beta=metrics.get('beta', 1.0),
+            cost_of_debt=0.04,
+            debt_to_equity_ratio=0.2,
+            projection_years=5
         ),
         "Moderate Growth": DCFAssumptions(
-            revenue_growth_rate=0.15,  # 15% growth
-            fcf_margin=0.20,
+            revenue_growth_rate=0.15,
             terminal_growth_rate=0.03,
-            beta=metrics.get('beta', 1.0)
+            ebit_margin=0.28,
+            tax_rate=0.21,
+            capex_to_revenue=0.04,
+            depreciation_to_revenue=0.04,
+            nwc_to_revenue=0.10,
+            risk_free_rate=0.04,
+            market_risk_premium=0.08,
+            beta=metrics.get('beta', 1.0),
+            cost_of_debt=0.05,
+            debt_to_equity_ratio=0.3,
+            projection_years=5
         ),
         "Market Saturation": DCFAssumptions(
-            revenue_growth_rate=0.05,  # 5% growth
-            fcf_margin=0.15,
+            revenue_growth_rate=0.05,
             terminal_growth_rate=0.02,
-            beta=metrics.get('beta', 1.2)
+            ebit_margin=0.20,
+            tax_rate=0.21,
+            capex_to_revenue=0.03,
+            depreciation_to_revenue=0.03,
+            nwc_to_revenue=0.08,
+            risk_free_rate=0.04,
+            market_risk_premium=0.08,
+            beta=metrics.get('beta', 1.2),
+            cost_of_debt=0.06,
+            debt_to_equity_ratio=0.4,
+            projection_years=5
         )
     }
 

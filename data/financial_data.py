@@ -348,8 +348,8 @@ class FinancialDataFetcher:
                 metrics["cash_and_equivalents"] = float(cash)
 
                 # Current assets and liabilities for working capital
-                current_assets = latest_bs.get("total_current_assets", 0) or 0
-                current_liabilities = latest_bs.get("total_current_liabilities", 0) or 0
+                current_assets = latest_bs.get("current_assets", 0) or latest_bs.get("total_current_assets", 0) or 0
+                current_liabilities = latest_bs.get("current_liabilities", 0) or latest_bs.get("total_current_liabilities", 0) or 0
                 metrics["current_assets"] = float(current_assets)
                 metrics["current_liabilities"] = float(current_liabilities)
                 metrics["net_working_capital"] = float(current_assets - current_liabilities)

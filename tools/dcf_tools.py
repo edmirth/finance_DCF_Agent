@@ -35,8 +35,8 @@ class DCFAnalysisInput(BaseModel):
         description="Expected annual revenue growth rate (decimal, e.g., 0.10 for 10%). Use analyst consensus from web search. If not provided, will use historical CAGR."
     )
     terminal_growth_rate: Optional[float] = Field(
-        default=0.025,
-        description="Terminal perpetual growth rate (decimal, e.g., 0.025 for 2.5%)"
+        default=None,
+        description="Terminal perpetual growth rate (decimal, e.g., 0.025 for 2.5%). REQUIRED - must be provided by agent. Typical range: 2-3% for mature companies."
     )
 
     # Operating assumptions (calculated from financial data if not provided)
@@ -69,12 +69,12 @@ class DCFAnalysisInput(BaseModel):
         description="Stock beta coefficient. IMPORTANT: Pass beta from web search if available. Otherwise uses default or financial data."
     )
     risk_free_rate: Optional[float] = Field(
-        default=0.04,
-        description="Risk-free rate (decimal, e.g., 0.04 for 4%). Use current 10-year Treasury yield from web search."
+        default=None,
+        description="Risk-free rate (decimal, e.g., 0.04 for 4%). REQUIRED - must be provided from current 10-year Treasury yield via web search."
     )
     market_risk_premium: Optional[float] = Field(
-        default=0.08,
-        description="Market risk premium (decimal, e.g., 0.08 for 8%)"
+        default=None,
+        description="Market risk premium (decimal, e.g., 0.08 for 8%). REQUIRED - must be provided by agent. Typical range: 6-8%."
     )
     cost_of_debt: Optional[float] = Field(
         default=None,
@@ -248,35 +248,70 @@ class PerformDCFAnalysisTool(BaseTool):
         self,
         ticker: str,
         revenue_growth_rate: Optional[float] = None,
-        terminal_growth_rate: float = 0.025,
+        terminal_growth_rate: Optional[float] = None,
         ebit_margin: Optional[float] = None,
         tax_rate: Optional[float] = None,
         capex_to_revenue: Optional[float] = None,
         depreciation_to_revenue: Optional[float] = None,
         nwc_to_revenue: Optional[float] = None,
         beta: Optional[float] = None,
-        risk_free_rate: float = 0.04,
-        market_risk_premium: float = 0.08,
+        risk_free_rate: Optional[float] = None,
+        market_risk_premium: Optional[float] = None,
         cost_of_debt: Optional[float] = None,
-        projection_years: int = 5
+        projection_years: int = 5  # Methodology choice, not company-specific
     ) -> str:
         """Perform DCF analysis"""
         try:
             # Sanitize ticker input - extract only the ticker symbol
+            # Also handle case where all parameters are passed as JSON string
             ticker_str = str(ticker).strip()
+            import re
+            import json
 
-            # If it looks like JSON got mangled, try to extract ticker
-            if '{' in ticker_str or 'ticker' in ticker_str.lower():
-                # Try to find ticker value in JSON-like string
-                import re
-                # Look for patterns like "ticker": "AAPL" or ticker:AAPL or {TICKER:
-                match = re.search(r'["\']?ticker["\']?\s*[:=]\s*["\']?([A-Z]+)["\']?', ticker_str, re.IGNORECASE)
-                if match:
-                    ticker_clean = match.group(1).upper()
-                else:
-                    # Fallback: take any sequence of 1-5 uppercase letters
-                    match = re.search(r'\b([A-Z]{1,5})\b', ticker_str)
-                    ticker_clean = match.group(1) if match else ticker_str
+            # If parameters look like JSON, try to parse them
+            parsed_params = {}
+            if '{' in ticker_str:
+                try:
+                    # Remove markdown code blocks if present
+                    json_str = re.sub(r'```json\s*|\s*```', '', ticker_str)
+                    parsed_params = json.loads(json_str)
+                    logger.info(f"Parsed JSON parameters from ticker string: {list(parsed_params.keys())}")
+
+                    # Extract ticker from parsed JSON
+                    ticker_clean = parsed_params.get('ticker', '').upper()
+
+                    # Override None parameters with parsed values if available
+                    if revenue_growth_rate is None and 'revenue_growth_rate' in parsed_params:
+                        revenue_growth_rate = parsed_params['revenue_growth_rate']
+                    if terminal_growth_rate is None and 'terminal_growth_rate' in parsed_params:
+                        terminal_growth_rate = parsed_params['terminal_growth_rate']
+                    if ebit_margin is None and 'ebit_margin' in parsed_params:
+                        ebit_margin = parsed_params['ebit_margin']
+                    if tax_rate is None and 'tax_rate' in parsed_params:
+                        tax_rate = parsed_params['tax_rate']
+                    if capex_to_revenue is None and 'capex_to_revenue' in parsed_params:
+                        capex_to_revenue = parsed_params['capex_to_revenue']
+                    if depreciation_to_revenue is None and 'depreciation_to_revenue' in parsed_params:
+                        depreciation_to_revenue = parsed_params['depreciation_to_revenue']
+                    if nwc_to_revenue is None and 'nwc_to_revenue' in parsed_params:
+                        nwc_to_revenue = parsed_params['nwc_to_revenue']
+                    if beta is None and 'beta' in parsed_params:
+                        beta = parsed_params['beta']
+                    if risk_free_rate is None and 'risk_free_rate' in parsed_params:
+                        risk_free_rate = parsed_params['risk_free_rate']
+                    if market_risk_premium is None and 'market_risk_premium' in parsed_params:
+                        market_risk_premium = parsed_params['market_risk_premium']
+                    if cost_of_debt is None and 'cost_of_debt' in parsed_params:
+                        cost_of_debt = parsed_params['cost_of_debt']
+
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, fall back to regex extraction
+                    match = re.search(r'["\']?ticker["\']?\s*[:=]\s*["\']?([A-Z]+)["\']?', ticker_str, re.IGNORECASE)
+                    if match:
+                        ticker_clean = match.group(1).upper()
+                    else:
+                        match = re.search(r'\b([A-Z]{1,5})\b', ticker_str)
+                        ticker_clean = match.group(1) if match else ticker_str
             else:
                 ticker_clean = ticker_str.upper()
 
@@ -306,6 +341,8 @@ class PerformDCFAnalysisTool(BaseTool):
                 return f"Error: Insufficient financial data for {ticker_clean}. Revenue or shares outstanding is missing."
 
             # Calculate parameters from financial data if not provided
+            # NO DEFAULTS - All values must be calculated from real data or explicitly provided
+
             # 1. Revenue growth rate
             if revenue_growth_rate is None:
                 historical_revenue = metrics.get('historical_revenue', [])
@@ -313,8 +350,7 @@ class PerformDCFAnalysisTool(BaseTool):
                     revenue_growth_rate = fetcher.calculate_historical_growth_rate(historical_revenue)
                     logger.info(f"Calculated revenue growth from historical data: {revenue_growth_rate:.2%}")
                 else:
-                    revenue_growth_rate = 0.10  # Default 10%
-                    logger.info("Using default revenue growth rate: 10%")
+                    return f"Error: Insufficient historical revenue data for {ticker_clean}. Cannot calculate revenue growth rate. Need at least 2 years of data."
 
             # 2. EBIT margin
             if ebit_margin is None:
@@ -323,12 +359,13 @@ class PerformDCFAnalysisTool(BaseTool):
                     ebit_margin = latest_ebit / current_revenue
                     logger.info(f"Calculated EBIT margin: {ebit_margin:.2%}")
                 else:
-                    ebit_margin = 0.15  # Default 15%
-                    logger.info("Using default EBIT margin: 15%")
+                    return f"Error: Cannot calculate EBIT margin for {ticker_clean}. Missing EBIT or revenue data."
 
             # 3. Tax rate
             if tax_rate is None:
-                tax_rate = metrics.get('effective_tax_rate', 0.21)
+                tax_rate = metrics.get('effective_tax_rate')
+                if tax_rate is None or tax_rate <= 0:
+                    return f"Error: Cannot determine tax rate for {ticker_clean}. Missing effective tax rate data."
                 logger.info(f"Using effective tax rate: {tax_rate:.2%}")
 
             # 4. CapEx to revenue
@@ -338,8 +375,7 @@ class PerformDCFAnalysisTool(BaseTool):
                     capex_to_revenue = latest_capex / current_revenue
                     logger.info(f"Calculated CapEx/Revenue: {capex_to_revenue:.2%}")
                 else:
-                    capex_to_revenue = 0.03  # Default 3%
-                    logger.info("Using default CapEx/Revenue: 3%")
+                    return f"Error: Cannot calculate CapEx/Revenue for {ticker_clean}. Missing CapEx or revenue data."
 
             # 5. Depreciation to revenue
             if depreciation_to_revenue is None:
@@ -348,38 +384,71 @@ class PerformDCFAnalysisTool(BaseTool):
                     depreciation_to_revenue = latest_da / current_revenue
                     logger.info(f"Calculated D&A/Revenue: {depreciation_to_revenue:.2%}")
                 else:
-                    depreciation_to_revenue = 0.03  # Default 3%
-                    logger.info("Using default D&A/Revenue: 3%")
+                    return f"Error: Cannot calculate D&A/Revenue for {ticker_clean}. Missing depreciation/amortization or revenue data."
 
             # 6. NWC to revenue
             if nwc_to_revenue is None:
                 nwc = metrics.get('net_working_capital', 0)
-                if current_revenue > 0:
-                    nwc_to_revenue = max(abs(nwc) / current_revenue, 0.05)  # At least 5%
+                if current_revenue > 0 and nwc != 0:
+                    nwc_to_revenue = abs(nwc) / current_revenue
                     logger.info(f"Calculated NWC/Revenue: {nwc_to_revenue:.2%}")
                 else:
-                    nwc_to_revenue = 0.10  # Default 10%
-                    logger.info("Using default NWC/Revenue: 10%")
+                    return f"Error: Cannot calculate NWC/Revenue for {ticker_clean}. Missing net working capital or revenue data."
 
             # 7. Beta
             if beta is not None:
                 final_beta = beta
                 logger.info(f"Using beta from web search/parameter: {final_beta}")
             else:
-                final_beta = metrics.get('beta', 1.0)
+                final_beta = metrics.get('beta')
+                if final_beta is None:
+                    return f"Error: Cannot determine beta for {ticker_clean}. Beta not provided and not found in financial data."
                 logger.info(f"Using beta from financial data: {final_beta}")
 
             # 8. Cost of debt
             if cost_of_debt is None:
                 interest_expense = metrics.get('latest_interest_expense', 0)
-                if interest_expense > 0 and total_debt > 0:
+                if total_debt > 0 and interest_expense > 0:
                     cost_of_debt = interest_expense / total_debt
                     logger.info(f"Calculated cost of debt: {cost_of_debt:.2%}")
+                elif total_debt > 0 and interest_expense == 0:
+                    # Company has debt but no interest expense in this period (e.g., zero-coupon bonds, capitalized interest)
+                    cost_of_debt = 0.0
+                    logger.info(f"Company has debt but no interest expense - using cost of debt: 0.00%")
+                elif total_debt == 0:
+                    # No debt - cost of debt is irrelevant but set to 0
+                    cost_of_debt = 0.0
+                    logger.info(f"Company has no debt - using cost of debt: 0.00%")
                 else:
-                    cost_of_debt = 0.05  # Default 5%
-                    logger.info("Using default cost of debt: 5%")
+                    return f"Error: Cannot calculate cost of debt for {ticker_clean}. Missing interest expense or debt data."
+
+            # 9. Debt to equity ratio (for WACC calculation)
+            market_value_equity = current_price * shares_outstanding if (current_price > 0 and shares_outstanding > 0) else 0
+            if market_value_equity > 0:
+                if total_debt > 0:
+                    debt_to_equity_ratio = total_debt / market_value_equity
+                    logger.info(f"Calculated D/E ratio: {debt_to_equity_ratio:.3f}")
+                else:
+                    # Company has no debt - D/E ratio is 0
+                    debt_to_equity_ratio = 0.0
+                    logger.info(f"Company has no debt - using D/E ratio: 0.000")
+            else:
+                return f"Error: Cannot calculate debt/equity ratio for {ticker_clean}. Missing market value data."
+
+            # 10. Terminal growth rate
+            if terminal_growth_rate is None:
+                return f"Error: Terminal growth rate must be provided for {ticker_clean}. Typical range is 2-3% for mature companies."
+
+            # 11. Risk-free rate
+            if risk_free_rate is None:
+                return f"Error: Risk-free rate must be provided for {ticker_clean}. Use current 10-year Treasury yield from web search."
+
+            # 12. Market risk premium
+            if market_risk_premium is None:
+                return f"Error: Market risk premium must be provided for {ticker_clean}. Typical range is 6-8%."
 
             # Create assumptions using calculated or provided parameters
+            # IMPORTANT: ALL parameters are REQUIRED - no defaults in DCFAssumptions
             assumptions = DCFAssumptions(
                 revenue_growth_rate=revenue_growth_rate,
                 terminal_growth_rate=terminal_growth_rate,
@@ -392,6 +461,7 @@ class PerformDCFAnalysisTool(BaseTool):
                 risk_free_rate=risk_free_rate,
                 market_risk_premium=market_risk_premium,
                 cost_of_debt=cost_of_debt,
+                debt_to_equity_ratio=debt_to_equity_ratio,
                 projection_years=projection_years
             )
 
@@ -421,15 +491,15 @@ class PerformDCFAnalysisTool(BaseTool):
         self,
         ticker: str,
         revenue_growth_rate: Optional[float] = None,
-        terminal_growth_rate: float = 0.025,
+        terminal_growth_rate: Optional[float] = None,
         ebit_margin: Optional[float] = None,
         tax_rate: Optional[float] = None,
         capex_to_revenue: Optional[float] = None,
         depreciation_to_revenue: Optional[float] = None,
         nwc_to_revenue: Optional[float] = None,
         beta: Optional[float] = None,
-        risk_free_rate: float = 0.04,
-        market_risk_premium: float = 0.08,
+        risk_free_rate: Optional[float] = None,
+        market_risk_premium: Optional[float] = None,
         cost_of_debt: Optional[float] = None,
         projection_years: int = 5
     ) -> str:
