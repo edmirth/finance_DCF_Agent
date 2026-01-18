@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { MessageSquare, Briefcase, Sparkles, ChevronLeft, ChevronRight } from 'lucide-react';
+import { MessageSquare, Briefcase, Sparkles, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
 
 function Sidebar() {
   const [isCollapsed, setIsCollapsed] = useState(() => {
@@ -82,6 +82,37 @@ function Sidebar() {
                     </div>
                     {isActive && (
                       <div className="w-1 h-8 bg-gray-900 rounded-full"></div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </NavLink>
+
+          <NavLink
+            to="/earnings"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+                isActive
+                  ? 'bg-gradient-to-r from-yellow-50 to-yellow-100 text-yellow-900 shadow-sm'
+                  : 'text-gray-700 hover:bg-yellow-50/50 hover:text-yellow-800'
+              } ${isCollapsed ? 'justify-center' : ''}`
+            }
+            title={isCollapsed ? 'Earnings Analyst' : ''}
+          >
+            {({ isActive }) => (
+              <>
+                <div className={`p-2 rounded-lg flex-shrink-0 ${isActive ? 'bg-yellow-600 text-white' : 'bg-yellow-100 text-yellow-600'}`}>
+                  <DollarSign className="w-4 h-4" strokeWidth={2} />
+                </div>
+                {!isCollapsed && (
+                  <>
+                    <div className="flex-1 overflow-hidden">
+                      <span className="font-semibold text-sm block truncate">Earnings Analyst</span>
+                      <p className="text-xs text-gray-500 mt-0.5 truncate">Fast earnings research</p>
+                    </div>
+                    {isActive && (
+                      <div className="w-1 h-8 bg-yellow-600 rounded-full"></div>
                     )}
                   </>
                 )}

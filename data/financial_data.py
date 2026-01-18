@@ -215,6 +215,65 @@ class FinancialDataFetcher:
             logger.error(f"Error fetching financial statements for {ticker}: {e}")
             return {}
 
+    def get_quarterly_financials(self, ticker: str, limit: int = 8) -> Dict:
+        """
+        Fetch quarterly financial statements (income, balance sheet, cash flow)
+
+        Args:
+            ticker: Stock ticker symbol
+            limit: Number of quarters to fetch (default: 8 = 2 years)
+
+        Returns:
+            Dict with quarterly income_statements, balance_sheets, cash_flow_statements
+        """
+        # Check cache first
+        cache_key = f"quarterly_financials_{ticker.upper()}_{limit}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+
+        try:
+            # Get quarterly financial statements
+            params = {
+                "ticker": ticker,
+                "period": "quarterly",  # KEY CHANGE - quarterly instead of annual
+                "limit": limit
+            }
+
+            data = self._make_request("/financials", params=params)
+
+            if not data:
+                logger.error(f"No quarterly financial statements data returned for {ticker}")
+                return {}
+
+            # The API returns data in {"financials": {income_statements: [], balance_sheets: [], cash_flow_statements: []}} format
+            financials_dict = data.get("financials", {})
+
+            if not financials_dict:
+                logger.error(f"Empty quarterly financials dict for {ticker}")
+                return {}
+
+            # Extract the arrays directly
+            income_statements = financials_dict.get("income_statements", [])
+            balance_sheets = financials_dict.get("balance_sheets", [])
+            cash_flow_statements = financials_dict.get("cash_flow_statements", [])
+
+            logger.info(f"Retrieved quarterly financials for {ticker}: {len(income_statements)} income statements, {len(balance_sheets)} balance sheets, {len(cash_flow_statements)} cash flow statements")
+
+            result = {
+                "income_statements": income_statements,
+                "balance_sheets": balance_sheets,
+                "cash_flow_statements": cash_flow_statements
+            }
+
+            # Cache the result
+            self._save_to_cache(cache_key, result)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching quarterly financial statements for {ticker}: {e}")
+            return {}
+
     def get_key_metrics(self, ticker: str) -> Dict:
         """Extract key metrics needed for DCF analysis"""
         # Check cache first

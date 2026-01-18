@@ -1,5 +1,5 @@
 import { useState, KeyboardEvent } from 'react';
-import { ArrowUp, Paperclip, Loader2, BarChart3, TrendingUp, Search, Globe, Briefcase } from 'lucide-react';
+import { ArrowUp, Paperclip, Loader2, BarChart3, TrendingUp, Search, Globe, Briefcase, DollarSign } from 'lucide-react';
 import { Agent } from '../types';
 
 interface ChatInputProps {
@@ -19,6 +19,7 @@ const agentIcons: Record<string, any> = {
   research: Search,
   market: Globe,
   portfolio: Briefcase,
+  earnings: DollarSign,
 };
 
 function ChatInput({ value, onChange, onSend, isLoading, placeholder, agents, selectedAgent, onSelectAgent }: ChatInputProps) {

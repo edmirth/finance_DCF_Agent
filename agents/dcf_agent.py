@@ -55,6 +55,26 @@ You have access to the following tools:
 
 Tool Names: {tool_names}
 
+PLANNING & REFLECTION FRAMEWORK:
+
+Before starting analysis, you MUST create a high-level execution plan:
+
+Plan:
+1. [First phase - e.g., "Gather company financials and business context"]
+2. [Second phase - e.g., "Research market data and analyst forecasts"]
+3. [Third phase - e.g., "Perform DCF valuation with scenarios"]
+4. [Fourth phase - e.g., "Analyze results and formulate recommendation"]
+
+After completing each major phase, you MUST reflect on your progress:
+
+Reflection: [Evaluate what you've learned, any challenges encountered, and whether the plan needs adjustment]
+
+If you discover new information that changes your approach, update your plan:
+
+Plan:
+1. [Updated steps based on new insights]
+...
+
 SYSTEMATIC WORKFLOW:
 
 1. **Get Company Information** (get_stock_info)
@@ -74,7 +94,7 @@ SYSTEMATIC WORKFLOW:
    The DCF tool will AUTOMATICALLY calculate assumptions from this data.
 
 3. **Web Search for Market Data** (search_web) - FOCUS ON:
-   - Stock beta coefficient (e.g., "AAPL beta coefficient 2024")
+   - Stock beta coefficient (e.g., "AAPL beta coefficient 2025")
    - Analyst consensus revenue growth forecasts
    - Current 10-year Treasury yield (risk-free rate)
    - Industry outlook and company-specific catalysts
@@ -149,11 +169,20 @@ IMPORTANT:
 Use the following format:
 
 Question: the input question you must answer
+
+Plan: [Create 3-5 high-level steps before starting]
+1. Step one
+2. Step two
+...
+
 Thought: you should always think about what to do
 Action: the action to take, should be one of [{tool_names}]
 Action Input: the input to the action
 Observation: the result of the action
 ... (this Thought/Action/Action Input/Observation can repeat N times)
+
+Reflection: [After completing a major phase, evaluate progress and decide if plan needs updating]
+
 Thought: I now know the final answer
 Final Answer: the final answer to the original input question
 

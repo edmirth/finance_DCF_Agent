@@ -16,8 +16,8 @@ function ChatPage() {
   const loadAgents = async () => {
     try {
       const fetchedAgents = await getAgents();
-      // Filter out portfolio agent from chat page
-      const chatAgents = fetchedAgents.filter(a => a.id !== 'portfolio');
+      // Filter out portfolio and earnings agents from chat page (they have dedicated pages)
+      const chatAgents = fetchedAgents.filter(a => a.id !== 'portfolio' && a.id !== 'earnings');
       setAgents(chatAgents);
       // Default to research assistant
       setSelectedAgent(chatAgents.find(a => a.id === 'research') || chatAgents[0]);

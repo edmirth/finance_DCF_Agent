@@ -54,13 +54,23 @@ export const streamMessage = async (
       throw new Error('No response body');
     }
 
+    // Persistent buffer to handle SSE frames split across chunk boundaries
+    let buffer = '';
+
     while (true) {
       const { done, value } = await reader.read();
 
       if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
+      // Append new chunk to buffer
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
+
+      // Split by newlines and process complete lines only
+      const lines = buffer.split('\n');
+
+      // Keep the last (potentially incomplete) line in buffer
+      buffer = lines.pop() || '';
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
@@ -68,14 +78,68 @@ export const streamMessage = async (
             const data = JSON.parse(line.slice(6));
             onMessage(data as StreamEvent);
           } catch (e) {
-            console.error('Failed to parse SSE data:', e);
+            console.error('Failed to parse SSE data:', e, 'Line:', line);
           }
         }
+      }
+    }
+
+    // Process any remaining data in buffer
+    if (buffer.trim().startsWith('data: ')) {
+      try {
+        const data = JSON.parse(buffer.trim().slice(6));
+        onMessage(data as StreamEvent);
+      } catch (e) {
+        console.error('Failed to parse final SSE data:', e);
       }
     }
   } catch (error: any) {
     onError(error.message || 'Failed to stream message');
   }
+};
+
+// Stock chart types
+export interface StockQuote {
+  symbol: string;
+  price: number;
+  changesPercentage: number;
+  change: number;
+  dayHigh: number;
+  dayLow: number;
+  yearHigh: number;
+  yearLow: number;
+  volume: number;
+  avgVolume: number;
+  marketCap: number;
+  open: number;
+  previousClose: number;
+}
+
+export interface ChartDataPoint {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface StockChartData {
+  ticker: string;
+  quote: StockQuote;
+  historical: ChartDataPoint[];
+}
+
+export type TimePeriod = '1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL';
+
+export const getStockChart = async (
+  ticker: string,
+  period: TimePeriod = '1M'
+): Promise<StockChartData> => {
+  const response = await api.get(`/stock-chart/${ticker}`, {
+    params: { period }
+  });
+  return response.data;
 };
 
 // Helper functions
@@ -86,6 +150,7 @@ const getAgentIcon = (agentId: string): string => {
     research: '🔍',
     market: '🌐',
     portfolio: '💼',
+    earnings: '💰',
   };
   return icons[agentId] || '🤖';
 };
@@ -97,6 +162,7 @@ const getAgentColor = (agentId: string): string => {
     research: 'bg-green-500',
     market: 'bg-orange-500',
     portfolio: 'bg-indigo-500',
+    earnings: 'bg-yellow-500',
   };
   return colors[agentId] || 'bg-gray-500';
 };

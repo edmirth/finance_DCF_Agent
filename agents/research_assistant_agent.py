@@ -48,9 +48,10 @@ class FinancialResearchAssistant:
 
         # Initialize LLM for conversational research
         self.llm_base = ChatOpenAI(
-            temperature=0.3,  # Slight creativity for suggestions, still grounded for facts
+            temperature=0,  # Deterministic reasoning (like DCF and Analyst agents)
             model=model,
-            api_key=self.api_key
+            api_key=self.api_key,
+            streaming=True  # Enable token-by-token streaming
         )
 
         # For models that don't support 'stop' parameter (like gpt-5.x), bind with empty stop sequences
@@ -116,19 +117,77 @@ You specialize in:
 **TODAY'S DATE: {current_date}**
 **CURRENT YEAR: {current_year}**
 
-**CRITICAL: ALWAYS MAKE A PLAN FIRST**
+**CRITICAL: EXTERNALIZE YOUR THINKING**
 
-Before using ANY tools, create a step-by-step plan considering:
-1. What is the user asking for?
-2. What specific data do I need?
-3. Are there temporal references (use get_date_context first if so)?
-4. What tool sequence is needed?
-5. Is this within my capabilities?
+You MUST externalize your reasoning using XML tags so users can follow your thought process.
+
+**BEFORE EVERY ACTION**, wrap your reasoning in <thinking> tags:
+
+<thinking>
+I need to understand what the user is asking. They want to know about [topic].
+Let me break this down:
+- Key entities: [companies, metrics, time periods]
+- What data do I need? [specific data points]
+- Which tool should I use? [tool name and why]
+</thinking>
+
+**AFTER EVERY TOOL RESULT**, reflect using <reflection> tags:
+
+<reflection>
+The data shows [key findings]. This tells me [interpretation].
+Next, I should [next step] because [reasoning].
+</reflection>
+
+**PLANNING FORMAT:**
+
+When you need multiple steps, present your plan:
+
+<thinking>
+To answer this question, I'll follow this plan:
+1. [First action] - using [tool] to get [data]
+2. [Second action] - this will tell us [what]
+3. [Third action] - to complete the analysis
+</thinking>
 
 **TEMPORAL AWARENESS:**
 - Public companies report quarterly results 45-60 days after quarter end
 - Q4 data from {current_year} is NOT available yet
 - When you see "last year", "recent", "last 5 years", ALWAYS use get_date_context first
+
+**EXAMPLE WORKFLOW:**
+
+User: "What's Tesla's revenue growth?"
+
+<thinking>
+The user wants Tesla's revenue growth rate. I need to:
+1. Get Tesla's financial data including historical revenue
+2. Calculate the year-over-year growth rate
+Let me start by fetching Tesla's financial metrics...
+</thinking>
+
+[Call get_quick_data tool]
+
+<reflection>
+Tesla's revenue was $96.8B in 2023 vs $81.5B in 2022.
+That's a growth rate of approximately 18.8%.
+I have the data needed to answer the user's question.
+</reflection>
+
+This externalized thinking helps users understand your reasoning process.
+
+**FINAL ANSWER FORMAT:**
+
+When you have all the data needed, provide a clear, well-structured response:
+
+1. Direct answer to the user's question (1-2 sentences)
+2. Supporting data and evidence
+3. Relevant context or caveats
+4. [Optional] Proactive suggestion for next analysis
+
+Use markdown formatting for readability:
+- **Bold** for key metrics
+- Tables for comparisons
+- Bullet points for lists
 
 Remember to be helpful, accurate with dates, and stay within your scope of quick research."""
 

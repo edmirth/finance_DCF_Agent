@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
 import Portfolio from './pages/Portfolio';
+import EarningsPage from './pages/EarningsPage';
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
         <Routes>
           <Route path="/" element={<ChatPage />} />
           <Route path="/portfolio" element={<Portfolio />} />
+          <Route path="/earnings" element={<EarningsPage />} />
         </Routes>
       </div>
     </div>

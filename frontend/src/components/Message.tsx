@@ -1,29 +1,68 @@
 import { Message, Agent } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { User, BarChart3, TrendingUp, Search, Globe } from 'lucide-react';
-import ThinkingSteps from './ThinkingSteps';
+import { User, BarChart3, TrendingUp, Search, Globe, Briefcase, DollarSign } from 'lucide-react';
+import StockChartCard from './StockChartCard';
+import { extractTicker } from '../utils/tickerDetection';
+import ReasoningDisplay from './ReasoningDisplay';
+import { useState } from 'react';
 
 const agentIcons: Record<string, any> = {
   dcf: BarChart3,
   analyst: TrendingUp,
   research: Search,
   market: Globe,
+  portfolio: Briefcase,
+  earnings: DollarSign,
 };
 
 interface MessageProps {
   message: Message;
   agent: Agent;
+  isStreaming?: boolean;
 }
 
-function MessageComponent({ message, agent }: MessageProps) {
+function MessageComponent({ message, agent, isStreaming = false }: MessageProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const [isReasoningCollapsed, setIsReasoningCollapsed] = useState(false);
 
   const AgentIcon = agentIcons[agent.id];
 
   // Don't render anything if message has no content
-  if (!message.content) return null;
+  if (!message.content && !message.thinkingSteps?.length) return null;
+
+  // Filter out ReAct format markers from displayed content
+  const cleanContent = (content: string): string => {
+    if (!content) return '';
+    // Remove ReAct format markers but keep the actual content
+    return content
+      .replace(/\*\*PLAN:\*\*[\s\S]*?(?=\n\n|\*\*|$)/g, '') // Remove **PLAN:** sections
+      .replace(/Plan:[\s\S]*?(?=\n\n|Thought:|$)/g, '') // Remove Plan: sections
+      .replace(/Thought:[\s\S]*?(?=\n\nAction:|$)/g, '') // Remove Thought: sections
+      .replace(/Reflection:[\s\S]*?(?=\n\n|$)/g, '') // Remove Reflection: sections
+      .replace(/Action:[\s\S]*?(?=\n\nAction Input:|$)/g, '') // Remove Action: lines
+      .replace(/Action Input:[\s\S]*?(?=\n\nObservation:|$)/g, '') // Remove Action Input: sections
+      .replace(/Observation:[\s\S]*?(?=\n\nThought:|$)/g, '') // Remove Observation: sections
+      .replace(/Final Answer:\s*/g, '') // Remove "Final Answer:" prefix
+      .trim();
+  };
+
+  const displayContent = isUser ? message.content : cleanContent(message.content);
+
+  // Use ticker from metadata (if available), otherwise extract from content as fallback
+  const ticker = !isUser && !isSystem
+    ? (message.ticker || extractTicker(message.content))
+    : null;
+
+  const handleCopyReasoning = () => {
+    if (!message.thinkingSteps) return;
+    let text = '=== AGENT REASONING ===\n\n';
+    message.thinkingSteps.forEach((step, i) => {
+      text += `${i + 1}. [${step.type}] ${step.content || step.tool || ''}\n`;
+    });
+    navigator.clipboard.writeText(text);
+  };
 
   // System messages (agent switches, notifications)
   if (isSystem) {
@@ -54,33 +93,37 @@ function MessageComponent({ message, agent }: MessageProps) {
           </span>
         </div>
 
-        <div
-          className={`px-5 py-3.5 rounded-3xl ${
-            isUser
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'bg-white border border-gray-100 text-gray-800 shadow-sm'
-          }`}
-        >
-          {isUser ? (
-            <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{message.content}</p>
-          ) : (
-            <>
-              <div className="markdown-content text-[15px] leading-relaxed overflow-x-auto">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-              </div>
-              {message.thinkingSteps && message.thinkingSteps.length > 0 && (
-                <details className="mt-4 pt-4 border-t border-gray-100">
-                  <summary className="cursor-pointer text-sm font-medium text-pink-600 hover:text-pink-700 mb-2">
-                    View agent reasoning ({message.thinkingSteps.length} steps)
-                  </summary>
-                  <div className="mt-3">
-                    <ThinkingSteps steps={message.thinkingSteps} />
-                  </div>
-                </details>
-              )}
-            </>
-          )}
-        </div>
+        {/* Reasoning Display - show BEFORE content for assistant messages */}
+        {!isUser && message.thinkingSteps && message.thinkingSteps.length > 0 && (
+          <div className="w-full mb-3">
+            <ReasoningDisplay
+              steps={message.thinkingSteps}
+              isStreaming={isStreaming}
+              isCollapsed={isReasoningCollapsed}
+              onToggleCollapse={() => setIsReasoningCollapsed(!isReasoningCollapsed)}
+              onCopy={handleCopyReasoning}
+            />
+          </div>
+        )}
+
+        {/* Stock Chart Card - show before message content for assistant messages */}
+        {ticker && !isUser && (
+          <div className="w-full mb-3">
+            <StockChartCard ticker={ticker} />
+          </div>
+        )}
+
+        {displayContent && (isUser ? (
+          <div className="px-5 py-3.5 rounded-3xl bg-blue-600 text-white shadow-sm">
+            <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{displayContent}</p>
+          </div>
+        ) : (
+          <div className="px-5 py-3.5 rounded-3xl bg-white border border-gray-100 text-gray-800 shadow-sm">
+            <div className="markdown-content text-[15px] leading-relaxed overflow-x-auto">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+            </div>
+          </div>
+        ))}
       </div>
 
       {isUser && (

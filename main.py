@@ -9,6 +9,7 @@ from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.research_assistant_agent import create_research_assistant, interactive_session
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
+from agents.earnings_agent import create_earnings_agent
 import argparse
 
 
@@ -39,6 +40,10 @@ Examples:
   # Financial Research Assistant (conversational, interactive)
   python main.py --mode research
 
+  # Earnings Analysis (fast earnings-focused research)
+  python main.py --mode earnings --ticker NVDA
+  python main.py --mode earnings --ticker AAPL --model gpt-4
+
   # Interactive mode (DCF and Analyst)
   python main.py --mode dcf --interactive
   python main.py --mode analyst --interactive
@@ -49,15 +54,16 @@ Modes:
   market    - Market analysis (indices, sectors, news, sentiment, regime classification)
   research  - Conversational research assistant (ask questions, get suggestions, deep-dive)
   portfolio - Portfolio analysis (metrics, diversification, tax optimization)
+  earnings  - Fast earnings-focused equity research (15 min) with quarterly trends and estimates
         """
     )
 
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["dcf", "analyst", "research", "market", "portfolio"],
+        choices=["dcf", "analyst", "research", "market", "portfolio", "earnings"],
         default="dcf",
-        help="Agent mode: 'dcf', 'analyst', 'research', 'market', or 'portfolio' (default: dcf)"
+        help="Agent mode: 'dcf', 'analyst', 'research', 'market', 'portfolio', or 'earnings' (default: dcf)"
     )
 
     parser.add_argument(
@@ -121,7 +127,7 @@ Modes:
             sys.exit(1)
         return
 
-    # Create agent based on mode (dcf or analyst)
+    # Create agent based on mode (dcf, analyst, or earnings)
     if args.mode == "dcf":
         print("Initializing DCF Analysis Agent...")
         try:
@@ -130,7 +136,7 @@ Modes:
         except Exception as e:
             print(f"Error initializing DCF agent: {e}")
             sys.exit(1)
-    else:  # analyst mode
+    elif args.mode == "analyst":
         print("Initializing Equity Analyst Agent...")
         try:
             agent = create_equity_analyst_agent(model=args.model)
@@ -138,6 +144,17 @@ Modes:
         except Exception as e:
             print(f"Error initializing equity analyst agent: {e}")
             sys.exit(1)
+    elif args.mode == "earnings":
+        print("Initializing Earnings Analyst Agent...")
+        try:
+            agent = create_earnings_agent(model=args.model)
+            print(f"Earnings Agent initialized with model: {args.model}\n")
+        except Exception as e:
+            print(f"Error initializing earnings agent: {e}")
+            sys.exit(1)
+    else:
+        print(f"Error: Unknown mode '{args.mode}'")
+        sys.exit(1)
 
     # Run based on mode
     if args.interactive:
@@ -158,8 +175,12 @@ def run_ticker_analysis(agent, ticker: str, mode: str):
 
     if mode == "dcf":
         result = agent.quick_dcf(ticker)
-    else:  # analyst mode
+    elif mode == "analyst":
         result = agent.research_report(ticker)
+    elif mode == "earnings":
+        result = agent.analyze(ticker)
+    else:
+        result = f"Error: Unknown mode '{mode}'"
 
     print(result)
 
@@ -175,7 +196,7 @@ def run_interactive_mode(agent, mode: str):
         print("  - 'Perform DCF analysis on AAPL'")
         print("  - 'What is the intrinsic value of TSLA?'")
         print("  - 'Analyze Microsoft using conservative assumptions'")
-    else:  # analyst mode
+    elif mode == "analyst":
         print("Equity Analyst Agent - Interactive Mode")
         print("=" * 80)
         print("\nAsk me to produce equity research reports!")
@@ -183,6 +204,14 @@ def run_interactive_mode(agent, mode: str):
         print("  - 'Produce an equity research report on AAPL'")
         print("  - 'Analyze Tesla's competitive position'")
         print("  - 'What is Microsoft's competitive moat?'")
+    elif mode == "earnings":
+        print("Earnings Analyst Agent - Interactive Mode")
+        print("=" * 80)
+        print("\nAsk me to analyze earnings for any stock!")
+        print("Examples:")
+        print("  - 'Analyze NVDA's latest earnings'")
+        print("  - 'What's Apple's earnings trend?'")
+        print("  - 'Evaluate Microsoft's forward earnings outlook'")
 
     print("\nType 'exit' or 'quit' to exit.\n")
 

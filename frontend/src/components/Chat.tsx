@@ -3,8 +3,7 @@ import { Message, Agent, ThinkingStep } from '../types';
 import { streamMessage } from '../api';
 import MessageComponent from './Message';
 import ChatInput from './ChatInput';
-import StatusIndicator from './StatusIndicator';
-import { Sparkles, BarChart3, TrendingUp, Search, Globe, Briefcase } from 'lucide-react';
+import { Sparkles, BarChart3, TrendingUp, Search, Globe, Briefcase, DollarSign } from 'lucide-react';
 
 interface ChatProps {
   agent: Agent;
@@ -18,39 +17,19 @@ const agentIcons: Record<string, any> = {
   research: Search,
   market: Globe,
   portfolio: Briefcase,
-};
-
-const getInitialStatus = (agentId: string): string => {
-  const statuses: Record<string, string> = {
-    dcf: 'Preparing DCF analysis...',
-    analyst: 'Initializing equity research...',
-    research: 'Looking up financial data...',
-    market: 'Fetching market data...',
-    portfolio: 'Analyzing portfolio...',
-  };
-  return statuses[agentId] || 'Processing...';
-};
-
-const getProcessingStatus = (agentId: string): string => {
-  const statuses: Record<string, string> = {
-    dcf: 'Calculating intrinsic value...',
-    analyst: 'Analyzing industry and competitors...',
-    research: 'Researching company information...',
-    market: 'Analyzing market conditions...',
-    portfolio: 'Calculating portfolio metrics...',
-  };
-  return statuses[agentId] || 'Processing...';
+  earnings: DollarSign,
 };
 
 function Chat({ agent, agents, onSelectAgent }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [currentStatus, setCurrentStatus] = useState('');
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionId = useRef(Math.random().toString(36).substring(7));
   const previousAgentId = useRef<string>(agent.id);
+  // Use ref to track current thinking steps to avoid stale closures
+  const thinkingStepsRef = useRef<ThinkingStep[]>([]);
 
   useEffect(() => {
     // Add system message when agent changes (only if actually changed and has messages)
@@ -87,8 +66,8 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
-    setCurrentStatus(getInitialStatus(agent.id));
     setThinkingSteps([]);
+    thinkingStepsRef.current = [];
 
     // Create placeholder for assistant message
     const assistantMessageId = (Date.now() + 1).toString();
@@ -113,9 +92,18 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
         },
         (event) => {
           if (event.type === 'start') {
-            setCurrentStatus(getProcessingStatus(agent.id));
+            // Agent started processing
+          } else if (event.type === 'ticker_metadata' && event.ticker) {
+            // Store ticker metadata in the assistant message
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? { ...msg, ticker: event.ticker }
+                  : msg
+              )
+            );
           } else if (event.type === 'thinking') {
-            setCurrentStatus(event.content || 'Processing...');
+            // Agent is thinking
           } else if (event.type === 'thought') {
             // Add thinking step
             const step: ThinkingStep = {
@@ -124,7 +112,11 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
               content: event.content,
               timestamp: new Date(),
             };
-            setThinkingSteps(prev => [...prev, step]);
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
           } else if (event.type === 'tool') {
             // Add tool usage step
             const step: ThinkingStep = {
@@ -134,8 +126,11 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
               input: event.input,
               timestamp: new Date(),
             };
-            setThinkingSteps(prev => [...prev, step]);
-            setCurrentStatus(`Using ${event.tool}...`);
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
           } else if (event.type === 'tool_result') {
             // Add tool result step
             const step: ThinkingStep = {
@@ -144,9 +139,204 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
               content: event.content,
               timestamp: new Date(),
             };
-            setThinkingSteps(prev => [...prev, step]);
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'phase_start') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'phase_start',
+              phase: event.phase as any,
+              content: event.content,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'search_query') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'search_query',
+              searchQuery: event.query,
+              content: event.query,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'source_review') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'source_review',
+              source: event.source,
+              content: event.source?.title || '',
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'agent_thought') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'agent_thought',
+              content: event.content,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'plan_created') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'plan_created',
+              plan: event.plan,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'plan_updated') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'plan_updated',
+              plan: event.plan,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'reflection') {
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'reflection',
+              content: event.content,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'thinking_start') {
+            // Start a new thinking block
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'thinking_start',
+              phase: (event.phase as any) || 'reasoning',
+              thinkingText: '',
+              isStreaming: true,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'thinking_chunk' && event.content) {
+            // Append to the current thinking block
+            setThinkingSteps(prev => {
+              const updated = [...prev];
+              // Find the most recent thinking_start step and append to its thinkingText
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].type === 'thinking_start' && updated[i].isStreaming) {
+                  updated[i] = {
+                    ...updated[i],
+                    thinkingText: (updated[i].thinkingText || '') + event.content,
+                  };
+                  break;
+                }
+              }
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'thinking_end') {
+            // Mark the thinking block as complete
+            setThinkingSteps(prev => {
+              const updated = [...prev];
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].type === 'thinking_start' && updated[i].isStreaming) {
+                  updated[i] = {
+                    ...updated[i],
+                    isStreaming: false,
+                  };
+                  break;
+                }
+              }
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'reflection_start') {
+            // Start a new reflection block
+            const step: ThinkingStep = {
+              id: Date.now().toString() + Math.random(),
+              type: 'reflection_start',
+              reflectionText: '',
+              isStreaming: true,
+              timestamp: new Date(),
+            };
+            setThinkingSteps(prev => {
+              const updated = [...prev, step];
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'reflection_chunk' && event.content) {
+            // Append to the current reflection block
+            setThinkingSteps(prev => {
+              const updated = [...prev];
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].type === 'reflection_start' && updated[i].isStreaming) {
+                  updated[i] = {
+                    ...updated[i],
+                    reflectionText: (updated[i].reflectionText || '') + event.content,
+                  };
+                  break;
+                }
+              }
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'reflection_end') {
+            // Mark the reflection block as complete
+            setThinkingSteps(prev => {
+              const updated = [...prev];
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].type === 'reflection_start' && updated[i].isStreaming) {
+                  updated[i] = {
+                    ...updated[i],
+                    isStreaming: false,
+                    content: updated[i].reflectionText, // Copy to content for backward compatibility
+                  };
+                  break;
+                }
+              }
+              thinkingStepsRef.current = updated;
+              return updated;
+            });
+          } else if (event.type === 'token_delta' && event.content) {
+            // Token-by-token streaming from LLM
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? { ...msg, content: msg.content + event.content }
+                  : msg
+              )
+            );
           } else if (event.type === 'content' && event.content) {
-            setCurrentStatus('Generating response...');
+            // Fallback for non-streaming (50-char chunks)
             setMessages(prev =>
               prev.map(msg =>
                 msg.id === assistantMessageId
@@ -159,12 +349,11 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
             setMessages(prev =>
               prev.map(msg =>
                 msg.id === assistantMessageId
-                  ? { ...msg, thinkingSteps: thinkingSteps }
+                  ? { ...msg, thinkingSteps: thinkingStepsRef.current }
                   : msg
               )
             );
             setIsLoading(false);
-            setCurrentStatus('');
             setThinkingSteps([]);
           } else if (event.type === 'error') {
             setMessages(prev =>
@@ -175,7 +364,6 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
               )
             );
             setIsLoading(false);
-            setCurrentStatus('');
             setThinkingSteps([]);
           }
         },
@@ -188,14 +376,12 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
             )
           );
           setIsLoading(false);
-          setCurrentStatus('');
           setThinkingSteps([]);
         }
       );
     } catch (error) {
       console.error('Error sending message:', error);
       setIsLoading(false);
-      setCurrentStatus('');
       setThinkingSteps([]);
     }
   };
@@ -326,12 +512,20 @@ function Chat({ agent, agents, onSelectAgent }: ChatProps) {
         <div className="flex-1 overflow-y-auto">
           <div className="min-h-full flex flex-col justify-end">
             <div className="w-full space-y-6 px-4 pt-8 pb-32">
-              {messages.map((message) => (
-                <MessageComponent key={message.id} message={message} agent={agent} />
+              {messages.map((message, index) => (
+                <MessageComponent
+                  key={message.id}
+                  message={{
+                    ...message,
+                    // Attach current thinking steps to the streaming message
+                    thinkingSteps: (isLoading && index === messages.length - 1)
+                      ? thinkingSteps
+                      : message.thinkingSteps
+                  }}
+                  agent={agent}
+                  isStreaming={isLoading && index === messages.length - 1}
+                />
               ))}
-
-              {/* Status Indicator */}
-              <StatusIndicator status={currentStatus} isVisible={isLoading} thinkingSteps={thinkingSteps} />
 
               <div ref={messagesEndRef} />
             </div>

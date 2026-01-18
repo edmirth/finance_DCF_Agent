@@ -92,7 +92,7 @@ class QuickFinancialDataTool(BaseTool):
                 return f"Error: Financial metrics unavailable for {ticker}. This company may lack complete financial data."
 
             # Build response
-            result = f"📊 **{stock_info.get('name', ticker)} ({ticker})**\n\n"
+            result = f"📊 **{stock_info.get('company_name', ticker)} ({ticker})**\n\n"
 
             # Helper to format large numbers
             def format_number(val):
@@ -109,7 +109,7 @@ class QuickFinancialDataTool(BaseTool):
             show_all = 'all' in requested_metrics
 
             if show_all or 'price' in requested_metrics:
-                result += f"**Current Price:** ${key_metrics.get('current_price', 'N/A')}\n"
+                result += f"**Current Price:** ${stock_info.get('current_price', 'N/A')}\n"
 
             if show_all or 'market_cap' in requested_metrics:
                 result += f"**Market Cap:** {format_number(stock_info.get('market_cap'))}\n"
@@ -152,29 +152,68 @@ class QuickFinancialDataTool(BaseTool):
             if show_all or 'margins' in requested_metrics:
                 revenue = key_metrics.get('latest_revenue', 0)
                 net_income = key_metrics.get('latest_net_income', 0)
+                ebit = key_metrics.get('latest_ebit', 0)
+                da = key_metrics.get('latest_depreciation_amortization', 0)
                 fcf = key_metrics.get('latest_fcf', 0)
+
                 if revenue > 0:
+                    # Calculate and display all margins
+                    result += f"**CURRENT MARGINS (Latest Year):**\n"
+
+                    # EBITDA Margin
+                    if ebit and da:
+                        ebitda = ebit + da
+                        ebitda_margin = (ebitda / revenue) * 100
+                        result += f"  EBITDA Margin: {ebitda_margin:.1f}%\n"
+
+                    # EBIT/Operating Margin
+                    if ebit:
+                        ebit_margin = (ebit / revenue) * 100
+                        result += f"  EBIT/Operating Margin: {ebit_margin:.1f}%\n"
+
+                    # Net Profit Margin
                     if net_income:
                         net_margin = (net_income / revenue) * 100
-                        result += f"**Net Profit Margin:** {net_margin:.1f}%\n"
-                    fcf_margin = (fcf / revenue) * 100
-                    result += f"**FCF Margin:** {fcf_margin:.1f}%\n"
+                        result += f"  Net Profit Margin: {net_margin:.1f}%\n"
 
-                # Historical margins (last 5 years)
+                    # FCF Margin
+                    if fcf:
+                        fcf_margin = (fcf / revenue) * 100
+                        result += f"  FCF Margin: {fcf_margin:.1f}%\n"
+
+                # Historical margins (last 5 years) - show all types
                 hist_revenue = key_metrics.get('historical_revenue', [])
                 hist_net_income = key_metrics.get('historical_net_income', [])
+                hist_ebit = key_metrics.get('historical_ebit', [])
                 hist_years = key_metrics.get('historical_years', [])
-                if len(hist_revenue) == len(hist_net_income) and len(hist_revenue) > 0:
-                    result += f"\n**Historical Net Profit Margins (5Y):**\n"
-                    for i, (rev, ni) in enumerate(zip(hist_revenue, hist_net_income)):
-                        if rev > 0:
-                            margin = (ni / rev) * 100
-                            # Use actual fiscal year if available, otherwise fallback to generic label
-                            if i < len(hist_years) and hist_years[i]:
-                                year_label = hist_years[i]
-                            else:
-                                year_label = f"Year {i+1}" if i > 0 else "Latest"
-                            result += f"  {year_label}: {margin:.1f}%\n"
+
+                if len(hist_revenue) > 0 and len(hist_revenue) == len(hist_net_income):
+                    result += f"\n**HISTORICAL MARGINS:**\n"
+
+                    for i in range(len(hist_revenue)):
+                        rev = hist_revenue[i]
+                        if rev <= 0:
+                            continue
+
+                        # Get year label
+                        if i < len(hist_years) and hist_years[i]:
+                            year_label = hist_years[i]
+                        else:
+                            year_label = f"Year {i+1}" if i > 0 else "Latest"
+
+                        margins_str = f"  {year_label}:"
+
+                        # EBIT margin (if available)
+                        if i < len(hist_ebit) and hist_ebit[i]:
+                            ebit_margin = (hist_ebit[i] / rev) * 100
+                            margins_str += f" EBIT: {ebit_margin:.1f}%,"
+
+                        # Net margin
+                        if i < len(hist_net_income) and hist_net_income[i]:
+                            net_margin = (hist_net_income[i] / rev) * 100
+                            margins_str += f" Net: {net_margin:.1f}%"
+
+                        result += margins_str + "\n"
 
             if show_all or 'growth' in requested_metrics:
                 # Calculate growth rates from historical data
@@ -434,11 +473,11 @@ class RecentNewsTool(BaseTool):
             # Get company info and financial context
             fetcher = FinancialDataFetcher()
             stock_info = fetcher.get_stock_info(ticker)
-            company_name = stock_info.get('name', ticker) if stock_info else ticker
+            company_name = stock_info.get('company_name', ticker) if stock_info else ticker
 
             # Get recent financial metrics for context
             metrics = fetcher.get_key_metrics(ticker)
-            current_price = stock_info.get('price', 0) if stock_info else 0
+            current_price = stock_info.get('current_price', 0) if stock_info else 0
             market_cap = stock_info.get('market_cap', 0) if stock_info else 0
 
             # Use Perplexity API to search for comprehensive news
@@ -931,7 +970,7 @@ def get_research_assistant_tools() -> List[BaseTool]:
     """Get all research assistant tools"""
     return [
         QuickFinancialDataTool(),
-        DateContextTool(),  # NEW: Temporal awareness for date queries
+        DateContextTool(),  # Temporal awareness for date queries
         FinancialCalculatorTool(),
         RecentNewsTool(),
         CompanyComparisonTool(),

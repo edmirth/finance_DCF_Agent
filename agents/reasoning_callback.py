@@ -3,10 +3,17 @@ Custom callback handler for displaying agent reasoning in a user-friendly way.
 
 Similar to how Perplexity and Claude show their thinking process.
 """
+import os
+import sys
 from typing import Any, Dict, List, Optional
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.schema import AgentAction, AgentFinish, LLMResult
 import logging
+import re
+
+# Add parent directory to path to import shared constants
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.constants import TOOL_DESCRIPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +135,7 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
         """
         super().__init__(verbose)
         self.on_reasoning_update = on_reasoning_update
+        self.plan_shown = False  # Track if we've shown the plan already
 
     def _emit_update(self, step_type: str, message: str):
         """
@@ -151,23 +159,8 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
 
         self.tool_inputs[tool_name] = tool_input
 
-        # Create human-friendly description of what we're doing
-        friendly_descriptions = {
-            'get_quick_data': '📊 Fetching financial metrics',
-            'get_stock_info': 'ℹ️  Getting company information',
-            'get_financial_metrics': '📈 Retrieving historical financials',
-            'search_web': '🌐 Searching the web',
-            'perform_dcf_analysis': '🧮 Running DCF valuation model',
-            'calculate': '🔢 Performing calculation',
-            'get_recent_news': '📰 Fetching recent news',
-            'compare_companies': '⚖️  Comparing companies',
-            'analyze_industry': '🏭 Analyzing industry structure',
-            'analyze_competitors': '🥊 Analyzing competitive landscape',
-            'analyze_moat': '🏰 Evaluating competitive moat',
-            'analyze_management': '👔 Assessing management quality',
-        }
-
-        description = friendly_descriptions.get(tool_name, f'🔍 Using {tool_name}')
+        # Get human-friendly description from shared constants
+        description = TOOL_DESCRIPTIONS.get(tool_name, f'🔍 Using {tool_name}')
 
         msg = f"\n{description}"
         if isinstance(tool_input, dict):
@@ -183,3 +176,93 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
     def on_agent_finish(self, finish: AgentFinish, **kwargs: Any) -> Any:
         """Override to use streaming updates."""
         self._emit_update("conclusion", "\n📊 **Answer:**\n")
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> Any:
+        """
+        Capture and display plan, thoughts, and reflections from LLM output.
+
+        This method extracts structured reasoning from the LLM's text response.
+        """
+        # Get the LLM's text output
+        if not response.generations or not response.generations[0]:
+            return
+
+        llm_output = response.generations[0][0].text
+
+        # Extract and display plan (only once at the beginning)
+        plan = self._extract_plan(llm_output)
+        if plan and not self.plan_shown:
+            self._display_plan(plan)
+            self.plan_shown = True
+
+        # Extract and display reflection (after each tool call)
+        reflection = self._extract_reflection(llm_output)
+        if reflection:
+            self._display_reflection(reflection)
+
+    def _extract_plan(self, text: str) -> Optional[List[str]]:
+        """
+        Extract numbered plan steps from LLM output.
+
+        Looks for "**PLAN:**" header followed by numbered items.
+        Returns list of plan steps if found, None otherwise.
+        """
+        # Look for "PLAN:" or "Plan:" header (with or without asterisks)
+        plan_match = re.search(r'\*\*PLAN:\*\*|Plan:', text, re.IGNORECASE)
+        if not plan_match:
+            return None
+
+        # Extract numbered items (1. 2. 3. etc.) from after the PLAN header
+        plan_section = text[plan_match.end():]
+
+        # Match numbered items, handling multi-line content
+        steps = re.findall(r'^\s*(\d+)\.\s*(.+?)(?=\n\s*\d+\.|$)', plan_section, re.MULTILINE | re.DOTALL)
+
+        # Require minimum 2 steps for a valid plan
+        if len(steps) >= 2:
+            return [step[1].strip() for step in steps]
+        return None
+
+    def _display_plan(self, steps: List[str]):
+        """
+        Display the agent's plan in a clean format.
+
+        Shows numbered steps with a header.
+        """
+        if not self.verbose:
+            return
+
+        msg = "\n📋 **PLAN:**\n"
+        for i, step in enumerate(steps, 1):
+            msg += f"   {i}. {step}\n"
+        msg += "\n"
+
+        self._emit_update("planning", msg)
+
+    def _extract_reflection(self, text: str) -> Optional[str]:
+        """
+        Extract reflection from LLM output.
+
+        Looks for "Reflection:" followed by the reflection text.
+        Returns cleaned reflection text if found, None otherwise.
+        """
+        # Match "Reflection:" followed by text until double newline or next major section
+        match = re.search(r'Reflection:\s*(.+?)(?=\n\n|Action:|$)', text, re.DOTALL)
+        return match.group(1).strip() if match else None
+
+    def _display_reflection(self, reflection: str):
+        """
+        Display agent's reflection after a tool call.
+
+        Shows what the agent learned and what it plans to do next.
+        """
+        if not self.verbose:
+            return
+
+        msg = f"\n💭 **REFLECTION:** {reflection}\n"
+        self._emit_update("reflection", msg)
+
+    def reset(self):
+        """Reset the callback state for a new conversation."""
+        super().reset()
+        self.plan_shown = False  # Reset plan display flag

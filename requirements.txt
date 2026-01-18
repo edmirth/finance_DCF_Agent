@@ -2,11 +2,8 @@ langchain>=0.3.0
 langchain-openai>=0.3.0
 langchain-community>=0.3.0
 langchain-core>=0.3.0
+langgraph>=0.2.0
 openai>=1.7.1
 python-dotenv==1.0.0
 requests==2.31.0
 numpy==1.26.2
-
-# Note: langgraph has version conflicts with current langchain versions
-# LangGraph equity analyst code is in equity_analyst_graph.py but not integrated
-# See LANGGRAPH_GUIDE.md for details
