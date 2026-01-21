@@ -1,9 +1,10 @@
 """
-Financial Data Fetcher using Financial Datasets AI API
+Financial Data Fetcher using Financial Datasets AI API and FMP API
 """
 import requests
 import os
 import time
+import threading
 from typing import Dict, Optional, List
 import logging
 
@@ -11,15 +12,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# FMP API Configuration
+FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+
+
 class FinancialDataFetcher:
     """Fetches financial data for DCF analysis using financialdatasets.ai API
 
     Implements singleton pattern to share cache across all instances.
+    Thread-safe cache operations for concurrent access.
     """
 
     BASE_URL = "https://api.financialdatasets.ai"
     _instance = None
     _shared_cache = {}
+    _cache_lock = threading.RLock()  # Bug #14 Fix: Thread-safe cache access
 
     def __new__(cls, api_key: Optional[str] = None):
         """Singleton pattern to ensure cache is shared across all instances"""
@@ -47,31 +54,39 @@ class FinancialDataFetcher:
             "X-API-KEY": self.api_key,
             "Content-Type": "application/json"
         }
+
+        # FMP API key (optional, for DCF comparison)
+        self.fmp_api_key = os.getenv("FMP_API_KEY")
+        if not self.fmp_api_key:
+            logger.warning("FMP_API_KEY not set. FMP DCF comparison features will be unavailable.")
+
         # Use class-level shared cache instead of instance cache
         self.cache = self._shared_cache
         self.cache_ttl = 900  # 15 minutes TTL for financial data
         self._initialized = True
 
     def _get_from_cache(self, cache_key: str) -> Optional[Dict]:
-        """Retrieve data from cache if valid"""
-        if cache_key in self.cache:
-            cached_entry = self.cache[cache_key]
-            if time.time() - cached_entry['timestamp'] < self.cache_ttl:
-                logger.info(f"Cache hit for {cache_key}")
-                return cached_entry['data']
-            else:
-                # Cache expired, remove it
-                logger.info(f"Cache expired for {cache_key}")
-                del self.cache[cache_key]
+        """Retrieve data from cache if valid (thread-safe)"""
+        with self._cache_lock:  # Bug #14 Fix: Thread-safe read
+            if cache_key in self.cache:
+                cached_entry = self.cache[cache_key]
+                if time.time() - cached_entry['timestamp'] < self.cache_ttl:
+                    logger.info(f"Cache hit for {cache_key}")
+                    return cached_entry['data']
+                else:
+                    # Cache expired, remove it
+                    logger.info(f"Cache expired for {cache_key}")
+                    del self.cache[cache_key]
         return None
 
     def _save_to_cache(self, cache_key: str, data: Dict) -> None:
-        """Save data to cache with timestamp"""
-        self.cache[cache_key] = {
-            'data': data,
-            'timestamp': time.time()
-        }
-        logger.info(f"Cached {cache_key}")
+        """Save data to cache with timestamp (thread-safe)"""
+        with self._cache_lock:  # Bug #14 Fix: Thread-safe write
+            self.cache[cache_key] = {
+                'data': data,
+                'timestamp': time.time()
+            }
+            logger.info(f"Cached {cache_key}")
 
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """Make API GET request with error handling"""
@@ -547,3 +562,178 @@ class FinancialDataFetcher:
 
         logger.info(f"Diversified {len(results)} results to {len(diverse_results)} evenly distributed stocks")
         return diverse_results
+
+    # =========================================================================
+    # FMP DCF API Methods (for cross-validation and levered DCF)
+    # =========================================================================
+
+    def _make_fmp_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """Make FMP API request with error handling"""
+        if not self.fmp_api_key:
+            logger.error("FMP API key not configured. Cannot make FMP requests.")
+            return None
+
+        url = f"{FMP_BASE_URL}{endpoint}"
+        if params is None:
+            params = {}
+        params["apikey"] = self.fmp_api_key
+
+        try:
+            logger.info(f"Making FMP request to {endpoint}")
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            # FMP returns list for most endpoints
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]
+            elif isinstance(data, dict):
+                return data
+            else:
+                logger.warning(f"Empty response from FMP for {endpoint}")
+                return None
+
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 401:
+                logger.error("Invalid FMP API key")
+            elif response.status_code == 403:
+                logger.error("FMP API endpoint requires higher subscription tier")
+            else:
+                logger.error(f"FMP HTTP error {response.status_code}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error making FMP request to {endpoint}: {e}")
+            return None
+
+    def get_fmp_dcf(self, ticker: str) -> Dict:
+        """
+        Fetch FMP's pre-calculated DCF value (standard unlevered DCF).
+
+        Args:
+            ticker: Stock ticker symbol
+
+        Returns:
+            Dict with dcf, stock_price, date fields
+        """
+        cache_key = f"fmp_dcf_{ticker.upper()}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+
+        data = self._make_fmp_request("/discounted-cash-flow", {"symbol": ticker})
+
+        if data:
+            result = {
+                "ticker": ticker,
+                "dcf_value": data.get("dcf", 0),
+                "stock_price": data.get("Stock Price", data.get("stockPrice", 0)),
+                "date": data.get("date", ""),
+            }
+            self._save_to_cache(cache_key, result)
+            logger.info(f"FMP DCF for {ticker}: ${result['dcf_value']:.2f}")
+            return result
+
+        return {"ticker": ticker, "dcf_value": None, "error": "Could not fetch FMP DCF"}
+
+    def get_fmp_levered_dcf(self, ticker: str) -> Dict:
+        """
+        Fetch FMP's levered DCF (post-debt valuation, FCFE-based).
+
+        The levered DCF accounts for debt by:
+        - Discounting Free Cash Flow to Equity (after debt payments)
+        - Using Cost of Equity as discount rate (not WACC)
+
+        This is more appropriate for highly leveraged companies.
+
+        Args:
+            ticker: Stock ticker symbol
+
+        Returns:
+            Dict with levered_dcf, stock_price, date fields
+        """
+        cache_key = f"fmp_levered_dcf_{ticker.upper()}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+
+        data = self._make_fmp_request("/levered-discounted-cash-flow", {"symbol": ticker})
+
+        if data:
+            result = {
+                "ticker": ticker,
+                "levered_dcf_value": data.get("dcf", 0),
+                "stock_price": data.get("Stock Price", data.get("stockPrice", 0)),
+                "date": data.get("date", ""),
+            }
+            self._save_to_cache(cache_key, result)
+            logger.info(f"FMP Levered DCF for {ticker}: ${result['levered_dcf_value']:.2f}")
+            return result
+
+        return {"ticker": ticker, "levered_dcf_value": None, "error": "Could not fetch FMP Levered DCF"}
+
+    def get_fmp_custom_dcf(self, ticker: str, assumptions: Dict) -> Dict:
+        """
+        Run custom DCF with specified assumptions via FMP's Custom DCF Advanced API.
+
+        This allows sending our assumptions to FMP for an independent calculation
+        to validate our internal DCF implementation.
+
+        Args:
+            ticker: Stock ticker symbol
+            assumptions: Dict with DCF parameters:
+                - revenueGrowthPct: Revenue growth rate (e.g., 0.10 for 10%)
+                - ebitdaPct: EBITDA margin (e.g., 0.25 for 25%)
+                - depreciationAndAmortizationPct: D&A as % of revenue
+                - capitalExpenditurePct: CapEx as % of revenue
+                - taxRate: Tax rate (e.g., 0.21 for 21%)
+                - longTermGrowthRate: Terminal growth rate
+                - riskFreeRate: Risk-free rate
+                - marketRiskPremium: Market risk premium
+                - beta: Stock beta
+                - costOfDebt: Cost of debt
+
+        Returns:
+            Dict with custom DCF results
+        """
+        cache_key = f"fmp_custom_dcf_{ticker.upper()}_{hash(frozenset(assumptions.items()))}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+
+        # Build params from assumptions
+        params = {"symbol": ticker}
+
+        # Map our assumption names to FMP parameter names
+        param_mapping = {
+            "revenue_growth_rate": "revenueGrowthPct",
+            "ebitda_margin": "ebitdaPct",
+            "depreciation_to_revenue": "depreciationAndAmortizationPct",
+            "capex_to_revenue": "capitalExpenditurePct",
+            "tax_rate": "taxRate",
+            "terminal_growth_rate": "longTermGrowthRate",
+            "risk_free_rate": "riskFreeRate",
+            "market_risk_premium": "marketRiskPremium",
+            "beta": "beta",
+            "cost_of_debt": "costOfDebt",
+        }
+
+        for our_key, fmp_key in param_mapping.items():
+            if our_key in assumptions and assumptions[our_key] is not None:
+                params[fmp_key] = assumptions[our_key]
+
+        data = self._make_fmp_request("/custom-discounted-cash-flow", params)
+
+        if data:
+            result = {
+                "ticker": ticker,
+                "custom_dcf_value": data.get("dcf", data.get("equityValuePerShare", 0)),
+                "enterprise_value": data.get("enterpriseValue", 0),
+                "equity_value": data.get("equityValue", 0),
+                "terminal_value": data.get("terminalValue", 0),
+                "assumptions_used": assumptions,
+            }
+            self._save_to_cache(cache_key, result)
+            logger.info(f"FMP Custom DCF for {ticker}: ${result['custom_dcf_value']:.2f}")
+            return result
+
+        return {"ticker": ticker, "custom_dcf_value": None, "error": "Could not fetch FMP Custom DCF"}
