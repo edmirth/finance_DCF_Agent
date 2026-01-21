@@ -10,6 +10,7 @@ from agents.research_assistant_agent import create_research_assistant, interacti
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
 from agents.earnings_agent import create_earnings_agent
+from agents.dcf_finrobot_agent import create_dcf_finrobot_agent
 import argparse
 
 
@@ -44,6 +45,10 @@ Examples:
   python main.py --mode earnings --ticker NVDA
   python main.py --mode earnings --ticker AAPL --model gpt-4
 
+  # DCF FinRobot (LangGraph-based DCF analysis)
+  python main.py --mode finrobot --ticker AAPL
+  python main.py --mode finrobot --ticker MSFT --model gpt-4o
+
   # Interactive mode (DCF and Analyst)
   python main.py --mode dcf --interactive
   python main.py --mode analyst --interactive
@@ -55,15 +60,16 @@ Modes:
   research  - Conversational research assistant (ask questions, get suggestions, deep-dive)
   portfolio - Portfolio analysis (metrics, diversification, tax optimization)
   earnings  - Fast earnings-focused equity research (15 min) with quarterly trends and estimates
+  finrobot  - LangGraph-based DCF valuation with Financial CoT framework (isolated agent)
         """
     )
 
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["dcf", "analyst", "research", "market", "portfolio", "earnings"],
+        choices=["dcf", "analyst", "research", "market", "portfolio", "earnings", "finrobot"],
         default="dcf",
-        help="Agent mode: 'dcf', 'analyst', 'research', 'market', 'portfolio', or 'earnings' (default: dcf)"
+        help="Agent mode: 'dcf', 'analyst', 'research', 'market', 'portfolio', 'earnings', or 'finrobot' (default: dcf)"
     )
 
     parser.add_argument(
@@ -152,6 +158,14 @@ Modes:
         except Exception as e:
             print(f"Error initializing earnings agent: {e}")
             sys.exit(1)
+    elif args.mode == "finrobot":
+        print("Initializing DCF FinRobot Agent (LangGraph)...")
+        try:
+            agent = create_dcf_finrobot_agent(model=args.model)
+            print(f"DCF FinRobot Agent initialized with model: {args.model}\n")
+        except Exception as e:
+            print(f"Error initializing DCF FinRobot agent: {e}")
+            sys.exit(1)
     else:
         print(f"Error: Unknown mode '{args.mode}'")
         sys.exit(1)
@@ -179,6 +193,8 @@ def run_ticker_analysis(agent, ticker: str, mode: str):
         result = agent.research_report(ticker)
     elif mode == "earnings":
         result = agent.analyze(ticker)
+    elif mode == "finrobot":
+        result = agent.quick_dcf(ticker)
     else:
         result = f"Error: Unknown mode '{mode}'"
 
@@ -212,6 +228,14 @@ def run_interactive_mode(agent, mode: str):
         print("  - 'Analyze NVDA's latest earnings'")
         print("  - 'What's Apple's earnings trend?'")
         print("  - 'Evaluate Microsoft's forward earnings outlook'")
+    elif mode == "finrobot":
+        print("DCF FinRobot Agent - Interactive Mode")
+        print("=" * 80)
+        print("\nLangGraph-based DCF valuation with Financial CoT framework!")
+        print("Examples:")
+        print("  - 'Analyze AAPL'")
+        print("  - 'DCF valuation for MSFT'")
+        print("  - 'What is NVDA worth?'")
 
     print("\nType 'exit' or 'quit' to exit.\n")
 

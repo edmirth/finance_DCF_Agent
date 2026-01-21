@@ -22,8 +22,8 @@ class IndustryAnalysisInput(BaseModel):
 class CompetitorAnalysisInput(BaseModel):
     """Input for competitor analysis tool"""
     company: str = Field(description="Company name (e.g., Apple Inc)")
-    ticker: str = Field(description="Stock ticker symbol (e.g., AAPL)")
-    industry: str = Field(description="Industry (e.g., Technology Hardware, Storage & Peripherals)")
+    ticker: str = Field(default=None, description="Stock ticker symbol (e.g., AAPL)")
+    industry: str = Field(default=None, description="Industry (e.g., Technology Hardware, Storage & Peripherals)")
 
 
 class MoatAnalysisInput(BaseModel):
@@ -124,12 +124,34 @@ class CompetitorAnalysisTool(BaseTool):
     - Financial metrics comparison (margins, growth, ROIC)
     - Relative valuation multiples
 
-    Use this to understand how the company stacks up against peers."""
+    Use this to understand how the company stacks up against peers.
+
+    Input can be provided as separate parameters or as a JSON string with keys: company, ticker, industry."""
     args_schema: Type[BaseModel] = CompetitorAnalysisInput
 
-    def _run(self, company: str, ticker: str, industry: str) -> str:
-        """Analyze competitors"""
+    def _run(self, company: str, ticker: str = None, industry: str = None) -> str:
+        """Analyze competitors - handles both structured and JSON string inputs"""
         try:
+            # Handle case where all params are passed as JSON string in 'company' field
+            if ticker is None or industry is None:
+                import json
+                import re
+                try:
+                    # Try to parse company as JSON
+                    if isinstance(company, str) and ('{' in company or company.startswith('{')):
+                        # Clean up potential markdown or extra characters
+                        json_str = re.sub(r'```json\s*|\s*```', '', company)
+                        parsed = json.loads(json_str)
+                        company = parsed.get('company', company)
+                        ticker = parsed.get('ticker', ticker)
+                        industry = parsed.get('industry', industry)
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            # If still missing required fields, return error
+            if not ticker or not industry:
+                return f"Error: Missing required parameters. Please provide company, ticker, and industry."
+
             api_key = os.getenv("PERPLEXITY_API_KEY")
             if not api_key:
                 return "Error: PERPLEXITY_API_KEY not found. Cannot perform competitor analysis."
@@ -187,7 +209,7 @@ Provide specific numbers and recent data with sources."""
             logger.error(f"Error in competitor analysis: {e}")
             return f"Error performing competitor analysis: {str(e)}"
 
-    async def _arun(self, company: str, ticker: str, industry: str) -> str:
+    async def _arun(self, company: str, ticker: str = None, industry: str = None) -> str:
         return self._run(company, ticker, industry)
 
 
