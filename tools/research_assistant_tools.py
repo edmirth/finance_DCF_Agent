@@ -10,6 +10,7 @@ These tools enable interactive, conversational financial analysis with:
 """
 
 import os
+import asyncio
 import logging
 import requests
 from typing import Optional, List, Dict, Any
@@ -92,7 +93,7 @@ class QuickFinancialDataTool(BaseTool):
                 return f"Error: Financial metrics unavailable for {ticker}. This company may lack complete financial data."
 
             # Build response
-            result = f"📊 **{stock_info.get('company_name', ticker)} ({ticker})**\n\n"
+            result = f"**{stock_info.get('company_name', ticker)} ({ticker})**\n\n"
 
             # Helper to format large numbers
             def format_number(val):
@@ -139,9 +140,9 @@ class QuickFinancialDataTool(BaseTool):
                     result += f"**Shares Outstanding:** {shares/1e9:.2f}B\n"
 
             if show_all or 'pe_ratio' in requested_metrics:
-                price = stock_info.get('current_price', 0)
-                net_income = key_metrics.get('latest_net_income', 0)
-                shares = key_metrics.get('shares_outstanding', 1)
+                price = stock_info.get('current_price') or 0
+                net_income = key_metrics.get('latest_net_income') or 0
+                shares = key_metrics.get('shares_outstanding') or 1  # Use 'or' to handle both None and 0
                 if price > 0 and net_income > 0 and shares > 0:
                     eps = net_income / shares
                     pe = price / eps
@@ -220,13 +221,19 @@ class QuickFinancialDataTool(BaseTool):
                 hist_revenue = key_metrics.get('historical_revenue', [])
                 hist_fcf = key_metrics.get('historical_fcf', [])
 
-                if len(hist_revenue) >= 2:
+                # Revenue CAGR - requires both endpoints to be positive
+                if len(hist_revenue) >= 2 and hist_revenue[0] > 0 and hist_revenue[-1] > 0:
                     rev_cagr = ((hist_revenue[0] / hist_revenue[-1]) ** (1 / (len(hist_revenue) - 1)) - 1) * 100
                     result += f"**Revenue CAGR ({len(hist_revenue)-1}Y):** {rev_cagr:.1f}%\n"
+                elif len(hist_revenue) >= 2:
+                    result += f"**Revenue CAGR:** N/A (negative or zero values in history)\n"
 
-                if len(hist_fcf) >= 2 and hist_fcf[-1] > 0:
+                # FCF CAGR - requires both endpoints to be positive
+                if len(hist_fcf) >= 2 and hist_fcf[0] > 0 and hist_fcf[-1] > 0:
                     fcf_cagr = ((hist_fcf[0] / hist_fcf[-1]) ** (1 / (len(hist_fcf) - 1)) - 1) * 100
                     result += f"**FCF CAGR ({len(hist_fcf)-1}Y):** {fcf_cagr:.1f}%\n"
+                elif len(hist_fcf) >= 2:
+                    result += f"**FCF CAGR:** N/A (negative or zero values in history)\n"
 
             return result.strip()
 
@@ -234,7 +241,8 @@ class QuickFinancialDataTool(BaseTool):
             return f"Error retrieving quick data for {ticker}: {str(e)}"
 
     async def _arun(self, ticker: str, metrics: str) -> str:
-        return self._run(ticker, metrics)
+        # Run sync code in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(self._run, ticker, metrics)
 
 
 class CalculatorInput(BaseModel):
@@ -278,9 +286,24 @@ class FinancialCalculatorTool(BaseTool):
             # Extract ticker from calculation if not provided
             if ticker is None:
                 import re
-                ticker_match = re.search(r'\b([A-Z]{1,5})\b', calculation)
-                if ticker_match:
-                    ticker = ticker_match.group(1)
+                # Common metric abbreviations to exclude from ticker detection
+                metric_abbreviations = {
+                    'P', 'E', 'S', 'B', 'V',  # Single letters from P/E, P/S, P/B, EV
+                    'PE', 'PS', 'PB', 'EV', 'FCF',  # Common ratio abbreviations
+                    'ROE', 'ROA', 'ROI', 'ROIC',  # Return metrics
+                    'EPS', 'BPS', 'DPS',  # Per-share metrics
+                    'EBIT', 'EBITDA', 'D', 'A',  # Earnings metrics
+                    'CAGR', 'YOY', 'QOQ', 'MOM',  # Growth metrics
+                    'PEG', 'NAV', 'DCF', 'NPV', 'IRR',  # Valuation metrics
+                    'FOR', 'THE', 'AND', 'FROM', 'TO', 'OF', 'IN', 'IS', 'AT'  # Common words
+                }
+                # Find all potential tickers (min 2 chars - real tickers are 2-5 chars)
+                # and filter out metric abbreviations
+                potential_tickers = re.findall(r'\b([A-Z]{2,5})\b', calculation)
+                for match in potential_tickers:
+                    if match not in metric_abbreviations:
+                        ticker = match
+                        break
 
             # CAGR calculation (no ticker needed)
             if 'cagr' in calc_lower or 'compound' in calc_lower:
@@ -388,15 +411,16 @@ class FinancialCalculatorTool(BaseTool):
                 # PEG Ratio (P/E to Growth)
                 if 'peg' in calc_lower:
                     hist_revenue = metrics.get('historical_revenue', [])
-                    if len(hist_revenue) >= 2 and net_income > 0 and shares > 0:
+                    # Validate both endpoints are positive before calculating growth
+                    if len(hist_revenue) >= 2 and hist_revenue[0] > 0 and hist_revenue[-1] > 0 and net_income > 0 and shares > 0:
                         eps = net_income / shares
                         pe = price / eps if eps > 0 else 0
-                        # Calculate revenue growth rate
+                        # Calculate revenue growth rate (safe - both endpoints validated positive)
                         growth = ((hist_revenue[0] / hist_revenue[-1]) ** (1 / (len(hist_revenue) - 1)) - 1) * 100
                         peg = pe / growth if growth > 0 else None
                         if peg:
                             return f"**PEG Ratio for {ticker}:**\n- P/E: {pe:.2f}x\n- Revenue Growth: {growth:.1f}%\n- **PEG: {peg:.2f}**\n(PEG < 1 may indicate undervaluation relative to growth)"
-                    return f"Cannot calculate PEG for {ticker} (missing earnings or growth data)"
+                    return f"Cannot calculate PEG for {ticker} (missing earnings or growth data, or negative revenue history)"
 
                 # ROA (Return on Assets)
                 if 'roa' in calc_lower or 'return on assets' in calc_lower:
@@ -436,7 +460,8 @@ class FinancialCalculatorTool(BaseTool):
             return f"Error in calculation: {str(e)}"
 
     async def _arun(self, calculation: str, ticker: Optional[str] = None) -> str:
-        return self._run(calculation, ticker)
+        # Run sync code in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(self._run, calculation, ticker)
 
 
 class NewsInput(BaseModel):
@@ -477,8 +502,9 @@ class RecentNewsTool(BaseTool):
 
             # Get recent financial metrics for context
             metrics = fetcher.get_key_metrics(ticker)
-            current_price = stock_info.get('current_price', 0) if stock_info else 0
-            market_cap = stock_info.get('market_cap', 0) if stock_info else 0
+            # Use 'or 0' to handle None values (get() returns None if key exists with None value)
+            current_price = (stock_info.get('current_price') or 0) if stock_info else 0
+            market_cap = (stock_info.get('market_cap') or 0) if stock_info else 0
 
             # Use Perplexity API to search for comprehensive news
             api_key = os.getenv("PERPLEXITY_API_KEY")
@@ -559,7 +585,7 @@ Provide a detailed report with actual headlines, dates, summaries, and business 
                 citations = result.get('citations', [])
 
                 # Build comprehensive response with context
-                output = f"# 📰 News & Developments: {company_name} ({ticker})\n\n"
+                output = f"# News & Developments: {company_name} ({ticker})\n\n"
 
                 # Add current snapshot
                 output += f"**Current Snapshot** (as of latest data):\n"
@@ -576,7 +602,7 @@ Provide a detailed report with actual headlines, dates, summaries, and business 
 
                 # Add sources at the end
                 if citations:
-                    output += "\n\n---\n\n## 📚 Sources\n\n"
+                    output += "\n\n---\n\n## Sources\n\n"
                     for citation in citations:
                         output += f"- {citation}\n"
 
@@ -588,7 +614,8 @@ Provide a detailed report with actual headlines, dates, summaries, and business 
             return f"Error getting news for {ticker}: {str(e)}"
 
     async def _arun(self, ticker: str, query: Optional[str] = None) -> str:
-        return self._run(ticker, query)
+        # Run sync code in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(self._run, ticker, query)
 
 
 class ComparisonInput(BaseModel):
@@ -656,54 +683,61 @@ class CompanyComparisonTool(BaseTool):
             name1 = info1.get('company_name', ticker1)
             name2 = info2.get('company_name', ticker2)
 
-            result = f"📊 **Company Comparison: {name1} vs {name2}**\n\n"
+            result = f"**Company Comparison: {name1} vs {name2}**\n\n"
 
             categories = [m.strip().lower() for m in metrics.split(',')]
             show_all = 'all' in categories
 
+            # Initialize variables that may be used in OVERALL INSIGHT section
+            # These will be set in their respective category blocks if those categories are requested
+            pe1, pe2 = None, None
+            fcf_margin1, fcf_margin2 = 0, 0
+            rev_cagr1, rev_cagr2 = 0, 0
+
             # Extract common metrics used across multiple sections
-            mcap1 = info1.get('market_cap', 0)
-            mcap2 = info2.get('market_cap', 0)
-            rev1 = metrics1.get('latest_revenue', 0)
-            rev2 = metrics2.get('latest_revenue', 0)
+            # Use 'or 0' to handle both None values and missing keys
+            mcap1 = info1.get('market_cap') or 0
+            mcap2 = info2.get('market_cap') or 0
+            rev1 = metrics1.get('latest_revenue') or 0
+            rev2 = metrics2.get('latest_revenue') or 0
 
             # Size comparison with winner
             if show_all or 'size' in categories:
 
                 result += "**SIZE & SCALE:**\n"
                 result += f"- Market Cap: ${mcap1/1e9:.1f}B vs ${mcap2/1e9:.1f}B"
-                if mcap1 > mcap2:
+                if mcap1 > 0 and mcap2 > 0 and mcap1 > mcap2:
                     result += f" → **{ticker1} larger** ({mcap1/mcap2:.1f}x)\n"
-                else:
+                elif mcap1 > 0 and mcap2 > 0:
                     result += f" → **{ticker2} larger** ({mcap2/mcap1:.1f}x)\n"
 
                 result += f"- Revenue (TTM): ${rev1/1e9:.1f}B vs ${rev2/1e9:.1f}B"
-                if rev1 > rev2:
+                if rev1 > 0 and rev2 > 0 and rev1 > rev2:
                     result += f" → **{ticker1} larger** ({rev1/rev2:.1f}x)\n"
-                else:
+                elif rev1 > 0 and rev2 > 0:
                     result += f" → **{ticker2} larger** ({rev2/rev1:.1f}x)\n"
+                else:
+                    result += "\n"
 
                 size_winner = ticker1 if (mcap1 > mcap2 and rev1 > rev2) else ticker2 if (mcap2 > mcap1 and rev2 > rev1) else "Mixed"
                 result += f"**Winner: {size_winner}** (larger business)\n\n"
 
             # Valuation comparison with winner
             if show_all or 'valuation' in categories:
-                # P/E ratios
-                ni1 = metrics1.get('latest_net_income', 0)
-                ni2 = metrics2.get('latest_net_income', 0)
-                shares1 = metrics1.get('shares_outstanding', 1)
-                shares2 = metrics2.get('shares_outstanding', 1)
-                price1 = info1.get('current_price', 0)
-                price2 = info2.get('current_price', 0)
+                # P/E ratios - use 'or' to handle None values
+                ni1 = metrics1.get('latest_net_income') or 0
+                ni2 = metrics2.get('latest_net_income') or 0
+                shares1 = metrics1.get('shares_outstanding') or 1
+                shares2 = metrics2.get('shares_outstanding') or 1
+                price1 = info1.get('current_price') or 0
+                price2 = info2.get('current_price') or 0
 
                 eps1 = ni1 / shares1 if shares1 > 0 else 0
                 eps2 = ni2 / shares2 if shares2 > 0 else 0
                 pe1 = price1 / eps1 if eps1 > 0 else None
                 pe2 = price2 / eps2 if eps2 > 0 else None
 
-                # P/S ratios
-                mcap1 = info1.get('market_cap', 0)
-                mcap2 = info2.get('market_cap', 0)
+                # P/S ratios (mcap1, mcap2 already defined above)
                 ps1 = mcap1 / rev1 if rev1 > 0 else None
                 ps2 = mcap2 / rev2 if rev2 > 0 else None
 
@@ -721,8 +755,8 @@ class CompanyComparisonTool(BaseTool):
 
             # Profitability comparison with winner
             if show_all or 'profitability' in categories:
-                fcf1 = metrics1.get('latest_fcf', 0)
-                fcf2 = metrics2.get('latest_fcf', 0)
+                fcf1 = metrics1.get('latest_fcf') or 0
+                fcf2 = metrics2.get('latest_fcf') or 0
                 fcf_margin1 = (fcf1 / rev1 * 100) if rev1 > 0 else 0
                 fcf_margin2 = (fcf2 / rev2 * 100) if rev2 > 0 else 0
 
@@ -740,25 +774,39 @@ class CompanyComparisonTool(BaseTool):
                 hist_fcf1 = metrics1.get('historical_fcf', [])
                 hist_fcf2 = metrics2.get('historical_fcf', [])
 
-                rev_cagr1 = ((hist_rev1[0] / hist_rev1[-1]) ** (1 / (len(hist_rev1) - 1)) - 1) * 100 if len(hist_rev1) >= 2 else 0
-                rev_cagr2 = ((hist_rev2[0] / hist_rev2[-1]) ** (1 / (len(hist_rev2) - 1)) - 1) * 100 if len(hist_rev2) >= 2 else 0
+                # Safe CAGR calculation - requires both endpoints to be positive
+                def safe_cagr(data):
+                    if len(data) >= 2 and data[0] > 0 and data[-1] > 0:
+                        return ((data[0] / data[-1]) ** (1 / (len(data) - 1)) - 1) * 100
+                    return None
+
+                rev_cagr1 = safe_cagr(hist_rev1)
+                rev_cagr2 = safe_cagr(hist_rev2)
 
                 result += "**GROWTH (Historical CAGR):**\n"
-                result += f"- Revenue Growth: {rev_cagr1:.1f}% vs {rev_cagr2:.1f}%"
-                result += f" → **{ticker1 if rev_cagr1 > rev_cagr2 else ticker2} growing faster**\n"
+                if rev_cagr1 is not None and rev_cagr2 is not None:
+                    result += f"- Revenue Growth: {rev_cagr1:.1f}% vs {rev_cagr2:.1f}%"
+                    result += f" → **{ticker1 if rev_cagr1 > rev_cagr2 else ticker2} growing faster**\n"
+                else:
+                    rev_cagr1 = rev_cagr1 or 0
+                    rev_cagr2 = rev_cagr2 or 0
+                    result += f"- Revenue Growth: {rev_cagr1:.1f}% vs {rev_cagr2:.1f}% (some data unavailable)\n"
 
-                if len(hist_fcf1) >= 2 and hist_fcf1[-1] > 0 and len(hist_fcf2) >= 2 and hist_fcf2[-1] > 0:
-                    fcf_cagr1 = ((hist_fcf1[0] / hist_fcf1[-1]) ** (1 / (len(hist_fcf1) - 1)) - 1) * 100
-                    fcf_cagr2 = ((hist_fcf2[0] / hist_fcf2[-1]) ** (1 / (len(hist_fcf2) - 1)) - 1) * 100
+                fcf_cagr1 = safe_cagr(hist_fcf1)
+                fcf_cagr2 = safe_cagr(hist_fcf2)
+                if fcf_cagr1 is not None and fcf_cagr2 is not None:
                     result += f"- FCF Growth: {fcf_cagr1:.1f}% vs {fcf_cagr2:.1f}%"
                     result += f" → **{ticker1 if fcf_cagr1 > fcf_cagr2 else ticker2} faster**\n"
 
+                # Use 0 as fallback for winner calculation
+                rev_cagr1 = rev_cagr1 if rev_cagr1 is not None else 0
+                rev_cagr2 = rev_cagr2 if rev_cagr2 is not None else 0
                 growth_winner = ticker1 if rev_cagr1 > rev_cagr2 else ticker2
                 result += f"**Winner: {growth_winner}** (faster growth)\n\n"
 
             # Overall insight (only if showing all or multiple categories)
             if show_all or len(categories) > 1:
-                result += "**💡 OVERALL INSIGHT:**\n"
+                result += "**OVERALL INSIGHT:**\n"
 
                 # Determine overall winner based on category winners
                 winners = {}
@@ -798,7 +846,8 @@ class CompanyComparisonTool(BaseTool):
             return f"Error comparing companies: {str(e)}. Please verify both tickers are valid."
 
     async def _arun(self, ticker1: str, ticker2: str, metrics: str = "valuation,profitability,growth") -> str:
-        return self._run(ticker1, ticker2, metrics)
+        # Run sync code in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(self._run, ticker1, ticker2, metrics)
 
 
 class DateContextInput(BaseModel):
@@ -861,28 +910,34 @@ class DateContextTool(BaseTool):
         # Q3 (Jul-Sep): Reported in November
         # Q4 (Oct-Dec): Reported in Feb/March
 
-        # Determine what data is likely available
-        if current_month >= 5:
-            latest_available_quarter = "Q1"
-            latest_available_year = current_year
-        if current_month >= 8:
-            latest_available_quarter = "Q2"
-            latest_available_year = current_year
-        if current_month >= 11:
-            latest_available_quarter = "Q3"
-            latest_available_year = current_year
-        if current_month <= 3:
+        # Determine what data is likely available based on reporting lag
+        # Q1 (Jan-Mar) reported in May, Q2 (Apr-Jun) in Aug, Q3 (Jul-Sep) in Nov, Q4 (Oct-Dec) in Feb/Mar
+        if current_month <= 2:
+            # Jan-Feb: Q3 of previous year is latest available (Q4 not yet reported)
             latest_available_quarter = "Q3"
             latest_available_year = current_year - 1
+        elif current_month <= 4:
+            # Mar-Apr: Q4 of previous year is now available
+            latest_available_quarter = "Q4"
+            latest_available_year = current_year - 1
+        elif current_month <= 7:
+            # May-Jul: Q1 of current year is available
+            latest_available_quarter = "Q1"
+            latest_available_year = current_year
+        elif current_month <= 10:
+            # Aug-Oct: Q2 of current year is available
+            latest_available_quarter = "Q2"
+            latest_available_year = current_year
         else:
-            latest_available_quarter = "Q3" if current_month >= 11 else f"Q{current_quarter - 1}"
+            # Nov-Dec: Q3 of current year is available
+            latest_available_quarter = "Q3"
             latest_available_year = current_year
 
         # Parse query
         query_lower = query.lower()
 
         result = []
-        result.append(f"📅 **DATE CONTEXT**")
+        result.append(f"**DATE CONTEXT**")
         result.append(f"\n**Current Date:** {now.strftime('%B %d, %Y')}")
         result.append(f"**Current Quarter:** Q{current_quarter} {current_year}")
         result.append(f"**Latest Likely Available Data:** {latest_available_quarter} {latest_available_year}")
@@ -934,13 +989,13 @@ class DateContextTool(BaseTool):
 
         # Add reporting schedule context
         result.append(f"\n---")
-        result.append(f"\n**📊 REPORTING SCHEDULE (Typical for Public Companies)**")
+        result.append(f"\n**REPORTING SCHEDULE (Typical for Public Companies)**")
         result.append(f"\n• **Q1** (Jan-Mar): Reported in **May**")
         result.append(f"• **Q2** (Apr-Jun): Reported in **August**")
         result.append(f"• **Q3** (Jul-Sep): Reported in **November**")
         result.append(f"• **Q4** (Oct-Dec): Reported in **February/March** of next year")
 
-        result.append(f"\n\n**💡 RECOMMENDATION**")
+        result.append(f"\n\n**RECOMMENDATION**")
         result.append(f"\nFor queries about \"{query}\":")
 
         if "years" in query_lower:
@@ -963,7 +1018,8 @@ class DateContextTool(BaseTool):
         return "\n".join(result)
 
     async def _arun(self, query: str) -> str:
-        return self._run(query)
+        # Run sync code in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(self._run, query)
 
 
 def get_research_assistant_tools() -> List[BaseTool]:

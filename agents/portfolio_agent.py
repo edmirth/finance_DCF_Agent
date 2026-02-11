@@ -9,7 +9,7 @@ import os
 import logging
 from typing import Optional
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
 
 from tools.portfolio_tools import get_portfolio_tools
@@ -23,27 +23,30 @@ logger = logging.getLogger(__name__)
 class PortfolioAnalyzerAgent:
     """Portfolio analysis agent with portfolio management expertise"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True):
         """
         Initialize the Portfolio Analyzer Agent
 
         Args:
-            api_key: OpenAI API key (or uses OPENAI_API_KEY env var)
-            model: LLM model to use (default: gpt-4-turbo-preview)
+            api_key: Anthropic API key (or uses ANTHROPIC_API_KEY env var)
+            model: LLM model to use (default: claude-sonnet-4-5-20250929)
             show_reasoning: Whether to show agent reasoning steps (default: True)
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise ValueError("OpenAI API key is required")
+            raise ValueError("Anthropic API key is required")
 
         self.model_name = model
         self.show_reasoning = show_reasoning
 
         # Initialize LLM for portfolio analysis
-        self.llm = ChatOpenAI(
+        self.llm = ChatAnthropic(
             temperature=0.1,  # Low temperature for consistent financial analysis
             model=model,
-            api_key=self.api_key
+            anthropic_api_key=self.api_key,
+            max_retries=3,  # Retry failed API calls
+            default_request_timeout=60.0,  # Request timeout in seconds
+            max_tokens=4096,  # Max output tokens
         )
 
         # Get portfolio tools
@@ -184,19 +187,26 @@ Thought: {agent_scratchpad}"""
                 {"callbacks": [self.reasoning_callback]}
             )
 
-            return result["output"]
+            output = result["output"]
+            # Normalize Anthropic content blocks (list) to string
+            if isinstance(output, list):
+                output = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in output
+                )
+            return output
 
         except Exception as e:
             logger.error(f"Error in portfolio analysis: {str(e)}")
             return f"I encountered an error analyzing the portfolio: {str(e)}\n\nPlease check your portfolio format and try again."
 
 
-def create_portfolio_agent(api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True) -> PortfolioAnalyzerAgent:
+def create_portfolio_agent(api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> PortfolioAnalyzerAgent:
     """
     Factory function to create a Portfolio Analyzer Agent
 
     Args:
-        api_key: OpenAI API key (optional, uses env var if not provided)
+        api_key: Anthropic API key (optional, uses env var if not provided)
         model: LLM model to use
         show_reasoning: Whether to display agent reasoning steps (default: True)
 
@@ -206,7 +216,7 @@ def create_portfolio_agent(api_key: Optional[str] = None, model: str = "gpt-5.2"
     return PortfolioAnalyzerAgent(api_key=api_key, model=model, show_reasoning=show_reasoning)
 
 
-def interactive_session(model: str = "gpt-5.2"):
+def interactive_session(model: str = "claude-sonnet-4-5-20250929"):
     """
     Run an interactive portfolio analysis session in the terminal
 

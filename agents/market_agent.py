@@ -6,7 +6,7 @@ Provides comprehensive market overview to inform investment decisions.
 """
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools.market_tools import get_market_tools
 from agents.reasoning_callback import StreamingReasoningCallback
@@ -142,12 +142,12 @@ class MarketAnalysisAgent:
     to provide investors with actionable market intelligence.
     """
 
-    def __init__(self, model: str = "gpt-5.2", temperature: float = 0.1, show_reasoning: bool = True):
+    def __init__(self, model: str = "claude-sonnet-4-5-20250929", temperature: float = 0.1, show_reasoning: bool = True):
         """
         Initialize the Market Analysis Agent
 
         Args:
-            model: OpenAI model to use (default: gpt-4-turbo-preview)
+            model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
             temperature: LLM temperature for analysis (default: 0.1 for consistent analysis)
             show_reasoning: Whether to display agent reasoning steps (default: True)
         """
@@ -155,10 +155,13 @@ class MarketAnalysisAgent:
         self.temperature = temperature
         self.show_reasoning = show_reasoning
 
-        # Initialize LLM with GPT-5.2
-        self.llm = ChatOpenAI(
+        # Initialize LLM
+        self.llm = ChatAnthropic(
             model=model,
-            temperature=temperature
+            temperature=temperature,
+            max_retries=3,  # Retry failed API calls
+            default_request_timeout=60.0,  # Request timeout in seconds
+            max_tokens=8192,  # Max output tokens
         )
 
         # Get market analysis tools
@@ -209,7 +212,14 @@ class MarketAnalysisAgent:
                 {"input": query},
                 {"callbacks": [self.reasoning_callback]}
             )
-            return result["output"]
+            output = result["output"]
+            # Normalize Anthropic content blocks (list) to string
+            if isinstance(output, list):
+                output = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in output
+                )
+            return output
         except Exception as e:
             return f"Error during market analysis: {str(e)}"
 
@@ -346,12 +356,12 @@ class MarketAnalysisAgent:
         return self.analyze(query)
 
 
-def create_market_agent(model: str = "gpt-5.2", show_reasoning: bool = True) -> MarketAnalysisAgent:
+def create_market_agent(model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> MarketAnalysisAgent:
     """
     Factory function to create Market Analysis Agent
 
     Args:
-        model: OpenAI model to use (default: gpt-4-turbo-preview)
+        model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
         show_reasoning: Whether to display agent reasoning steps (default: True)
 
     Returns:

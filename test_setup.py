@@ -19,17 +19,17 @@ def test_imports():
         return False
 
     try:
-        import langchain_openai
-        print("✓ langchain_openai")
+        import langchain_anthropic
+        print("✓ langchain_anthropic")
     except ImportError as e:
-        print(f"✗ langchain_openai - {e}")
+        print(f"✗ langchain_anthropic - {e}")
         return False
 
     try:
-        import openai
-        print("✓ openai")
+        import anthropic
+        print("✓ anthropic")
     except ImportError as e:
-        print(f"✗ openai - {e}")
+        print(f"✗ anthropic - {e}")
         return False
 
     try:
@@ -72,13 +72,13 @@ def test_environment():
 
     load_dotenv()
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("ANTHROPIC_API_KEY")
     if api_key:
-        print("✓ OPENAI_API_KEY is set")
+        print("✓ ANTHROPIC_API_KEY is set")
         return True
     else:
-        print("✗ OPENAI_API_KEY not found in environment")
-        print("  Please create a .env file with your OpenAI API key")
+        print("✗ ANTHROPIC_API_KEY not found in environment")
+        print("  Please create a .env file with your Anthropic API key")
         return False
 
 
@@ -163,7 +163,7 @@ def test_agent_creation():
     print("\nTesting agent creation...")
 
     import os
-    if not os.getenv("OPENAI_API_KEY"):
+    if not os.getenv("ANTHROPIC_API_KEY"):
         print("⊘ Skipping agent test (no API key)")
         return True
 

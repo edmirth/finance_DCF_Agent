@@ -3,11 +3,12 @@ LangGraph-based Equity Analyst Agent with structured workflow
 """
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain.tools import BaseTool
 from tools.dcf_tools import get_dcf_tools
 from tools.equity_analyst_tools import get_equity_analyst_tools
 import os
+import re
 import logging
 from datetime import datetime
 
@@ -72,10 +73,17 @@ class EquityAnalystState(TypedDict):
 class EquityAnalystGraph:
     """LangGraph-based equity analyst with structured workflow"""
 
-    def __init__(self, api_key: str = None, model: str = "gpt-4-turbo-preview"):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-5-20250929"):
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
-        self.llm = ChatOpenAI(model=self.model, temperature=0, api_key=self.api_key)
+        self.llm = ChatAnthropic(
+            model=self.model,
+            temperature=0,
+            anthropic_api_key=self.api_key,
+            max_retries=3,  # Retry failed API calls
+            default_request_timeout=60.0,  # Request timeout in seconds
+            max_tokens=8192,  # Max output tokens
+        )
 
         # Get all tools
         self.dcf_tools = {tool.name: tool for tool in get_dcf_tools()}
@@ -126,7 +134,7 @@ class EquityAnalystGraph:
 
         try:
             tool = self.all_tools["get_stock_info"]
-            result = tool.run(state["ticker"])
+            result = tool.invoke({"ticker": state["ticker"]})
 
             # Parse result (simplified - you'd want better parsing)
             state["company_info"] = {"raw": result}
@@ -156,7 +164,7 @@ class EquityAnalystGraph:
 
         try:
             tool = self.all_tools["get_financial_metrics"]
-            result = tool.run(state["ticker"])
+            result = tool.invoke({"ticker": state["ticker"]})
             state["financial_metrics"] = {"raw": result}
 
             # Extract growth rates
@@ -178,11 +186,11 @@ class EquityAnalystGraph:
 
         try:
             tool = self.all_tools["analyze_industry"]
-            result = tool.run(
-                company=state["company_name"],
-                ticker=state["ticker"],
-                sector=state["sector"]
-            )
+            result = tool.invoke({
+                "company": state["company_name"],
+                "ticker": state["ticker"],
+                "sector": state["sector"]
+            })
             state["industry_analysis"] = result
 
         except Exception as e:
@@ -200,11 +208,11 @@ class EquityAnalystGraph:
 
         try:
             tool = self.all_tools["analyze_competitors"]
-            result = tool.run(
-                company=state["company_name"],
-                ticker=state["ticker"],
-                industry=state["industry"]
-            )
+            result = tool.invoke({
+                "company": state["company_name"],
+                "ticker": state["ticker"],
+                "industry": state["industry"]
+            })
             state["competitive_position"] = result
 
         except Exception as e:
@@ -222,10 +230,10 @@ class EquityAnalystGraph:
 
         try:
             tool = self.all_tools["analyze_moat"]
-            result = tool.run(
-                company=state["company_name"],
-                ticker=state["ticker"]
-            )
+            result = tool.invoke({
+                "company": state["company_name"],
+                "ticker": state["ticker"]
+            })
 
             # Determine moat strength from result
             if "Wide Moat" in result or "wide moat" in result.lower():
@@ -252,10 +260,10 @@ class EquityAnalystGraph:
 
         try:
             tool = self.all_tools["analyze_management"]
-            result = tool.run(
-                company=state["company_name"],
-                ticker=state["ticker"]
-            )
+            result = tool.invoke({
+                "company": state["company_name"],
+                "ticker": state["ticker"]
+            })
             state["capital_allocation"] = result
 
             # Determine management quality from result
@@ -284,22 +292,22 @@ class EquityAnalystGraph:
         try:
             # Search for current beta
             search_tool = self.all_tools["search_web"]
-            beta_search = search_tool.run(f"{state['ticker']} beta coefficient 2024")
+            beta_search = search_tool.invoke({"query": f"{state['ticker']} beta coefficient 2024"})
 
             # Extract beta (simplified - you'd want better parsing)
             beta = 1.0  # default
 
             # Perform DCF
             dcf_tool = self.all_tools["perform_dcf_analysis"]
-            result = dcf_tool.run(
-                ticker=state["ticker"],
-                beta=beta,
-                revenue_growth_rate=state.get("historical_growth", {}).get("revenue_cagr", 0.10),
-                fcf_margin=0.15,  # Would calculate from financials
-                terminal_growth_rate=0.025,
-                risk_free_rate=0.04,
-                market_risk_premium=0.08
-            )
+            result = dcf_tool.invoke({
+                "ticker": state["ticker"],
+                "beta": beta,
+                "revenue_growth_rate": state.get("historical_growth", {}).get("revenue_cagr", 0.10),
+                "fcf_margin": 0.15,  # Would calculate from financials
+                "terminal_growth_rate": 0.025,
+                "risk_free_rate": 0.04,
+                "market_risk_premium": 0.08
+            })
 
             state["dcf_results"] = {"raw": result}
 
@@ -474,6 +482,76 @@ Upside: {state.get('upside_potential', 0):.1f}%
         return final_state
 
 
-def create_equity_analyst_graph(api_key: str = None, model: str = "gpt-4-turbo-preview") -> EquityAnalystGraph:
-    """Factory function to create equity analyst graph"""
-    return EquityAnalystGraph(api_key=api_key, model=model)
+class EquityAnalystGraphAdapter:
+    """
+    Adapter to make LangGraph compatible with existing backend streaming.
+
+    Backend expects: agent.agent_executor.invoke({"input": query}, config={...})
+    LangGraph uses: graph.invoke(state, config={...})
+
+    This adapter translates between the two interfaces.
+    """
+
+    def __init__(self, graph_agent: EquityAnalystGraph):
+        self.graph_agent = graph_agent
+        self.ticker_pattern = re.compile(r'\b[A-Z]{1,5}\b')  # Match stock tickers
+
+    def _extract_ticker(self, query: str) -> str:
+        """Extract ticker from user query"""
+        # Look for uppercase 2-5 letter tickers
+        matches = self.ticker_pattern.findall(query.upper())
+        if matches:
+            # Return first match that looks like a ticker
+            for match in matches:
+                if len(match) >= 2 and len(match) <= 5:
+                    return match
+        return "AAPL"  # Default fallback
+
+    def invoke(self, inputs: dict, config: dict = None):
+        """
+        Invoke method compatible with LangChain agent_executor interface.
+
+        Args:
+            inputs: Dict with 'input' key containing user query
+            config: Optional config dict (currently unused for LangGraph)
+
+        Returns:
+            Dict with 'output' key containing final report
+        """
+        query = inputs.get("input", "")
+        ticker = self._extract_ticker(query)
+
+        logger.info(f"[LangGraph] Analyzing {ticker}")
+
+        # Run the graph
+        final_state = self.graph_agent.analyze(ticker)
+
+        # Return in LangChain format
+        return {"output": final_state.get("final_report", "Analysis failed")}
+
+
+def create_equity_analyst_graph(api_key: str = None, model: str = "claude-sonnet-4-5-20250929"):
+    """
+    Factory function to create equity analyst graph with backend compatibility.
+
+    Returns an object with:
+    - analyze(ticker) method for direct CLI usage
+    - agent_executor attribute for backend streaming compatibility
+    """
+    graph = EquityAnalystGraph(api_key=api_key, model=model)
+
+    # Create wrapper object with both interfaces
+    class GraphWrapper:
+        def __init__(self, graph_instance):
+            self.graph = graph_instance
+            # Create adapter for backend compatibility
+            self.agent_executor = EquityAnalystGraphAdapter(graph_instance)
+
+        def analyze(self, query: str) -> str:
+            """Direct CLI interface - extracts ticker and runs analysis"""
+            adapter = EquityAnalystGraphAdapter(self.graph)
+            ticker = adapter._extract_ticker(query)
+            final_state = self.graph.analyze(ticker)
+            return final_state.get("final_report", "Analysis failed")
+
+    return GraphWrapper(graph)

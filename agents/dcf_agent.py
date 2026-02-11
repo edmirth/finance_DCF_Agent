@@ -2,12 +2,12 @@
 LangChain DCF Analysis Agent
 """
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
 from langchain.callbacks.base import BaseCallbackHandler
 from tools.dcf_tools import get_dcf_tools
 from typing import Optional, List
-from openai import APIError, RateLimitError, AuthenticationError
+from anthropic import APIError, RateLimitError, AuthenticationError
 import os
 import re
 import logging
@@ -16,22 +16,22 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Valid OpenAI models for DCF analysis
+# Valid Anthropic models for DCF analysis
 VALID_MODELS = [
-    "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-turbo-preview",
-    "gpt-4", "gpt-4-0613", "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
-    "gpt-5.2", "gpt-5", "o1", "o1-mini", "o1-preview"  # Include newer models
+    "claude-sonnet-4-5-20250929", "claude-opus-4-6",
+    "claude-haiku-4-5-20251001",
 ]
 
 # Tools referenced in the prompt template (for validation)
 REQUIRED_TOOLS = [
     "get_company_context", "get_stock_info", "get_financial_metrics",
     "get_market_parameters", "analyze_competitors", "search_web",
-    "perform_dcf_analysis", "get_dcf_comparison", "format_dcf_report"
+    "perform_dcf_analysis", "perform_multiples_valuation", "get_dcf_comparison",
+    "format_dcf_report"
 ]
 
-# Bug #10 Fix: OpenAI API key format pattern
-OPENAI_API_KEY_PATTERN = re.compile(r'^sk-[a-zA-Z0-9_-]{20,}$')
+# API key format pattern for Anthropic
+ANTHROPIC_API_KEY_PATTERN = re.compile(r'^sk-ant-[a-zA-Z0-9_-]{20,}$')
 
 # Bug #13 Fix: Class-level tool cache with thread safety
 _tools_cache = None
@@ -60,7 +60,7 @@ class DCFAnalysisAgent:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-5.2",
+        model: str = "claude-sonnet-4-5-20250929",
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         verbose: bool = True,
         max_execution_time: Optional[int] = 300  # 5 minutes default timeout
@@ -69,20 +69,20 @@ class DCFAnalysisAgent:
         Initialize the DCF Analysis Agent
 
         Args:
-            api_key: OpenAI API key (if not provided, will use OPENAI_API_KEY env var)
-            model: OpenAI model to use (default: gpt-5.2)
+            api_key: Anthropic API key (if not provided, will use ANTHROPIC_API_KEY env var)
+            model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
             callbacks: Optional list of callback handlers for streaming output
             verbose: Whether to enable verbose logging (default: True)
             max_execution_time: Maximum execution time in seconds (default: 300)
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
+            raise ValueError("Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable.")
 
-        # Bug #10 Fix: Validate API key format
-        if not OPENAI_API_KEY_PATTERN.match(self.api_key):
+        # Validate API key format
+        if not ANTHROPIC_API_KEY_PATTERN.match(self.api_key):
             logger.warning(
-                "API key does not match expected OpenAI format (sk-...). "
+                "API key does not match expected Anthropic format (sk-ant-...). "
                 "Proceeding anyway, but authentication may fail."
             )
 
@@ -123,11 +123,14 @@ class DCFAnalysisAgent:
         """Create the LangChain agent with tools"""
 
         # Initialize LLM with configured model
-        llm = ChatOpenAI(
+        llm = ChatAnthropic(
             model=self.model,
             temperature=0,
-            api_key=self.api_key,
-            callbacks=self.callbacks  # Bug #1 Fix: Pass callbacks to LLM
+            anthropic_api_key=self.api_key,
+            callbacks=self.callbacks,  # Bug #1 Fix: Pass callbacks to LLM
+            max_retries=3,  # Retry failed API calls
+            default_request_timeout=60.0,  # Request timeout in seconds
+            max_tokens=8192,  # Max output tokens
         )
 
         # Create agent prompt with Financial Chain-of-Thought (CoT) framework
@@ -202,8 +205,15 @@ Objective: Build investment thesis with justified assumptions
 
 Tool Sequence for Phase 3:
 1. perform_dcf_analysis - With parameters from get_market_parameters
-2. get_dcf_comparison - Cross-validate with FMP DCF values
-3. format_dcf_report - Generate professional structured output
+2. perform_multiples_valuation - P/E, EV/EBITDA, P/S, P/B peer comparison (TRIANGULATION!)
+3. get_dcf_comparison - Cross-validate with FMP DCF values
+4. format_dcf_report - Generate professional structured output
+
+**VALUATION TRIANGULATION (Best Practice):**
+- DCF gives intrinsic value based on cash flows
+- Multiples give relative value based on peer comparison
+- Use BOTH to increase confidence in valuation
+- Large divergence between DCF and Multiples warrants investigation
 
 **DCF Assumption Determination (FORWARD-LOOKING):**
 Use values from get_market_parameters tool for:
@@ -294,6 +304,17 @@ TOOL USAGE GUIDELINES
 - Recommended: long_term_growth_rate (from get_market_parameters industry_growth_rate)
 - Auto-calculated: ebit_margin, tax_rate, capex_to_revenue, depreciation_to_revenue, nwc_to_revenue, cost_of_debt
 - AUTO-METHODOLOGY: Automatically selects Levered DCF (FCFE) when D/E > 1.0
+
+**perform_multiples_valuation** (ALTERNATIVE/COMPLEMENT TO DCF):
+- Input: {{"ticker": "AAPL", "peer_tickers": "MSFT,GOOGL,META"}} (peer_tickers optional)
+- Purpose: Valuation using P/E, EV/EBITDA, P/S, P/B multiples compared to peers/industry
+- Returns: Company multiples, peer averages, implied fair values, weighted average valuation
+- WHEN TO USE MULTIPLES vs DCF:
+  * Multiples BETTER for: Banks/financials, REITs, mature stable companies, cyclical businesses
+  * DCF BETTER for: High-growth companies, predictable cash flow companies
+  * USE BOTH for triangulation (cross-validation approach)
+- AUTOMATICALLY fetches peer multiples via Perplexity
+- Weighted methodology: P/E (30%), EV/EBITDA (35%), P/S (25%), P/B (10%)
 
 **get_dcf_comparison** (USE AFTER perform_dcf_analysis):
 - Input: Just the ticker symbol (e.g., AAPL)
@@ -427,14 +448,19 @@ Thought: {agent_scratchpad}"""
 
             result = self.agent_executor.invoke(invoke_config)
 
-            # Bug #11 (Low) partial fix: Ensure output is a string
+            # Ensure output is a string — Anthropic returns list of content blocks
             output = result.get("output", "No output generated")
-            if not isinstance(output, str):
+            if isinstance(output, list):
+                output = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in output
+                )
+            elif not isinstance(output, str):
                 output = str(output)
             return output
 
         except AuthenticationError as e:
-            error_msg = f"Authentication failed. Please check your OpenAI API key. Details: {e}"
+            error_msg = f"Authentication failed. Please check your Anthropic API key. Details: {e}"
             logger.error(error_msg)
             return f"Error: {error_msg}"
 
@@ -444,7 +470,7 @@ Thought: {agent_scratchpad}"""
             return f"Error: {error_msg}"
 
         except APIError as e:
-            error_msg = f"OpenAI API error: {e}"
+            error_msg = f"Anthropic API error: {e}"
             logger.error(error_msg)
             return f"Error: {error_msg}"
 
@@ -482,7 +508,28 @@ Thought: {agent_scratchpad}"""
             "3) Use get_market_parameters to fetch forward-looking analyst consensus estimates "
             "(DO NOT use historical CAGR for growth projections), "
             "4) Perform DCF analysis with the fetched parameters, "
-            "5) Use format_dcf_report to generate the final professional report."
+            "5) Use perform_multiples_valuation for triangulation (DCF + Multiples cross-validation), "
+            "6) Use format_dcf_report to generate the final professional report."
+        )
+        return self.analyze(query)
+
+    def multiples_valuation(self, ticker: str, peer_tickers: str = "") -> str:
+        """
+        Perform a multiples-based valuation on a ticker
+
+        Args:
+            ticker: Stock ticker symbol
+            peer_tickers: Comma-separated peer tickers (optional)
+
+        Returns:
+            Multiples valuation results
+        """
+        peer_str = f" using peers: {peer_tickers}" if peer_tickers else ""
+        query = (
+            f"Perform a multiples-based valuation on {ticker}{peer_str}. "
+            "Use the perform_multiples_valuation tool to calculate P/E, EV/EBITDA, P/S, and P/B "
+            "based valuations compared to peer/industry averages. "
+            "Provide a clear recommendation based on whether the stock is overvalued or undervalued."
         )
         return self.analyze(query)
 
@@ -511,7 +558,7 @@ Thought: {agent_scratchpad}"""
 
 def create_dcf_agent(
     api_key: Optional[str] = None,
-    model: str = "gpt-5.2",
+    model: str = "claude-sonnet-4-5-20250929",
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     verbose: bool = True,
     max_execution_time: Optional[int] = 300
@@ -520,9 +567,8 @@ def create_dcf_agent(
     Factory function to create a DCF analysis agent
 
     Args:
-        api_key: OpenAI API key (uses OPENAI_API_KEY env var if not provided)
-        model: OpenAI model to use (default: gpt-5.2). Valid models include:
-               gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo, etc.
+        api_key: Anthropic API key (uses ANTHROPIC_API_KEY env var if not provided)
+        model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
         callbacks: Optional list of callback handlers for streaming/logging
         verbose: Whether to enable verbose agent output (default: True)
         max_execution_time: Maximum execution time in seconds (default: 300)

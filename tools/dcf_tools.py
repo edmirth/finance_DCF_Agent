@@ -2,17 +2,89 @@
 LangChain Tools for DCF Analysis Agent
 """
 from langchain.tools import BaseTool
-from typing import Optional, Type
+from typing import Optional, Type, List, Dict
 from pydantic import BaseModel, Field
 from data.financial_data import FinancialDataFetcher
 from calculators.dcf_calculator import DCFCalculator, DCFAssumptions
 from tools.equity_analyst_tools import CompetitorAnalysisTool
+from shared.retry_utils import retry_with_backoff, RetryConfig
 import json
 import logging
 import os
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+
+# =========================================================================
+# Retry-Wrapped API Helpers
+# =========================================================================
+
+@retry_with_backoff(RetryConfig(
+    max_attempts=3,
+    base_delay=1.5,
+    max_delay=45.0
+))
+def _perplexity_api_call(client: OpenAI, query: str, system_prompt: str):
+    """
+    Internal function with retry logic for Perplexity API completion calls.
+
+    Args:
+        client: OpenAI client configured for Perplexity
+        query: User query
+        system_prompt: System prompt for the model
+
+    Returns:
+        ChatCompletion response from Perplexity
+
+    Raises:
+        Exception: On API errors (will be retried by decorator)
+    """
+    response = client.chat.completions.create(
+        model="sonar-pro",
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": query
+            }
+        ],
+    )
+    return response
+
+
+def _perplexity_search(api_key: str, query: str, system_prompt: str = None) -> str:
+    """
+    Helper function for Perplexity search with retry logic.
+
+    Args:
+        api_key: Perplexity API key
+        query: Search query
+        system_prompt: Optional system prompt (defaults to financial assistant)
+
+    Returns:
+        Response content from Perplexity
+
+    Raises:
+        Exception: On API errors (after retries exhausted)
+    """
+    if system_prompt is None:
+        system_prompt = "You are a financial research assistant. Provide accurate, sourced information about financial metrics, company data, and market conditions. Include specific numbers and cite your sources."
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.perplexity.ai"
+    )
+
+    response = _perplexity_api_call(client, query, system_prompt)
+
+    if response.choices and len(response.choices) > 0:
+        return response.choices[0].message.content
+    else:
+        raise Exception("No results returned from Perplexity API")
 
 
 # Tool Input Schemas
@@ -110,6 +182,15 @@ class MarketParametersInput(BaseModel):
 class DCFComparisonInput(BaseModel):
     """Input for DCF comparison tool"""
     ticker: str = Field(description="Stock ticker symbol (e.g., AAPL, MSFT, GOOGL)")
+
+
+class MultiplesValuationInput(BaseModel):
+    """Input for multiples-based valuation tool"""
+    ticker: str = Field(description="Stock ticker symbol (e.g., AAPL, MSFT, GOOGL)")
+    peer_tickers: Optional[str] = Field(
+        default="",
+        description="Comma-separated list of peer company tickers for comparison (e.g., 'MSFT,GOOGL,META'). If empty, will use industry averages."
+    )
 
 
 # Tool Implementations
@@ -700,23 +781,19 @@ class GetMarketParametersTool(BaseTool):
     args_schema: Type[BaseModel] = MarketParametersInput
 
     def _query_perplexity(self, client, query: str, data_type: str) -> Optional[float]:
-        """Make a focused query and parse numeric response with validation"""
+        """Make a focused query and parse numeric response with validation (uses retry logic)"""
         import re
 
         try:
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"You are a financial data assistant. Return ONLY the numeric value for {data_type}. "
-                                   "No explanations, no text, just the number. "
-                                   "For percentages, return as decimal (e.g., 0.045 for 4.5%). "
-                                   "For beta, return just the number (e.g., 1.25)."
-                    },
-                    {"role": "user", "content": query}
-                ],
+            system_prompt = (
+                f"You are a financial data assistant. Return ONLY the numeric value for {data_type}. "
+                "No explanations, no text, just the number. "
+                "For percentages, return as decimal (e.g., 0.045 for 4.5%). "
+                "For beta, return just the number (e.g., 1.25)."
             )
+
+            # Use retry-wrapped API call
+            response = _perplexity_api_call(client, query, system_prompt)
 
             if not response.choices or len(response.choices) == 0:
                 logger.warning(f"No response for {data_type} query")
@@ -942,43 +1019,19 @@ class SearchWebTool(BaseTool):
     args_schema: Type[BaseModel] = WebSearchInput
 
     def _run(self, query: str) -> str:
-        """Search the web using Perplexity Sonar API"""
+        """Search the web using Perplexity Sonar API with retry logic"""
         try:
             api_key = os.getenv("PERPLEXITY_API_KEY")
             if not api_key:
                 return "Error: PERPLEXITY_API_KEY not found in environment variables. Please add it to your .env file."
 
-            # Initialize Perplexity client using OpenAI SDK
-            client = OpenAI(
-                api_key=api_key,
-                base_url="https://api.perplexity.ai"
-            )
-
-            # Make search request
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a financial research assistant. Provide accurate, sourced information about financial metrics, company data, and market conditions. Include specific numbers and cite your sources."
-                    },
-                    {
-                        "role": "user",
-                        "content": query
-                    }
-                ],
-            )
-
-            # Extract the response
-            if response.choices and len(response.choices) > 0:
-                result = response.choices[0].message.content
-                return f"Web Search Results:\n\n{result}"
-            else:
-                return "Error: No results returned from web search"
+            # Call retry-wrapped Perplexity search
+            result = _perplexity_search(api_key, query)
+            return f"Web Search Results:\n\n{result}"
 
         except Exception as e:
             logger.error(f"Error searching web: {e}")
-            return f"Error searching web: {str(e)}"
+            return f"Error searching web after retries: {str(e)}"
 
     async def _arun(self, query: str) -> str:
         """Async version"""
@@ -1081,6 +1134,413 @@ Your custom UFCF-based DCF is still the primary valuation method."""
     async def _arun(self, ticker: str) -> str:
         """Async version"""
         return self._run(ticker)
+
+
+class PerformMultiplesValuationTool(BaseTool):
+    """Tool to perform multiples-based valuation as alternative/complement to DCF"""
+    name: str = "perform_multiples_valuation"
+    description: str = """Perform a multiples-based valuation using P/E, EV/EBITDA, P/S, and P/B ratios.
+
+    WHEN TO USE MULTIPLES vs DCF:
+    - Multiples are better for: mature companies, banks/financials, REITs, cyclical businesses
+    - DCF is better for: high-growth companies, companies with predictable cash flows
+    - Use BOTH for cross-validation (triangulation approach)
+
+    METHODOLOGY:
+    1. Calculates the company's current trading multiples
+    2. Fetches peer/industry average multiples via Perplexity
+    3. Calculates implied fair values from each multiple
+    4. Returns a weighted average fair value estimate
+
+    MULTIPLES EXPLAINED:
+    - P/E (Price/Earnings): Best for profitable, stable companies. Implied Value = EPS × Peer P/E
+    - EV/EBITDA: Preferred for capital-intensive industries. Implied EV = EBITDA × Peer Multiple
+    - P/S (Price/Sales): Useful for unprofitable companies. Implied Value = Revenue/Share × Peer P/S
+    - P/B (Price/Book): Best for financials and asset-heavy firms. Implied Value = Book Value × Peer P/B
+
+    INPUT:
+    - ticker: Stock to value
+    - peer_tickers (optional): Comma-separated peer tickers (e.g., 'MSFT,GOOGL,META')
+
+    Use this tool alongside perform_dcf_analysis for a comprehensive valuation."""
+    args_schema: Type[BaseModel] = MultiplesValuationInput
+
+    def _fetch_peer_multiples_via_perplexity(self, ticker: str, industry: str, peer_tickers: List[str]) -> Dict:
+        """Fetch peer/industry multiples using Perplexity"""
+        import re
+
+        api_key = os.getenv("PERPLEXITY_API_KEY")
+        if not api_key:
+            logger.warning("PERPLEXITY_API_KEY not found. Using default industry averages.")
+            return self._get_default_industry_multiples(industry)
+
+        client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+
+        try:
+            if peer_tickers:
+                peer_list = ", ".join(peer_tickers)
+                query = f"""What are the current valuation multiples for these peer companies: {peer_list}?
+                For each company, provide:
+                - P/E ratio (trailing twelve months)
+                - EV/EBITDA ratio
+                - P/S (Price to Sales) ratio
+                - P/B (Price to Book) ratio
+
+                Then calculate the AVERAGE of each multiple across all peers.
+                Return the peer average as: "Peer Average P/E: X.X, EV/EBITDA: X.X, P/S: X.X, P/B: X.X"
+                """
+            else:
+                query = f"""What are the typical valuation multiples for the {industry} industry?
+                Provide:
+                - Average P/E ratio
+                - Average EV/EBITDA ratio
+                - Average P/S (Price to Sales) ratio
+                - Average P/B (Price to Book) ratio
+
+                Return as: "Industry Average P/E: X.X, EV/EBITDA: X.X, P/S: X.X, P/B: X.X"
+                """
+
+            # Use retry-wrapped API call
+            system_prompt = "You are a financial data assistant. Provide accurate valuation multiples. Return numeric values only where requested."
+            response = _perplexity_api_call(client, query, system_prompt)
+
+            if not response.choices:
+                return self._get_default_industry_multiples(industry)
+
+            content = response.choices[0].message.content
+            logger.info(f"Perplexity multiples response: {content[:500]}...")
+
+            # Parse the response to extract multiples
+            multiples = {
+                'peer_pe': None,
+                'peer_ev_ebitda': None,
+                'peer_ps': None,
+                'peer_pb': None,
+                'source': 'Perplexity (peer/industry averages)',
+                'raw_response': content[:1000]
+            }
+
+            # Extract P/E
+            pe_patterns = [
+                r'(?:P/E|PE|Price.to.Earnings)(?:\s*ratio)?[:\s]+(\d+\.?\d*)',
+                r'(\d+\.?\d*)x?\s*(?:P/E|PE)',
+            ]
+            for pattern in pe_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    multiples['peer_pe'] = float(match.group(1))
+                    break
+
+            # Extract EV/EBITDA
+            ev_patterns = [
+                r'EV/EBITDA[:\s]+(\d+\.?\d*)',
+                r'(\d+\.?\d*)x?\s*EV/EBITDA',
+            ]
+            for pattern in ev_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    multiples['peer_ev_ebitda'] = float(match.group(1))
+                    break
+
+            # Extract P/S
+            ps_patterns = [
+                r'(?:P/S|Price.to.Sales)[:\s]+(\d+\.?\d*)',
+                r'(\d+\.?\d*)x?\s*(?:P/S|Price.to.Sales)',
+            ]
+            for pattern in ps_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    multiples['peer_ps'] = float(match.group(1))
+                    break
+
+            # Extract P/B
+            pb_patterns = [
+                r'(?:P/B|Price.to.Book)[:\s]+(\d+\.?\d*)',
+                r'(\d+\.?\d*)x?\s*(?:P/B|Price.to.Book)',
+            ]
+            for pattern in pb_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    multiples['peer_pb'] = float(match.group(1))
+                    break
+
+            # Fill in defaults for any missing multiples
+            defaults = self._get_default_industry_multiples(industry)
+            for key in ['peer_pe', 'peer_ev_ebitda', 'peer_ps', 'peer_pb']:
+                if multiples[key] is None:
+                    multiples[key] = defaults[key]
+                    multiples['source'] += f" (using default for {key})"
+
+            return multiples
+
+        except Exception as e:
+            logger.error(f"Error fetching peer multiples: {e}")
+            return self._get_default_industry_multiples(industry)
+
+    def _get_default_industry_multiples(self, industry: str) -> Dict:
+        """Get default multiples based on industry"""
+        # Industry-specific defaults (approximate S&P 500 sector averages)
+        industry_defaults = {
+            'Technology': {'peer_pe': 25.0, 'peer_ev_ebitda': 15.0, 'peer_ps': 5.0, 'peer_pb': 6.0},
+            'Software': {'peer_pe': 30.0, 'peer_ev_ebitda': 20.0, 'peer_ps': 8.0, 'peer_pb': 8.0},
+            'Healthcare': {'peer_pe': 20.0, 'peer_ev_ebitda': 12.0, 'peer_ps': 3.0, 'peer_pb': 4.0},
+            'Financial': {'peer_pe': 12.0, 'peer_ev_ebitda': 8.0, 'peer_ps': 2.5, 'peer_pb': 1.2},
+            'Consumer': {'peer_pe': 18.0, 'peer_ev_ebitda': 10.0, 'peer_ps': 1.5, 'peer_pb': 3.0},
+            'Industrial': {'peer_pe': 18.0, 'peer_ev_ebitda': 10.0, 'peer_ps': 1.5, 'peer_pb': 3.0},
+            'Energy': {'peer_pe': 10.0, 'peer_ev_ebitda': 5.0, 'peer_ps': 1.0, 'peer_pb': 1.5},
+            'Retail': {'peer_pe': 20.0, 'peer_ev_ebitda': 8.0, 'peer_ps': 0.8, 'peer_pb': 4.0},
+            'Auto': {'peer_pe': 8.0, 'peer_ev_ebitda': 4.0, 'peer_ps': 0.5, 'peer_pb': 1.0},
+            'default': {'peer_pe': 18.0, 'peer_ev_ebitda': 10.0, 'peer_ps': 2.0, 'peer_pb': 2.5},
+        }
+
+        # Try to match industry
+        industry_lower = industry.lower() if industry else ''
+        for key, values in industry_defaults.items():
+            if key.lower() in industry_lower:
+                return {**values, 'source': f'Default {key} industry averages'}
+
+        return {**industry_defaults['default'], 'source': 'Default market averages'}
+
+    def _run(self, ticker: str, peer_tickers: str = "") -> str:
+        """Perform multiples-based valuation"""
+        try:
+            ticker_clean = ticker.upper().strip()
+
+            # Parse peer tickers
+            peers = [p.strip().upper() for p in peer_tickers.split(',') if p.strip()] if peer_tickers else []
+
+            # Fetch company data
+            fetcher = FinancialDataFetcher()
+            info = fetcher.get_stock_info(ticker_clean)
+            metrics = fetcher.get_key_metrics(ticker_clean)
+
+            if not info or not metrics:
+                return f"Error: Could not fetch data for {ticker_clean}"
+
+            # Extract key values
+            current_price = info.get('current_price', 0)
+            market_cap = info.get('market_cap', 0)
+            company_name = info.get('company_name', ticker_clean)
+            industry = info.get('industry', 'Unknown')
+            sector = info.get('sector', 'Unknown')
+
+            shares_outstanding = metrics.get('shares_outstanding', 0)
+            latest_revenue = metrics.get('latest_revenue', 0)
+            latest_ebit = metrics.get('latest_ebit', 0)
+            latest_net_income = metrics.get('latest_net_income', 0)
+            total_debt = metrics.get('total_debt', 0)
+            cash = metrics.get('cash_and_equivalents', 0)
+
+            # Calculate EBITDA (EBIT + D&A)
+            latest_da = metrics.get('latest_depreciation_amortization', 0)
+            ebitda = latest_ebit + latest_da if latest_ebit > 0 else 0
+
+            # Calculate Enterprise Value
+            enterprise_value = market_cap + total_debt - cash
+
+            # Validate we have enough data
+            if current_price <= 0 or shares_outstanding <= 0:
+                return f"Error: Insufficient data for {ticker_clean}. Missing price or shares outstanding."
+
+            # Calculate company's current multiples
+            eps = latest_net_income / shares_outstanding if shares_outstanding > 0 else 0
+            revenue_per_share = latest_revenue / shares_outstanding if shares_outstanding > 0 else 0
+
+            # Estimate book value per share (using rough proxy: market_cap / P/B of ~3)
+            # This is a simplification - ideally we'd fetch actual book value
+            book_value_per_share = current_price / 3  # Rough estimate
+
+            current_multiples = {
+                'pe': current_price / eps if eps > 0 else None,
+                'ev_ebitda': enterprise_value / ebitda if ebitda > 0 else None,
+                'ps': current_price / revenue_per_share if revenue_per_share > 0 else None,
+                'pb': 3.0  # Placeholder - would need actual book value
+            }
+
+            # Fetch peer/industry multiples
+            peer_multiples = self._fetch_peer_multiples_via_perplexity(ticker_clean, industry, peers)
+
+            # Calculate implied fair values
+            implied_values = {}
+            weighted_sum = 0
+            total_weight = 0
+
+            # P/E based valuation (weight: 30% if profitable, 0% if not)
+            if eps > 0 and peer_multiples.get('peer_pe'):
+                implied_pe_value = eps * peer_multiples['peer_pe']
+                implied_values['P/E'] = {
+                    'implied_value': implied_pe_value,
+                    'company_multiple': current_multiples['pe'],
+                    'peer_multiple': peer_multiples['peer_pe'],
+                    'weight': 0.30,
+                    'upside': ((implied_pe_value - current_price) / current_price * 100) if current_price > 0 else 0
+                }
+                weighted_sum += implied_pe_value * 0.30
+                total_weight += 0.30
+            else:
+                implied_values['P/E'] = {'error': 'Negative earnings - P/E not applicable', 'weight': 0}
+
+            # EV/EBITDA based valuation (weight: 35% if positive EBITDA, 0% if not)
+            if ebitda > 0 and peer_multiples.get('peer_ev_ebitda'):
+                implied_ev = ebitda * peer_multiples['peer_ev_ebitda']
+                implied_equity_value = implied_ev - total_debt + cash
+                implied_ev_ebitda_value = implied_equity_value / shares_outstanding if shares_outstanding > 0 else 0
+                implied_values['EV/EBITDA'] = {
+                    'implied_value': implied_ev_ebitda_value,
+                    'implied_ev': implied_ev,
+                    'company_multiple': current_multiples['ev_ebitda'],
+                    'peer_multiple': peer_multiples['peer_ev_ebitda'],
+                    'weight': 0.35,
+                    'upside': ((implied_ev_ebitda_value - current_price) / current_price * 100) if current_price > 0 else 0
+                }
+                weighted_sum += implied_ev_ebitda_value * 0.35
+                total_weight += 0.35
+            else:
+                implied_values['EV/EBITDA'] = {'error': 'Negative EBITDA - EV/EBITDA not applicable', 'weight': 0}
+
+            # P/S based valuation (weight: 25% - useful for unprofitable growth companies)
+            if revenue_per_share > 0 and peer_multiples.get('peer_ps'):
+                implied_ps_value = revenue_per_share * peer_multiples['peer_ps']
+                implied_values['P/S'] = {
+                    'implied_value': implied_ps_value,
+                    'company_multiple': current_multiples['ps'],
+                    'peer_multiple': peer_multiples['peer_ps'],
+                    'weight': 0.25,
+                    'upside': ((implied_ps_value - current_price) / current_price * 100) if current_price > 0 else 0
+                }
+                weighted_sum += implied_ps_value * 0.25
+                total_weight += 0.25
+            else:
+                implied_values['P/S'] = {'error': 'No revenue data - P/S not applicable', 'weight': 0}
+
+            # P/B based valuation (weight: 10% - more relevant for financials)
+            if book_value_per_share > 0 and peer_multiples.get('peer_pb'):
+                implied_pb_value = book_value_per_share * peer_multiples['peer_pb']
+                implied_values['P/B'] = {
+                    'implied_value': implied_pb_value,
+                    'company_multiple': current_multiples['pb'],
+                    'peer_multiple': peer_multiples['peer_pb'],
+                    'weight': 0.10,
+                    'upside': ((implied_pb_value - current_price) / current_price * 100) if current_price > 0 else 0
+                }
+                weighted_sum += implied_pb_value * 0.10
+                total_weight += 0.10
+            else:
+                implied_values['P/B'] = {'error': 'No book value data - P/B not applicable', 'weight': 0}
+
+            # Calculate weighted average fair value
+            if total_weight > 0:
+                weighted_avg_value = weighted_sum / total_weight
+                overall_upside = ((weighted_avg_value - current_price) / current_price * 100) if current_price > 0 else 0
+            else:
+                weighted_avg_value = 0
+                overall_upside = 0
+
+            # Determine rating based on multiples
+            if overall_upside > 15:
+                rating = "BUY (Undervalued)"
+            elif overall_upside < -15:
+                rating = "SELL (Overvalued)"
+            else:
+                rating = "HOLD (Fairly Valued)"
+
+            # Format output
+            output = []
+            output.append("=" * 80)
+            output.append(f"{'MULTIPLES VALUATION REPORT':^80}")
+            output.append("=" * 80)
+            output.append("")
+            output.append(f"Company:          {company_name} ({ticker_clean})")
+            output.append(f"Sector:           {sector}")
+            output.append(f"Industry:         {industry}")
+            output.append(f"Current Price:    ${current_price:.2f}")
+            output.append(f"Market Cap:       ${market_cap/1e9:.2f}B")
+            output.append(f"Enterprise Value: ${enterprise_value/1e9:.2f}B")
+            output.append("")
+
+            # Investment Summary
+            output.append("-" * 80)
+            output.append("INVESTMENT SUMMARY (Multiples-Based)")
+            output.append("-" * 80)
+            output.append("")
+            output.append(f"  Implied Fair Value:    ${weighted_avg_value:.2f}")
+            output.append(f"  Current Price:         ${current_price:.2f}")
+            output.append(f"  Upside/Downside:       {overall_upside:+.1f}%")
+            output.append(f"  Rating:                {rating}")
+            output.append("")
+
+            # Multiples Comparison Table
+            output.append("-" * 80)
+            output.append("MULTIPLES ANALYSIS")
+            output.append("-" * 80)
+            output.append("")
+            output.append(f"{'Multiple':<12} {'Company':>12} {'Peer Avg':>12} {'Implied Val':>14} {'Upside':>10} {'Weight':>8}")
+            output.append("-" * 80)
+
+            for multiple_name, data in implied_values.items():
+                if 'error' in data:
+                    output.append(f"{multiple_name:<12} {'N/A':>12} {'N/A':>12} {'N/A':>14} {'N/A':>10} {'0%':>8}")
+                else:
+                    company_mult = f"{data['company_multiple']:.1f}x" if data['company_multiple'] else 'N/A'
+                    peer_mult = f"{data['peer_multiple']:.1f}x"
+                    implied = f"${data['implied_value']:.2f}"
+                    upside = f"{data['upside']:+.1f}%"
+                    weight = f"{data['weight']*100:.0f}%"
+                    output.append(f"{multiple_name:<12} {company_mult:>12} {peer_mult:>12} {implied:>14} {upside:>10} {weight:>8}")
+
+            output.append("-" * 80)
+            output.append(f"{'WEIGHTED AVG':<12} {'':>12} {'':>12} ${weighted_avg_value:>13.2f} {overall_upside:>+9.1f}% {'100%':>8}")
+            output.append("")
+
+            # Key Financials Used
+            output.append("-" * 80)
+            output.append("KEY FINANCIALS USED")
+            output.append("-" * 80)
+            output.append("")
+            output.append(f"  EPS (TTM):              ${eps:.2f}")
+            output.append(f"  Revenue (TTM):          ${latest_revenue/1e9:.2f}B")
+            output.append(f"  EBITDA (TTM):           ${ebitda/1e9:.2f}B")
+            output.append(f"  Total Debt:             ${total_debt/1e9:.2f}B")
+            output.append(f"  Cash:                   ${cash/1e9:.2f}B")
+            output.append(f"  Shares Outstanding:     {shares_outstanding/1e9:.2f}B")
+            output.append("")
+
+            # Peer Data Source
+            output.append("-" * 80)
+            output.append("DATA SOURCES")
+            output.append("-" * 80)
+            output.append("")
+            if peers:
+                output.append(f"  Peer Companies:         {', '.join(peers)}")
+            output.append(f"  Multiples Source:       {peer_multiples.get('source', 'Unknown')}")
+            output.append("")
+
+            # Methodology Note
+            output.append("-" * 80)
+            output.append("METHODOLOGY NOTE")
+            output.append("-" * 80)
+            output.append("")
+            output.append("  Multiples valuation compares the company's trading metrics to peers/industry.")
+            output.append("  Weights: P/E (30%), EV/EBITDA (35%), P/S (25%), P/B (10%)")
+            output.append("  For best results, combine with DCF analysis (triangulation approach).")
+            output.append("")
+            output.append("  When to prefer MULTIPLES over DCF:")
+            output.append("  - Banks and financials (complex capital structures)")
+            output.append("  - REITs (use P/FFO instead)")
+            output.append("  - Mature, stable businesses with comparable peers")
+            output.append("  - Quick sanity checks on DCF results")
+            output.append("")
+            output.append("=" * 80)
+
+            return "\n".join(output)
+
+        except Exception as e:
+            logger.error(f"Error performing multiples valuation: {e}")
+            return f"Error performing multiples valuation for {ticker}: {str(e)}"
+
+    async def _arun(self, ticker: str, peer_tickers: str = "") -> str:
+        """Async version"""
+        return self._run(ticker, peer_tickers)
 
 
 class DCFReportInput(BaseModel):
@@ -1410,16 +1870,17 @@ class FormatDCFReportTool(BaseTool):
 
 
 def get_dcf_tools():
-    """Return list of all DCF analysis tools including context, market parameters, and report formatting"""
+    """Return list of all DCF analysis tools including context, market parameters, multiples, and report formatting"""
     from tools.context_tools import GetCompanyContextTool
     return [
-        GetCompanyContextTool(),      # Rich context first - business model, news, catalysts
+        GetCompanyContextTool(),           # Rich context first - business model, news, catalysts
         GetStockInfoTool(),
         GetFinancialMetricsTool(),
-        GetMarketParametersTool(),    # NEW: Focused Perplexity queries for DCF assumptions
-        CompetitorAnalysisTool(),     # Competitive analysis for market positioning
-        SearchWebTool(),              # Keep for qualitative research (industry, news, etc.)
-        PerformDCFAnalysisTool(),
-        GetDCFComparisonTool(),       # FMP DCF cross-validation (use after performing your DCF)
-        FormatDCFReportTool()         # NEW: Professional report formatting
+        GetMarketParametersTool(),         # Focused Perplexity queries for DCF assumptions
+        CompetitorAnalysisTool(),          # Competitive analysis for market positioning
+        SearchWebTool(),                   # Keep for qualitative research (industry, news, etc.)
+        PerformDCFAnalysisTool(),          # DCF valuation
+        PerformMultiplesValuationTool(),   # NEW: Multiples-based valuation (P/E, EV/EBITDA, P/S, P/B)
+        GetDCFComparisonTool(),            # FMP DCF cross-validation (use after performing your DCF)
+        FormatDCFReportTool()              # Professional report formatting
     ]

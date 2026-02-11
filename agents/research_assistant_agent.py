@@ -12,10 +12,11 @@ An interactive, conversational agent for financial research that:
 """
 
 import os
+import re
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.memory import ConversationSummaryBufferMemory
 
@@ -26,40 +27,61 @@ from agents.reasoning_callback import StreamingReasoningCallback
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Common words to exclude from ticker extraction (module-level constant for efficiency)
+COMMON_WORDS = {
+    'THE', 'AND', 'FOR', 'ARE', 'WAS', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN', 'HER',
+    'ONE', 'OUR', 'OUT', 'DAY', 'GET', 'HAS', 'HIM', 'HIS', 'HOW', 'ITS', 'MAY',
+    'NEW', 'NOW', 'OLD', 'SEE', 'TWO', 'WHO', 'BOY', 'DID', 'LET', 'PUT', 'SAY',
+    'SHE', 'TOO', 'USE', 'WHY', 'WAY', 'YET', 'BIG', 'END', 'FAR', 'FEW', 'GOT',
+    'HAD', 'HER', 'OWN', 'RAN', 'SAT', 'SAW', 'SET', 'SIX', 'TEN', 'TOP', 'TRY',
+    'WIN', 'YES', 'AGO', 'AIR', 'ASK', 'BAD', 'BAG', 'BED', 'BOX', 'BUY', 'CAR',
+    'CUT', 'DOG', 'EAT', 'EYE', 'FLY', 'FUN', 'GUN', 'HIT', 'HOT', 'JOB', 'KEY',
+    'LAW', 'LAY', 'LEG', 'LET', 'LIE', 'LOT', 'LOW', 'MAP', 'MET', 'MIX', 'NOR',
+    'ODD', 'OFF', 'OIL', 'PAY', 'PER', 'POT', 'RUN', 'SIT', 'SKY', 'SON', 'SUM',
+    'TAX', 'TEA', 'THE', 'TIE', 'VOW', 'WAR', 'WET', 'WIN', 'WON', 'YET', 'ZIP',
+    'TELL', 'ABOUT', 'WHAT', 'SHOW', 'GIVE', 'FIND', 'LOOK', 'HELP', 'INFO',
+    'PRICE', 'STOCK', 'SHARE', 'VALUE', 'DATA', 'YEAR', 'LAST', 'NEXT', 'THIS',
+    'THAT', 'WITH', 'FROM', 'HAVE', 'BEEN', 'WILL', 'WOULD', 'COULD', 'SHOULD',
+    # Financial terms that could be false positives
+    'CASH', 'DEBT', 'BETA', 'EBIT', 'CALL', 'PUTS', 'LONG', 'DOWN', 'RISK',
+    'HIGH', 'LOSS', 'GAIN', 'SELL', 'HOLD', 'RATE', 'BOND', 'FUND', 'LOAN',
+    'COST', 'FEES', 'SAFE', 'GROW', 'FALL', 'RISE', 'DROP', 'MOVE', 'BULL',
+    'BEAR', 'TERM', 'FREE', 'FLOW', 'MARGIN', 'RATIO', 'GROWTH', 'INCOME'
+}
+
 
 class FinancialResearchAssistant:
     """Interactive financial research assistant with memory and proactive suggestions"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True):
         """
         Initialize the Financial Research Assistant
 
         Args:
-            api_key: OpenAI API key (or uses OPENAI_API_KEY env var)
-            model: LLM model to use (default: gpt-4-turbo-preview)
+            api_key: Anthropic API key (or uses ANTHROPIC_API_KEY env var)
+            model: LLM model to use (default: claude-sonnet-4-5-20250929)
             show_reasoning: Whether to show agent reasoning steps (default: True)
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise ValueError("OpenAI API key is required")
+            raise ValueError("Anthropic API key is required")
 
         self.model_name = model
         self.show_reasoning = show_reasoning
 
         # Initialize LLM for conversational research
-        self.llm_base = ChatOpenAI(
+        self.llm_base = ChatAnthropic(
             temperature=0,  # Deterministic reasoning (like DCF and Analyst agents)
             model=model,
-            api_key=self.api_key,
-            streaming=True  # Enable token-by-token streaming
+            anthropic_api_key=self.api_key,
+            streaming=True,  # Enable token-by-token streaming
+            max_retries=3,  # Retry failed API calls
+            default_request_timeout=60.0,  # Request timeout in seconds
+            max_tokens=4096,  # Max output tokens
         )
 
-        # For models that don't support 'stop' parameter (like gpt-5.x), bind with empty stop sequences
-        # This prevents the ReAct agent from adding stop sequences
-        if "gpt-5" in model or "o1" in model or "o3" in model:
-            self.llm = self.llm_base.bind(stop=[])
-        else:
-            self.llm = self.llm_base
+        # No stop-sequence hack needed for Anthropic models
+        self.llm = self.llm_base
 
         # Use only research assistant core tools (quick data, calculations, news, comparisons, date context)
         # Removed DCF and Equity Analyst tools to reduce tool overload from 13 → 5 tools
@@ -79,8 +101,15 @@ class FinancialResearchAssistant:
         # Initialize reasoning callback
         self.reasoning_callback = StreamingReasoningCallback(verbose=show_reasoning)
 
-        # Create the agent
-        self.agent_executor = self._create_agent()
+        # Create the agent with error handling
+        try:
+            self.agent_executor = self._create_agent()
+        except Exception as e:
+            logger.error(f"Failed to create agent executor: {e}")
+            raise RuntimeError(
+                f"Failed to initialize Research Assistant agent: {str(e)}. "
+                "Please check your Anthropic API key and model availability."
+            ) from e
 
         # Track context
         self.current_ticker = None
@@ -151,7 +180,7 @@ To answer this question, I'll follow this plan:
 
 **TEMPORAL AWARENESS:**
 - Public companies report quarterly results 45-60 days after quarter end
-- Q4 data from {current_year} is NOT available yet
+- Use get_date_context tool to determine what quarterly data is currently available
 - When you see "last year", "recent", "last 5 years", ALWAYS use get_date_context first
 
 **EXAMPLE WORKFLOW:**
@@ -212,8 +241,8 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
         )
 
         # Create agent executor with memory
-        # Note: For models that don't support stop sequences (gpt-5.x, o1, o3),
-        # we need to ensure the executor doesn't try to add them
+        # Note: Anthropic models handle stop sequences natively,
+        # no special handling needed
         agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,
@@ -222,7 +251,7 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
             handle_parsing_errors=True,
             max_iterations=15,  # Increased to allow for planning + execution
             return_intermediate_steps=True,  # Capture the plan
-            max_execution_time=None
+            max_execution_time=300  # 5 minute timeout to prevent indefinite hangs
         )
 
         return agent_executor
@@ -233,40 +262,34 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
 
         Returns the most likely ticker or None if none found
         """
-        import re
-
-        # Strategy 1: Explicit $ prefix (highest confidence - e.g., $AAPL)
-        dollar_match = re.search(r'\$([A-Z]{1,5})\b', message)
+        # Strategy 1: Explicit $ prefix (highest confidence - e.g., $AAPL or $aapl)
+        # Case-insensitive to handle lowercase input
+        dollar_match = re.search(r'\$([A-Za-z]{1,5})\b', message)
         if dollar_match:
-            return dollar_match.group(1)
+            return dollar_match.group(1).upper()
 
-        # Strategy 2: Parentheses pattern (e.g., "Apple (AAPL)")
-        paren_match = re.search(r'\(([A-Z]{2,5})\)', message)
+        # Strategy 2: Parentheses pattern (e.g., "Apple (AAPL)" or "apple (aapl)")
+        paren_match = re.search(r'\(([A-Za-z]{2,5})\)', message)
         if paren_match:
-            return paren_match.group(1)
+            return paren_match.group(1).upper()
 
         # Strategy 3: All caps 2-5 letters, excluding common words
-        # More comprehensive exclusion list
-        common_words = {
-            'THE', 'AND', 'FOR', 'ARE', 'WAS', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN', 'HER',
-            'ONE', 'OUR', 'OUT', 'DAY', 'GET', 'HAS', 'HIM', 'HIS', 'HOW', 'ITS', 'MAY',
-            'NEW', 'NOW', 'OLD', 'SEE', 'TWO', 'WHO', 'BOY', 'DID', 'LET', 'PUT', 'SAY',
-            'SHE', 'TOO', 'USE', 'WHY', 'WAY', 'YET', 'BIG', 'END', 'FAR', 'FEW', 'GOT',
-            'HAD', 'HER', 'OWN', 'RAN', 'SAT', 'SAW', 'SET', 'SIX', 'TEN', 'TOP', 'TRY',
-            'WIN', 'YES', 'AGO', 'AIR', 'ASK', 'BAD', 'BAG', 'BED', 'BOX', 'BUY', 'CAR',
-            'CUT', 'DOG', 'EAT', 'EYE', 'FLY', 'FUN', 'GUN', 'HIT', 'HOT', 'JOB', 'KEY',
-            'LAW', 'LAY', 'LEG', 'LET', 'LIE', 'LOT', 'LOW', 'MAP', 'MET', 'MIX', 'NOR',
-            'ODD', 'OFF', 'OIL', 'PAY', 'PER', 'POT', 'RUN', 'SIT', 'SKY', 'SON', 'SUM',
-            'TAX', 'TEA', 'THE', 'TIE', 'VOW', 'WAR', 'WET', 'WIN', 'WON', 'YET', 'ZIP'
-        }
-
-        # Find all potential tickers
+        # Find all potential tickers (uppercase only for this strategy - indicates intentional ticker)
         potential_tickers = re.findall(r'\b([A-Z]{2,5})\b', message)
 
-        # Filter out common words
+        # Filter out common words (using module-level COMMON_WORDS constant)
         for ticker in potential_tickers:
-            if ticker not in common_words:
+            if ticker not in COMMON_WORDS:
                 return ticker
+
+        # Strategy 4: Check for lowercase ticker-like patterns at the end of the message
+        # E.g., "Tell me about aapl" - look for standalone word that looks like a ticker
+        words = message.lower().split()
+        for word in reversed(words):  # Check from end of message first
+            # Remove punctuation
+            clean_word = re.sub(r'[^\w]', '', word)
+            if 2 <= len(clean_word) <= 5 and clean_word.isalpha() and clean_word.upper() not in COMMON_WORDS:
+                return clean_word.upper()
 
         return None
 
@@ -303,7 +326,25 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
                 {"callbacks": [self.reasoning_callback]}
             )
 
-            return result["output"]
+            # Safely extract output with fallback
+            if isinstance(result, dict) and "output" in result:
+                output = result["output"]
+            elif isinstance(result, str):
+                output = result
+            else:
+                logger.warning(f"Unexpected result format: {type(result)}")
+                output = result
+
+            # Normalize Anthropic content blocks (list) to string
+            if isinstance(output, list):
+                output = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in output
+                )
+            elif not isinstance(output, str):
+                output = str(output) if output else "I couldn't generate a response. Please try again."
+
+            return output
 
         except Exception as e:
             logger.error(f"Error in conversation: {str(e)}")
@@ -314,23 +355,31 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
         self.memory.clear()
         self.current_ticker = None
         self.conversation_count = 0
+        # Also reset the reasoning callback to clear any stale state
+        self.reasoning_callback.reset()
         logger.info("Conversation memory cleared")
 
     def get_conversation_context(self) -> Dict:
         """Get current conversation context"""
+        try:
+            memory_vars = self.memory.load_memory_variables({})
+        except Exception as e:
+            logger.warning(f"Failed to load memory variables: {e}")
+            memory_vars = {"error": str(e)}
+
         return {
             "current_ticker": self.current_ticker,
             "conversation_count": self.conversation_count,
-            "memory": self.memory.load_memory_variables({})
+            "memory": memory_vars
         }
 
 
-def create_research_assistant(api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True) -> FinancialResearchAssistant:
+def create_research_assistant(api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> FinancialResearchAssistant:
     """
     Factory function to create a Financial Research Assistant
 
     Args:
-        api_key: OpenAI API key (optional, uses env var if not provided)
+        api_key: Anthropic API key (optional, uses env var if not provided)
         model: LLM model to use
         show_reasoning: Whether to display agent reasoning steps (default: True)
 
@@ -340,7 +389,7 @@ def create_research_assistant(api_key: Optional[str] = None, model: str = "gpt-5
     return FinancialResearchAssistant(api_key=api_key, model=model, show_reasoning=show_reasoning)
 
 
-def interactive_session(model: str = "gpt-5.2"):
+def interactive_session(model: str = "claude-sonnet-4-5-20250929"):
     """
     Run an interactive research session in the terminal
 
@@ -354,11 +403,11 @@ def interactive_session(model: str = "gpt-5.2"):
     print("informed investment decisions.")
     print("\nFeatures:")
     print("  • Answer questions about financial data")
-    print("  • Perform quick calculations")
+    print("  • Perform quick calculations (P/E, ROE, CAGR, etc.)")
     print("  • Explain recent news and developments")
-    print("  • Compare companies")
-    print("  • Deep-dive analysis with DCF valuation")
+    print("  • Compare companies side-by-side")
     print("  • Proactive suggestions on what to explore next")
+    print("\nNote: For DCF valuation, use the DCF Agent (--mode dcf)")
     print("\nCommands:")
     print("  • Type your question to get started")
     print("  • Type 'reset' to clear conversation memory")
@@ -373,7 +422,7 @@ def interactive_session(model: str = "gpt-5.2"):
         while True:
             # Get user input
             try:
-                user_input = input("\n💬 You: ").strip()
+                user_input = input("\nYou: ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\n\nGoodbye!")
                 break
@@ -388,18 +437,18 @@ def interactive_session(model: str = "gpt-5.2"):
 
             if user_input.lower() == 'reset':
                 assistant.reset_conversation()
-                print("\n✓ Conversation memory cleared. Starting fresh!\n")
+                print("\n[OK] Conversation memory cleared. Starting fresh!\n")
                 continue
 
             if user_input.lower() == 'context':
                 context = assistant.get_conversation_context()
-                print(f"\n📊 Conversation Context:")
+                print(f"\nConversation Context:")
                 print(f"   Current Ticker: {context['current_ticker'] or 'None'}")
                 print(f"   Messages Exchanged: {context['conversation_count']}")
                 continue
 
             # Get response from assistant
-            print("\n🤖 Assistant:")
+            print("\nAssistant:")
             response = assistant.chat(user_input)
             print(response)
             print()

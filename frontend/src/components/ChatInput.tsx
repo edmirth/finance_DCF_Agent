@@ -1,5 +1,5 @@
-import { useState, KeyboardEvent } from 'react';
-import { ArrowUp, Paperclip, Loader2, BarChart3, TrendingUp, Search, Globe, Briefcase, DollarSign } from 'lucide-react';
+import { KeyboardEvent, useState, useRef, useEffect } from 'react';
+import { Loader2, Zap, Paperclip, SlidersHorizontal, ChevronDown, BarChart3, TrendingUp, Search, Globe, Briefcase, DollarSign } from 'lucide-react';
 import { Agent } from '../types';
 
 interface ChatInputProps {
@@ -22,7 +22,20 @@ const agentIcons: Record<string, any> = {
   earnings: DollarSign,
 };
 
+const agentLabels: Record<string, string> = {
+  research: 'Research',
+  analyst: 'Analyst',
+  market: 'Market',
+  dcf: 'DCF',
+  portfolio: 'Portfolio',
+  earnings: 'Earnings',
+};
+
 function ChatInput({ value, onChange, onSend, isLoading, placeholder, agents, selectedAgent, onSelectAgent }: ChatInputProps) {
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -30,74 +43,119 @@ function ChatInput({ value, onChange, onSend, isLoading, placeholder, agents, se
     }
   };
 
+  // Auto-resize textarea
+  const handleInput = () => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 128) + 'px';
+    }
+  };
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    if (showDropdown) {
+      document.addEventListener('mousedown', handleClick);
+    }
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showDropdown]);
+
+  const canSend = value.trim().length > 0 && !isLoading;
+
   return (
-    <div className="bg-white/80 backdrop-blur-md rounded-full shadow-sm border border-gray-200/50 px-4 py-3 max-w-3xl mx-auto">
-      <div className="flex items-center gap-2">
-        {/* Agent Selector - Integrated */}
-        {agents && selectedAgent && onSelectAgent && (
-          <div className="flex items-center gap-1 pr-2 border-r border-gray-200">
-            {agents.map((agent) => {
-              const Icon = agentIcons[agent.id];
-              const isSelected = selectedAgent.id === agent.id;
-              return (
-                <button
-                  key={agent.id}
-                  onClick={() => onSelectAgent(agent)}
-                  className={`p-1.5 rounded-full transition-all ${
-                    isSelected
-                      ? 'bg-gray-900 text-white'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={agent.name}
-                >
-                  <Icon className="w-3.5 h-3.5" strokeWidth={2} />
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        <button
-          className="text-gray-400 hover:text-gray-600 transition-colors p-1"
-          disabled={isLoading}
-        >
-          <Paperclip className="w-4 h-4" />
-        </button>
-
+    <div className="rogo-input-box">
+      {/* Textarea area */}
+      <div className="input-area">
         <textarea
+          ref={textareaRef}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value);
+            handleInput();
+          }}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder || "Ask about markets, stocks, or financial analysis..."}
-          className="flex-1 resize-none outline-none text-gray-700 placeholder-gray-400 bg-transparent max-h-32 min-h-[24px]"
+          placeholder={placeholder || "Ask Phronesis anything..."}
           rows={1}
           disabled={isLoading}
-          style={{
-            height: 'auto',
-            minHeight: '24px',
-          }}
-          onInput={(e) => {
-            const target = e.target as HTMLTextAreaElement;
-            target.style.height = 'auto';
-            target.style.height = target.scrollHeight + 'px';
-          }}
         />
+      </div>
 
-        <button
-          onClick={onSend}
-          disabled={!value.trim() || isLoading}
-          className={`p-2.5 rounded-full transition-all ${
-            value.trim() && !isLoading
-              ? 'bg-gray-900 hover:bg-gray-800 text-white'
-              : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-          }`}
-        >
-          {isLoading ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
+      {/* Bottom toolbar */}
+      <div className="toolbar">
+        {/* Left icons */}
+        <div className="rogo-toolbar-left">
+          <button className="rogo-icon-btn" title="Quick prompts" disabled={isLoading}>
+            <Zap className="w-4 h-4" />
+          </button>
+          <button className="rogo-icon-btn" title="Attach file" disabled={isLoading}>
+            <Paperclip className="w-4 h-4" />
+          </button>
+          <button className="rogo-icon-btn" title="Settings" disabled={isLoading}>
+            <SlidersHorizontal className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Right side: agent selector + send */}
+        <div className="rogo-toolbar-right">
+          {/* Agent selector dropdown */}
+          {agents && selectedAgent && onSelectAgent && (
+            <div className="relative" ref={dropdownRef}>
+              <button
+                className="agent-selector"
+                onClick={() => setShowDropdown(!showDropdown)}
+                disabled={isLoading}
+              >
+                <span>{agentLabels[selectedAgent.id] || selectedAgent.name}</span>
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+
+              {showDropdown && (
+                <div className="agent-dropdown">
+                  {agents.map((agent) => {
+                    const Icon = agentIcons[agent.id];
+                    const isActive = selectedAgent.id === agent.id;
+                    return (
+                      <button
+                        key={agent.id}
+                        className={`agent-dropdown-item ${isActive ? 'active' : ''}`}
+                        onClick={() => {
+                          onSelectAgent(agent);
+                          setShowDropdown(false);
+                        }}
+                      >
+                        <div className="agent-icon">
+                          <Icon className="w-3.5 h-3.5" />
+                        </div>
+                        <span>{agentLabels[agent.id] || agent.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
-        </button>
+
+          {/* Send button */}
+          <button
+            onClick={onSend}
+            disabled={!canSend}
+            className={`rogo-send-btn ${canSend ? 'active' : 'disabled'}`}
+            aria-label="Send message"
+          >
+            {isLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M3 8H13M13 8L8.5 3.5M13 8L8.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );

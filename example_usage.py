@@ -242,9 +242,9 @@ if __name__ == "__main__":
     print("DCF Analysis Agent - Example Usage\n")
 
     # Check for API key
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY not found in environment variables.")
-        print("Please create a .env file with your OpenAI API key.")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("Error: ANTHROPIC_API_KEY not found in environment variables.")
+        print("Please create a .env file with your Anthropic API key.")
         exit(1)
 
     # Choose which examples to run

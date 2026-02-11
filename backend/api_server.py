@@ -8,10 +8,11 @@ import asyncio
 import logging
 from typing import Optional, AsyncGenerator, Any, Dict, List
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 import sys
 import requests
@@ -31,6 +32,7 @@ from backend.config import (
 from backend.callbacks.streaming import StreamingCallbackHandler
 from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
+from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.research_assistant_agent import create_research_assistant
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
@@ -51,6 +53,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add validation error handler for better debugging
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors for debugging"""
+    body = await request.body()
+    logger.error(f"Validation error on {request.url.path}")
+    logger.error(f"Request body: {body}")
+    logger.error(f"Validation errors: {exc.errors()}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": body.decode('utf-8')}
+    )
+
 # Store active agents (in production, use proper session management)
 agents_cache = {}
 
@@ -58,6 +73,7 @@ agents_cache = {}
 AGENT_FALLBACK_METHODS = {
     "dcf": "analyze",
     "analyst": "analyze",
+    "graph": "analyze",  # LangGraph equity analyst
     "research": "chat",  # Research uses 'chat' instead of 'analyze'
     "market": "analyze",
     "portfolio": "analyze",
@@ -108,9 +124,10 @@ def extract_ticker_from_query(query: str) -> Optional[str]:
 class ChatMessage(BaseModel):
     """Chat message model"""
     message: str
-    agent_type: str = "research"  # dcf, analyst, research, market
-    model: str = "gpt-5.2"
+    agent_type: str = "research"  # dcf, analyst, graph, research, market, portfolio, earnings
+    model: str = "claude-sonnet-4-5-20250929"
     session_id: Optional[str] = None
+    is_followup: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -131,6 +148,8 @@ def get_or_create_agent(agent_type: str, model: str):
                 agents_cache[cache_key] = create_dcf_agent(model=model)
             elif agent_type == "analyst":
                 agents_cache[cache_key] = create_equity_analyst_agent(model=model)
+            elif agent_type == "graph":
+                agents_cache[cache_key] = create_equity_analyst_graph(model=model)
             elif agent_type == "research":
                 agents_cache[cache_key] = create_research_assistant(model=model)
             elif agent_type == "market":
@@ -147,7 +166,31 @@ def get_or_create_agent(agent_type: str, model: str):
     return agents_cache[cache_key]
 
 
-async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: asyncio.Queue):
+def _ensure_str_response(value) -> str:
+    """Normalize Anthropic content blocks (list) or other types to a plain string.
+
+    ChatAnthropic returns AIMessage.content as a list of content blocks
+    (e.g., [{"type": "text", "text": "..."}]) instead of a plain string.
+    This function extracts the text from all blocks and returns a single string.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, dict):
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+            else:
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(str(text))
+        return "".join(parts)
+    return str(value) if value is not None else ""
+
+
+async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: asyncio.Queue, is_followup: bool = False):
     """
     Run agent in executor with callback handler.
 
@@ -157,8 +200,9 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
     Args:
         agent: LangChain agent instance (with agent_executor or fallback method)
         message: User's input message to process
-        agent_type: One of 'dcf', 'analyst', 'research', 'market', 'portfolio', 'earnings'
+        agent_type: One of 'dcf', 'analyst', 'graph', 'research', 'market', 'portfolio', 'earnings'
         queue: Async queue for streaming events to SSE response
+        is_followup: Whether this is a follow-up question (earnings agent only)
     """
     loop = asyncio.get_event_loop()
     callback = StreamingCallbackHandler(queue)
@@ -170,10 +214,13 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
 
         # Try to use agent_executor first (preferred method with callbacks)
         if hasattr(agent, 'agent_executor'):
+            input_dict = {"input": message}
+            if is_followup:
+                input_dict["followup"] = True
             response = await loop.run_in_executor(
                 None,
                 lambda: agent.agent_executor.invoke(
-                    {"input": message},
+                    input_dict,
                     config={"callbacks": [callback]}
                 )["output"]
             )
@@ -183,6 +230,9 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             fallback_method = getattr(agent, fallback_method_name)
             response = await loop.run_in_executor(None, fallback_method, message)
 
+        # Normalize response to string — Anthropic returns list of content blocks
+        response = _ensure_str_response(response)
+
         await queue.put({"type": "response", "content": response})
         await queue.put({"type": "done"})
 
@@ -190,7 +240,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
         await queue.put({"type": "error", "error": str(e)})
 
 
-async def stream_agent_response(message: str, agent_type: str, model: str) -> AsyncGenerator[str, None]:
+async def stream_agent_response(message: str, agent_type: str, model: str, is_followup: bool = False) -> AsyncGenerator[str, None]:
     """Stream agent response using Server-Sent Events with thinking process"""
     queue = asyncio.Queue()
 
@@ -207,7 +257,7 @@ async def stream_agent_response(message: str, agent_type: str, model: str) -> As
             yield f"data: {json.dumps({'type': 'ticker_metadata', 'ticker': ticker})}\n\n"
 
         # Start agent execution in background
-        task = asyncio.create_task(run_agent_with_callbacks(agent, message, agent_type, queue))
+        task = asyncio.create_task(run_agent_with_callbacks(agent, message, agent_type, queue, is_followup))
 
         # Stream events from queue
         while True:
@@ -299,11 +349,13 @@ async def list_agents():
 @app.post("/chat/stream")
 async def chat_stream(chat_message: ChatMessage):
     """Stream chat response using Server-Sent Events"""
+    logger.info(f"[CHAT_STREAM] Received request - agent_type: {chat_message.agent_type}, model: {chat_message.model}, message length: {len(chat_message.message)}")
     return StreamingResponse(
         stream_agent_response(
             chat_message.message,
             chat_message.agent_type,
-            chat_message.model
+            chat_message.model,
+            chat_message.is_followup,
         ),
         media_type="text/event-stream",
         headers={
@@ -471,10 +523,11 @@ async def health_check():
     """Detailed health check"""
     # Check if API keys are set
     api_keys = {
-        "openai": bool(os.getenv("OPENAI_API_KEY")),
+        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
         "financial_datasets": bool(os.getenv("FINANCIAL_DATASETS_API_KEY")),
         "perplexity": bool(os.getenv("PERPLEXITY_API_KEY")),
-        "massive": bool(os.getenv("MASSIVE_API_KEY"))
+        "massive": bool(os.getenv("MASSIVE_API_KEY")),
+        "alpha_vantage": bool(os.getenv("ALPHA_VANTAGE_API_KEY"))
     }
 
     return {
@@ -489,8 +542,8 @@ if __name__ == "__main__":
     import uvicorn
 
     # Check for required API keys
-    if not os.getenv("OPENAI_API_KEY"):
-        print("ERROR: OPENAI_API_KEY not set in .env file")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("ERROR: ANTHROPIC_API_KEY not set in .env file")
         sys.exit(1)
 
     print("Starting Financial Analysis API Server...")

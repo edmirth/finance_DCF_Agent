@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 from data.market_data import MarketDataFetcher
+from shared.retry_utils import retry_with_backoff, RetryConfig
 
 
 class MarketOverviewInput(BaseModel):
@@ -218,6 +219,22 @@ class GetMarketNewsTool(BaseTool):
     """
     args_schema: type[BaseModel] = MarketNewsInput
 
+    @retry_with_backoff(RetryConfig(
+        max_attempts=3,
+        base_delay=1.5,
+        max_delay=45.0
+    ))
+    def _make_perplexity_request(self, headers: Dict, payload: Dict) -> requests.Response:
+        """Make Perplexity API request with retry logic"""
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response
+
     def _run(self, query: Optional[str] = None) -> str:
         """Fetch market news"""
         try:
@@ -253,12 +270,8 @@ class GetMarketNewsTool(BaseTool):
                 "temperature": 0.2
             }
 
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
+            # Use retry-wrapped request
+            response = self._make_perplexity_request(headers, payload)
 
             if response.status_code == 200:
                 result = response.json()

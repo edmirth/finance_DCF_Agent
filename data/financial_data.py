@@ -7,6 +7,7 @@ import time
 import threading
 from typing import Dict, Optional, List
 import logging
+from shared.retry_utils import retry_with_backoff, RetryConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,13 +27,18 @@ class FinancialDataFetcher:
     BASE_URL = "https://api.financialdatasets.ai"
     _instance = None
     _shared_cache = {}
-    _cache_lock = threading.RLock()  # Bug #14 Fix: Thread-safe cache access
+    _cache_lock = threading.RLock()  # Thread-safe cache access
+    _instance_lock = threading.Lock()  # Thread-safe singleton initialization
 
     def __new__(cls, api_key: Optional[str] = None):
-        """Singleton pattern to ensure cache is shared across all instances"""
+        """Singleton pattern to ensure cache is shared across all instances (thread-safe)"""
+        # Double-checked locking pattern for thread-safe singleton
         if cls._instance is None:
-            cls._instance = super(FinancialDataFetcher, cls).__new__(cls)
-            cls._instance._initialized = False
+            with cls._instance_lock:
+                # Check again inside the lock to prevent race condition
+                if cls._instance is None:
+                    cls._instance = super(FinancialDataFetcher, cls).__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
 
     def __init__(self, api_key: Optional[str] = None):
@@ -88,45 +94,65 @@ class FinancialDataFetcher:
             }
             logger.info(f"Cached {cache_key}")
 
-    def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
-        """Make API GET request with error handling"""
+    @retry_with_backoff(RetryConfig(
+        max_attempts=3,
+        base_delay=1.0,
+        max_delay=30.0
+    ))
+    def _make_request_with_retry(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
+        """Internal method with retry logic (raises exceptions)"""
         url = f"{self.BASE_URL}{endpoint}"
+        logger.info(f"Making GET request to {endpoint} with params: {params}")
+        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """Make API GET request with error handling and retry logic"""
         try:
-            logger.info(f"Making GET request to {endpoint} with params: {params}")
-            response = requests.get(url, headers=self.headers, params=params, timeout=30)
-            response.raise_for_status()
-            return response.json()
+            return self._make_request_with_retry(endpoint, params)
         except requests.exceptions.HTTPError as e:
-            if response.status_code == 401:
-                logger.error(f"Invalid API key for Financial Datasets")
-            elif response.status_code == 404:
-                logger.error(f"Ticker not found: {params.get('ticker', 'unknown')}")
-            elif response.status_code == 402:
-                logger.error(f"This endpoint requires a paid subscription")
-            else:
-                logger.error(f"HTTP error {response.status_code}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code == 401:
+                    logger.error(f"Invalid API key for Financial Datasets")
+                elif e.response.status_code == 404:
+                    logger.error(f"Ticker not found: {params.get('ticker', 'unknown')}")
+                elif e.response.status_code == 402:
+                    logger.error(f"This endpoint requires a paid subscription")
+                else:
+                    logger.error(f"HTTP error {e.response.status_code}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error making request to {endpoint}: {e}")
             return None
 
-    def _make_post_request(self, endpoint: str, payload: Dict) -> Optional[Dict]:
-        """Make API POST request with error handling"""
+    @retry_with_backoff(RetryConfig(
+        max_attempts=3,
+        base_delay=1.0,
+        max_delay=30.0
+    ))
+    def _make_post_request_with_retry(self, endpoint: str, payload: Dict) -> Dict:
+        """Internal method with retry logic (raises exceptions)"""
         url = f"{self.BASE_URL}{endpoint}"
+        logger.info(f"Making POST request to {endpoint} with payload: {payload}")
+        response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def _make_post_request(self, endpoint: str, payload: Dict) -> Optional[Dict]:
+        """Make API POST request with error handling and retry logic"""
         try:
-            logger.info(f"Making POST request to {endpoint} with payload: {payload}")
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            response.raise_for_status()
-            return response.json()
+            return self._make_post_request_with_retry(endpoint, payload)
         except requests.exceptions.HTTPError as e:
-            if response.status_code == 401:
-                logger.error(f"Invalid API key for Financial Datasets")
-            elif response.status_code == 402:
-                logger.error(f"This endpoint requires a paid subscription")
-            elif response.status_code == 400:
-                logger.error(f"Bad request - invalid filter parameters")
-            else:
-                logger.error(f"HTTP error {response.status_code}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code == 401:
+                    logger.error(f"Invalid API key for Financial Datasets")
+                elif e.response.status_code == 402:
+                    logger.error(f"This endpoint requires a paid subscription")
+                elif e.response.status_code == 400:
+                    logger.error(f"Bad request - invalid filter parameters")
+                else:
+                    logger.error(f"HTTP error {e.response.status_code}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error making POST request to {endpoint}: {e}")
@@ -567,39 +593,48 @@ class FinancialDataFetcher:
     # FMP DCF API Methods (for cross-validation and levered DCF)
     # =========================================================================
 
+    @retry_with_backoff(RetryConfig(
+        max_attempts=3,
+        base_delay=2.0,
+        max_delay=60.0
+    ))
+    def _make_fmp_request_with_retry(self, endpoint: str, params: Dict) -> Dict:
+        """Internal method with retry logic (raises exceptions)"""
+        url = f"{FMP_BASE_URL}{endpoint}"
+        logger.info(f"Making FMP request to {endpoint}")
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        # FMP returns list for most endpoints
+        if isinstance(data, list) and len(data) > 0:
+            return data[0]
+        elif isinstance(data, dict):
+            return data
+        else:
+            logger.warning(f"Empty response from FMP for {endpoint}")
+            return None
+
     def _make_fmp_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
-        """Make FMP API request with error handling"""
+        """Make FMP API request with error handling and retry logic"""
         if not self.fmp_api_key:
             logger.error("FMP API key not configured. Cannot make FMP requests.")
             return None
 
-        url = f"{FMP_BASE_URL}{endpoint}"
         if params is None:
             params = {}
         params["apikey"] = self.fmp_api_key
 
         try:
-            logger.info(f"Making FMP request to {endpoint}")
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            # FMP returns list for most endpoints
-            if isinstance(data, list) and len(data) > 0:
-                return data[0]
-            elif isinstance(data, dict):
-                return data
-            else:
-                logger.warning(f"Empty response from FMP for {endpoint}")
-                return None
-
+            return self._make_fmp_request_with_retry(endpoint, params)
         except requests.exceptions.HTTPError as e:
-            if response.status_code == 401:
-                logger.error("Invalid FMP API key")
-            elif response.status_code == 403:
-                logger.error("FMP API endpoint requires higher subscription tier")
-            else:
-                logger.error(f"FMP HTTP error {response.status_code}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code == 401:
+                    logger.error("Invalid FMP API key")
+                elif e.response.status_code == 403:
+                    logger.error("FMP API endpoint requires higher subscription tier")
+                else:
+                    logger.error(f"FMP HTTP error {e.response.status_code}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error making FMP request to {endpoint}: {e}")

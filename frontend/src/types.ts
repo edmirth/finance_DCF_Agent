@@ -63,6 +63,7 @@ export interface ChatRequest {
   agent_type: string;
   model: string;
   session_id?: string;
+  is_followup?: boolean;
 }
 
 export interface StreamEvent {
@@ -102,4 +103,11 @@ export interface PortfolioHolding {
   ticker: string;
   shares: number;
   cost_basis: number;
+}
+
+export interface Citation {
+  id: number;
+  title: string;
+  url?: string;
+  type: 'financial_data' | 'web_search' | 'news' | 'calculation';
 }

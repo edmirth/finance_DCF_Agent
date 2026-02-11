@@ -7,8 +7,49 @@ from pydantic import BaseModel, Field
 import os
 from openai import OpenAI
 import logging
+from shared.retry_utils import retry_with_backoff, RetryConfig
 
 logger = logging.getLogger(__name__)
+
+
+# =========================================================================
+# Retry-Wrapped API Helpers
+# =========================================================================
+
+@retry_with_backoff(RetryConfig(
+    max_attempts=3,
+    base_delay=1.5,
+    max_delay=45.0
+))
+def _perplexity_api_call(client: OpenAI, query: str, system_prompt: str):
+    """
+    Internal function with retry logic for Perplexity API completion calls.
+
+    Args:
+        client: OpenAI client configured for Perplexity
+        query: User query
+        system_prompt: System prompt for the model
+
+    Returns:
+        ChatCompletion response from Perplexity
+
+    Raises:
+        Exception: On API errors (will be retried by decorator)
+    """
+    response = client.chat.completions.create(
+        model="sonar-pro",
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": query
+            }
+        ],
+    )
+    return response
 
 
 # Input Schemas
@@ -89,16 +130,9 @@ class IndustryAnalysisTool(BaseTool):
 
 Provide specific numbers and data points with sources."""
 
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert industry analyst. Provide detailed, data-driven analysis with specific metrics and cite your sources."
-                    },
-                    {"role": "user", "content": query}
-                ],
-            )
+            # Use retry-wrapped API call
+            system_prompt = "You are an expert industry analyst. Provide detailed, data-driven analysis with specific metrics and cite your sources."
+            response = _perplexity_api_call(client, query, system_prompt)
 
             if response.choices and len(response.choices) > 0:
                 return f"Industry Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
@@ -189,16 +223,9 @@ class CompetitorAnalysisTool(BaseTool):
 
 Provide specific numbers and recent data with sources."""
 
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert competitive analyst. Provide detailed comparisons with specific metrics and cite your sources."
-                    },
-                    {"role": "user", "content": query}
-                ],
-            )
+            # Use retry-wrapped API call
+            system_prompt = "You are an expert competitive analyst. Provide detailed comparisons with specific metrics and cite your sources."
+            response = _perplexity_api_call(client, query, system_prompt)
 
             if response.choices and len(response.choices) > 0:
                 return f"Competitor Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
@@ -283,16 +310,9 @@ class MoatAnalysisTool(BaseTool):
 
 Provide specific examples and data with sources."""
 
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert in competitive strategy and moat analysis. Assess competitive advantages critically with evidence and cite sources."
-                    },
-                    {"role": "user", "content": query}
-                ],
-            )
+            # Use retry-wrapped API call
+            system_prompt = "You are an expert in competitive strategy and moat analysis. Assess competitive advantages critically with evidence and cite sources."
+            response = _perplexity_api_call(client, query, system_prompt)
 
             if response.choices and len(response.choices) > 0:
                 return f"Competitive Moat Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
@@ -371,16 +391,9 @@ class ManagementAnalysisTool(BaseTool):
 
 Provide specific examples, data, and recent developments with sources."""
 
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert in management assessment and corporate governance. Provide balanced analysis with specific evidence and cite sources."
-                    },
-                    {"role": "user", "content": query}
-                ],
-            )
+            # Use retry-wrapped API call
+            system_prompt = "You are an expert in management assessment and corporate governance. Provide balanced analysis with specific evidence and cite sources."
+            response = _perplexity_api_call(client, query, system_prompt)
 
             if response.choices and len(response.choices) > 0:
                 return f"Management Quality Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"

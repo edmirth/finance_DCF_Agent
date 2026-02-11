@@ -4,15 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An AI-powered financial analysis system with five specialized agents built using LangChain and LangGraph:
+An AI-powered financial analysis system with seven specialized agents built using LangChain and LangGraph:
 
 1. **DCF Agent** - Fast quantitative valuation using Discounted Cash Flow methodology
 2. **Equity Analyst Agent** - Comprehensive equity research reports (industry, competitors, moat, valuation)
-3. **Research Assistant Agent** - Interactive conversational research tool with context memory
-4. **Market Agent** - Market conditions, sentiment, regime classification, and sector analysis
-5. **Portfolio Agent** - Portfolio analysis with performance metrics, diversification, and tax optimization
+3. **LangGraph Equity Analyst** - **NEW!** Structured 10-step equity research workflow using LangGraph
+4. **Research Assistant Agent** - Interactive conversational research tool with context memory
+5. **Market Agent** - Market conditions, sentiment, regime classification, and sector analysis
+6. **Portfolio Agent** - Portfolio analysis with performance metrics, diversification, and tax optimization
+7. **Earnings Agent** - Comprehensive earnings analysis with quarterly trends, analyst estimates, surprises, and management commentary from earnings calls
 
-All agents use the ReAct pattern for autonomous decision-making and tool selection.
+Most agents use the ReAct pattern for autonomous decision-making. The LangGraph Equity Analyst and Earnings Agent use structured graph workflows for deterministic, reproducible analysis.
 
 ## Setup and Environment
 
@@ -41,12 +43,14 @@ OPENAI_API_KEY=your_openai_api_key_here
 FINANCIAL_DATASETS_API_KEY=your_financial_datasets_api_key_here
 PERPLEXITY_API_KEY=your_perplexity_api_key_here
 MASSIVE_API_KEY=your_massive_api_key_here  # Optional, for Market Agent
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key_here  # Optional, free tier (25 req/day) for earnings transcripts
 ```
 
 API Sources:
 - **Financial Datasets AI** - Historical financial data ([financialdatasets.ai](https://financialdatasets.ai))
 - **Perplexity Sonar API** - Web search for current market data ([perplexity.ai/settings/api](https://www.perplexity.ai/settings/api))
 - **Massive.com** - Real-time market data (optional for Market Agent)
+- **Alpha Vantage** - Free earnings call transcripts and earnings history ([alphavantage.co](https://www.alphavantage.co/support/#api-key)) — 25 req/day free tier
 
 ### Verify Setup
 ```bash
@@ -92,11 +96,15 @@ python main.py --mode dcf --ticker GOOGL --model gpt-4o
 
 ### Equity Research Analysis (Comprehensive Report)
 ```bash
-# Full equity research report
+# Full equity research report (ReAct agent)
 python main.py --mode analyst --ticker AAPL
 
-# Interactive equity analyst mode
+# LangGraph equity research (structured 10-step workflow)
+python main.py --mode graph --ticker AAPL
+
+# Interactive modes
 python main.py --mode analyst --interactive
+python main.py --mode graph --interactive
 ```
 
 ### Research Assistant (Interactive Exploration)
@@ -149,7 +157,8 @@ finance_dcf_agent/
 ├── agents/              # Agent implementations
 │   ├── dcf_agent.py                    # DCF valuation agent (ReAct)
 │   ├── equity_analyst_agent.py         # Comprehensive research agent (ReAct)
-│   ├── equity_analyst_graph.py         # LangGraph implementation (not integrated)
+│   ├── equity_analyst_graph.py         # LangGraph equity analyst (✅ INTEGRATED)
+│   ├── earnings_agent.py               # Earnings-focused agent (LangGraph)
 │   ├── research_assistant_agent.py     # Interactive conversational agent
 │   ├── market_agent.py                 # Market analysis agent
 │   └── portfolio_agent.py              # Portfolio analyzer agent
@@ -185,6 +194,12 @@ The system uses **specialized agents** that share common infrastructure but have
 - Focus: Comprehensive equity research like a professional analyst
 - Pattern: ReAct agent with extended workflow (industry → competitors → moat → valuation)
 
+**LangGraph Equity Analyst** (`agents/equity_analyst_graph.py`) ✅ **NEW**
+- Tools: Same as Equity Analyst Agent
+- Focus: Comprehensive equity research with **structured, deterministic workflow**
+- Pattern: LangGraph with 10 fixed steps (company info → financials → industry → competitors → moat → management → DCF → thesis → recommendation → report)
+- Benefits: Reproducible, debuggable, predictable execution order, better progress visibility
+
 **Research Assistant Agent** (`agents/research_assistant_agent.py`)
 - Tools: Financial lookups, calculations, comparisons, news, deep-dive analysis triggers
 - Focus: Interactive exploration with conversation memory
@@ -199,6 +214,12 @@ The system uses **specialized agents** that share common infrastructure but have
 - Tools: `calculate_portfolio_metrics`, `analyze_diversification`, `identify_tax_loss_harvesting`
 - Focus: Portfolio performance analysis, risk assessment, and tax optimization
 - Pattern: ReAct agent with systematic portfolio analysis workflow
+
+**Earnings Agent** (`agents/earnings_agent.py`)
+- Tools: `get_quarterly_earnings`, `get_analyst_estimates`, `get_earnings_surprises`, `get_earnings_call_insights`, `compare_peer_earnings`, `get_price_targets`, `get_analyst_ratings`
+- Focus: Comprehensive earnings analysis with management commentary from actual earnings call transcripts
+- Pattern: 8-node LangGraph workflow (parallel data gathering → 1 analysis LLM call → 1 thesis LLM call → report)
+- **Earnings Call Insights Tool** - Extracts primary source management quotes, guidance, and sentiment from earnings transcripts (Alpha Vantage → FMP → Perplexity fallback)
 
 ### Core Data Flow
 
@@ -265,6 +286,22 @@ User Query → Agent (LLM) → Tool Selection → Tool Execution → Observation
 3. Tax Optimization - `identify_tax_loss_harvesting` for tax-saving opportunities
 4. Final Recommendations - Synthesize findings into prioritized action items
 
+**Earnings Agent Workflow** (8-node LangGraph, 2 LLM calls):
+1. **Node 1**: Fetch company info (price, sector, market cap)
+2. **Nodes 2-4 (Parallel Data Gathering)**:
+   - Node 2: Fetch quarterly earnings history (revenue, EPS, margins, cash flow)
+   - Node 3: Fetch analyst estimates (forward EPS and revenue forecasts)
+   - Node 4: Fetch earnings surprises, **earnings call insights**, and peer comparison
+3. **Node 5**: Aggregate (sync point — waits for all parallel nodes)
+4. **Node 6**: Comprehensive analysis (1 LLM call — covers trends, quality, guidance, competition, valuation)
+5. **Node 7**: Investment thesis + BUY/HOLD/SELL rating + price target (1 LLM call)
+6. **Node 8**: Generate formatted report
+
+**Earnings Call Insights Tool** (Node 4):
+- Fetches earnings call transcripts with 3-tier fallback: Alpha Vantage (free) → FMP (premium) → Perplexity web search
+- Extracts management quotes, forward guidance, Q&A themes, and sentiment
+- Uses Perplexity Sonar Pro to analyze raw transcripts into structured insights
+
 ### DCF Methodology Details
 
 **Valuation Formula**:
@@ -320,9 +357,35 @@ The web interface uses a modern client-server architecture:
 5. SSE streams events back to frontend in real-time
 6. React UI updates as each event arrives
 
-### LangGraph Implementation Note
+### LangGraph Integration ✅
 
-There is a LangGraph implementation in `agents/equity_analyst_graph.py` but it's **not currently integrated** due to version conflicts (see `requirements.txt:10-12`). The active equity analyst uses standard LangChain ReAct pattern.
+LangGraph is **fully integrated** and production-ready:
+
+- **Earnings Agent**: 8-node LangGraph workflow (parallel data gathering → 2 LLM calls → report)
+- **LangGraph Equity Analyst**: 10-step structured workflow (available via `--mode graph`)
+
+Current versions are compatible:
+- `langchain`: 0.3.27
+- `langgraph`: 0.6.11
+
+#### When to Use `--mode analyst` vs `--mode graph`
+
+Both modes produce comprehensive equity research reports. Choose based on your needs:
+
+**Use `--mode analyst` (ReAct) when:**
+- You want flexible, adaptive analysis
+- You need the agent to make context-aware decisions
+- You're okay with variable execution time and order
+- You want the agent to potentially skip irrelevant steps
+
+**Use `--mode graph` (LangGraph) when:**
+- You need consistent, reproducible results
+- You want to see exactly which step is executing
+- You prefer deterministic execution order
+- You want better debugging and observability
+- You're building automated workflows that need predictability
+
+Both modes use the same tools and provide similar depth of analysis.
 
 ## Development Commands
 
@@ -484,6 +547,57 @@ The `perform_dcf_analysis` tool accepts (`tools/dcf_tools.py:28-64`):
 
 Agents are instructed to pass web-researched values for beta, risk_free_rate, and revenue_growth_rate.
 
+### Earnings Call Insights Tool Parameters
+
+The `get_earnings_call_insights` tool accepts (`tools/earnings_tools.py`):
+- `ticker` (str, required): Stock ticker symbol
+- `query` (Optional[str], default=None): Specific focus area (e.g., "AI strategy", "margins", "iPhone demand")
+- `quarters` (int, default=1): Number of recent quarters to analyze (1-8)
+
+**Data Sources (3-tier automatic fallback)**:
+1. **Primary (Free): Alpha Vantage** earnings call transcripts
+   - Endpoint: `https://www.alphavantage.co/query?function=EARNINGS_CALL_TRANSCRIPT`
+   - **Free tier**: 25 requests/day (get a key at [alphavantage.co](https://www.alphavantage.co/support/#api-key))
+   - 15+ years of transcripts (back to 2010) with speaker attribution
+   - Client: `data/alpha_vantage.py` with singleton, caching, and rate limiting
+   - If rate limited or unavailable, automatically falls back to FMP
+
+2. **Secondary (Premium FMP users)**: FMP earnings call transcripts
+   - Endpoint: `https://financialmodelingprep.com/stable/earning-call-transcript`
+   - **Note**: Requires FMP premium subscription (as of August 2025)
+   - Provides full verbatim transcripts with speaker attribution
+   - If unavailable (402/403 error), automatically falls back to Perplexity
+
+3. **Fallback (Always available)**: Perplexity web search
+   - Searches authoritative financial sources (news, analyst reports, earnings summaries)
+   - Still provides comprehensive structured analysis
+   - Includes management commentary, guidance, Q&A themes, and sentiment
+   - **Analysis quality remains high** using web-based sources
+
+**Analysis Engine**: Perplexity Sonar Pro with structured prompts
+- 5-part analysis framework: Financial Highlights, Management Commentary, Forward Guidance, Analyst Q&A, Tone & Sentiment
+- Outputs markdown-formatted report (800-1200 words typically)
+- Includes specific numbers, quotes (when available), and sentiment assessment
+
+**Example Usage**:
+```python
+# General comprehensive analysis
+tool.run(ticker="AAPL", quarters=1)
+
+# Focused query on specific topic
+tool.run(ticker="TSLA", query="What did management say about Full Self-Driving?", quarters=2)
+
+# Multi-quarter analysis
+tool.run(ticker="NVDA", quarters=4)
+```
+
+**Data Source Notes**:
+- **Recommended**: Set `ALPHA_VANTAGE_API_KEY` for free primary-source transcripts (25 req/day)
+- If you also have FMP premium access, FMP serves as a secondary transcript source
+- For users without either key, Perplexity fallback provides excellent analysis quality
+- No code changes needed — cascade is automatic and seamless
+- Alpha Vantage EARNINGS endpoint also provides earnings surprise history (1 call = full history)
+
 ### Portfolio Tool Input Format
 
 The Portfolio Agent expects portfolio data as a JSON string with the following structure (`tools/portfolio_tools.py`):
@@ -534,10 +648,113 @@ The `identify_tax_loss_harvesting` tool also accepts:
 - **Streaming callback**: `backend/api_server.py` has `StreamingCallbackHandler` for web interface SSE
 - **Portfolio Agent**: Always runs in interactive mode, requires portfolio JSON input format
 
-### LangGraph Status
-- LangGraph implementation exists but has version conflicts with current langchain versions
-- See `docs/LANGGRAPH_GUIDE.md` for details on the graph-based equity analyst
-- Current production agents use standard LangChain ReAct pattern
+### LangGraph Status (Updated 2026-02-02)
+✅ **FULLY INTEGRATED** - No version conflicts
+- Earnings Agent: 8-node LangGraph workflow (2 LLM calls)
+- Equity Analyst Graph: 10-step structured workflow (`--mode graph`)
+
+### Retry Logic and Resilience
+- **All external API calls** implement exponential backoff retry logic for transient failures
+- **Retryable errors**: Network timeouts, connection errors, HTTP 429 (rate limit), HTTP 5xx (server errors)
+- **Non-retryable errors**: HTTP 400, 401, 403, 404 (client errors fail immediately)
+- **Exponential backoff**: Wait times increase exponentially (1s → 2s → 4s) with random jitter to prevent thundering herd
+- **Configurable policies**: Each API has tuned retry settings (max attempts, base delay, max delay)
+
+## API Retry Strategy
+
+All external API calls implement production-grade retry logic to handle transient failures gracefully.
+
+### Retry Policies by API
+
+**Financial Datasets API** (`data/financial_data.py`):
+- Max attempts: 3
+- Base delay: 1.0s
+- Max delay: 30s
+- Rationale: Fast API, usually reliable
+
+**Perplexity API** (`tools/*.py`):
+- Max attempts: 3
+- Base delay: 1.5s
+- Max delay: 45s
+- Rationale: Search can be slow, more tolerance needed
+
+**FMP API** (optional, `data/financial_data.py`):
+- Max attempts: 3
+- Base delay: 2.0s
+- Max delay: 60s
+- Rationale: Secondary data source, can be slower
+
+**OpenAI API** (all agents):
+- Built-in SDK retry: `max_retries=3`
+- Timeout: 60s per request
+- Rationale: SDK handles retries automatically
+
+### Retryable vs Non-Retryable Errors
+
+**Retryable (will retry with exponential backoff):**
+- Network timeouts (`requests.exceptions.Timeout`)
+- Connection errors (`requests.exceptions.ConnectionError`)
+- HTTP 429 (Rate Limit)
+- HTTP 5xx (Server errors: 500, 502, 503, 504)
+- OpenAI API errors (`APIError`, `RateLimitError`)
+
+**Non-Retryable (fail immediately):**
+- HTTP 400 (Bad Request)
+- HTTP 401 (Unauthorized - invalid API key)
+- HTTP 403 (Forbidden)
+- HTTP 404 (Not Found)
+
+### Exponential Backoff Algorithm
+
+```
+wait_time = base_delay * (2 ^ attempt) + jitter
+```
+
+Example with base_delay=1s:
+- Attempt 1: Wait 1s (2^0 = 1)
+- Attempt 2: Wait 2s (2^1 = 2)
+- Attempt 3: Wait 4s (2^2 = 4)
+- Capped at max_delay
+
+**Jitter**: Random ±25% variation prevents thundering herd when multiple clients retry simultaneously.
+
+### Monitoring Retry Attempts
+
+Retry attempts are logged at WARNING level:
+```
+WARNING: _make_request: Attempt 1/3 failed with Timeout: Connection timeout. Retrying in 1.23s...
+```
+
+Final failures are logged at ERROR level:
+```
+ERROR: _make_request: Failed after 3 attempts. Last error: Timeout: Connection timeout
+```
+
+### Customizing Retry Behavior
+
+To customize retry settings for specific use cases:
+
+```python
+from shared.retry_utils import retry_with_backoff, RetryConfig
+
+# More aggressive retry for critical operations
+@retry_with_backoff(RetryConfig(
+    max_attempts=5,
+    base_delay=2.0,
+    max_delay=120.0
+))
+def critical_api_call():
+    # Your API call here
+    pass
+```
+
+### Implementation Details
+
+- **Location**: `shared/retry_utils.py` contains the retry decorator and configuration
+- **Decorator pattern**: Uses `@retry_with_backoff()` decorator on API call functions
+- **Thread-safe**: No shared state, safe for concurrent use
+- **Transparent**: Existing error handling preserved, retry logic wraps cleanly
+- **Zero overhead**: When no failures occur, decorator adds no latency
 
 ## Troubleshooting
 

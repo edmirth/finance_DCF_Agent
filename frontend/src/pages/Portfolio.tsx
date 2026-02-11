@@ -90,7 +90,7 @@ function Portfolio() {
         {
           message: query,
           agent_type: 'portfolio',
-          model: 'gpt-4-turbo-preview',
+          model: 'claude-sonnet-4-5-20250929',
           session_id: sessionId,
         },
         (event) => {

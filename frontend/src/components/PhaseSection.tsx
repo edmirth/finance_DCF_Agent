@@ -71,7 +71,6 @@ const phaseConfig: Record<string, { title: string; icon: any; color: string; bgC
 
 function PhaseSection({ phase, steps, isActive }: PhaseSectionProps) {
   const config = phaseConfig[phase] || phaseConfig.processing;
-  const Icon = config.icon;
 
   // Extract different types of steps
   const searchQueries = steps.filter(s => s.type === 'search_query');

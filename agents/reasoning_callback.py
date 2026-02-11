@@ -5,14 +5,16 @@ Similar to how Perplexity and Claude show their thinking process.
 """
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.schema import AgentAction, AgentFinish, LLMResult
 import logging
 import re
 
-# Add parent directory to path to import shared constants
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path to import shared constants (only if not already present)
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.append(_parent_dir)
 from shared.constants import TOOL_DESCRIPTIONS
 
 logger = logging.getLogger(__name__)
@@ -23,11 +25,30 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
     Callback handler that displays agent reasoning steps in a clean, professional format.
 
     Shows:
-    - 💭 Thinking: What the agent is planning to do
-    - 🔍 Searching: When calling tools
-    - 📊 Analysis: Interpreting results
-    - ✅ Conclusion: Final answer
+    - [Thinking]: What the agent is planning to do
+    - [Searching]: When calling tools
+    - [Analysis]: Interpreting results
+    - [Done]: Final answer
     """
+
+    @staticmethod
+    def _ensure_str(value) -> str:
+        """Convert Anthropic content blocks (list) or other types to a plain string."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts = []
+            for block in value:
+                if isinstance(block, dict):
+                    parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    parts.append(block)
+                else:
+                    text = getattr(block, "text", None)
+                    if text:
+                        parts.append(str(text))
+            return "".join(parts)
+        return str(value) if value is not None else ""
 
     def __init__(self, verbose: bool = True):
         """
@@ -57,7 +78,7 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
         self.tool_inputs[tool_name] = tool_input
 
         # Format the reasoning
-        print(f"\n💭 **Step {self.current_step}: Planning**")
+        print(f"\n[Step {self.current_step}: Planning]")
         print(f"   Using tool: `{tool_name}`")
 
         # Show what data we're fetching in human-readable format
@@ -67,7 +88,7 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
         else:
             print(f"   Input: {tool_input}")
 
-        print(f"\n🔍 **Executing...**")
+        print(f"\n[Executing...]")
 
     def on_tool_end(self, output: str, **kwargs: Any) -> Any:
         """
@@ -79,7 +100,7 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
             return
 
         # Don't print the full output here - agent will analyze it
-        print(f"✓ Data retrieved\n")
+        print(f"[OK] Data retrieved\n")
 
     def on_tool_error(self, error: Exception, **kwargs: Any) -> Any:
         """
@@ -88,7 +109,7 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
         if not self.verbose:
             return
 
-        print(f"\n❌ **Error:** {str(error)}\n")
+        print(f"\n[ERROR] {str(error)}\n")
 
     def on_agent_finish(self, finish: AgentFinish, **kwargs: Any) -> Any:
         """
@@ -99,8 +120,8 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
         if not self.verbose:
             return
 
-        print(f"\n📊 **Analysis Complete**")
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+        print(f"\n[Analysis Complete]")
+        print(f"----------------------------------------------------------------------\n")
 
     def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> Any:
         """
@@ -110,7 +131,7 @@ class ReasoningCallbackHandler(BaseCallbackHandler):
         """
         # Only show for initial reasoning, not for every LLM call
         if self.current_step == 0 and self.verbose:
-            print(f"\n🤔 **Analyzing your question...**\n")
+            print(f"\n[Analyzing your question...]\n")
 
     def reset(self):
         """Reset the callback state for a new conversation."""
@@ -125,7 +146,7 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
     Useful for web interfaces where you want to show progress as it happens.
     """
 
-    def __init__(self, verbose: bool = True, on_reasoning_update: Optional[callable] = None):
+    def __init__(self, verbose: bool = True, on_reasoning_update: Optional[Callable[[str, str], None]] = None):
         """
         Initialize streaming callback.
 
@@ -136,6 +157,7 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
         super().__init__(verbose)
         self.on_reasoning_update = on_reasoning_update
         self.plan_shown = False  # Track if we've shown the plan already
+        self.last_reflection = None  # Track last reflection to avoid duplicates
 
     def _emit_update(self, step_type: str, message: str):
         """
@@ -160,7 +182,7 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
         self.tool_inputs[tool_name] = tool_input
 
         # Get human-friendly description from shared constants
-        description = TOOL_DESCRIPTIONS.get(tool_name, f'🔍 Using {tool_name}')
+        description = TOOL_DESCRIPTIONS.get(tool_name, f'[Using {tool_name}]')
 
         msg = f"\n{description}"
         if isinstance(tool_input, dict):
@@ -171,11 +193,11 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
 
     def on_tool_end(self, output: str, **kwargs: Any) -> Any:
         """Override to use streaming updates."""
-        self._emit_update("result", "✓ Done\n")
+        self._emit_update("result", "[OK] Done\n")
 
     def on_agent_finish(self, finish: AgentFinish, **kwargs: Any) -> Any:
         """Override to use streaming updates."""
-        self._emit_update("conclusion", "\n📊 **Answer:**\n")
+        self._emit_update("conclusion", "\n[Answer]\n")
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> Any:
         """
@@ -187,7 +209,18 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
         if not response.generations or not response.generations[0]:
             return
 
-        llm_output = response.generations[0][0].text
+        # Handle different generation object types (some have .text, others .content)
+        generation = response.generations[0][0]
+        raw = getattr(generation, 'text', None)
+        if not raw:
+            msg = getattr(generation, 'message', None)
+            raw = getattr(msg, 'content', None) if msg else None
+        if not raw:
+            raw = str(generation)
+        # Anthropic may return content as list of blocks; ensure string
+        llm_output = self._ensure_str(raw)
+        if not llm_output:
+            return
 
         # Extract and display plan (only once at the beginning)
         plan = self._extract_plan(llm_output)
@@ -232,7 +265,7 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
         if not self.verbose:
             return
 
-        msg = "\n📋 **PLAN:**\n"
+        msg = "\n[PLAN]\n"
         for i, step in enumerate(steps, 1):
             msg += f"   {i}. {step}\n"
         msg += "\n"
@@ -259,10 +292,16 @@ class StreamingReasoningCallback(ReasoningCallbackHandler):
         if not self.verbose:
             return
 
-        msg = f"\n💭 **REFLECTION:** {reflection}\n"
+        # Skip duplicate reflections
+        if reflection == self.last_reflection:
+            return
+        self.last_reflection = reflection
+
+        msg = f"\n[REFLECTION] {reflection}\n"
         self._emit_update("reflection", msg)
 
     def reset(self):
         """Reset the callback state for a new conversation."""
         super().reset()
         self.plan_shown = False  # Reset plan display flag
+        self.last_reflection = None  # Reset reflection tracking

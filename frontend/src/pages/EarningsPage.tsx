@@ -1,277 +1,276 @@
-import { useState } from 'react';
-import { DollarSign, TrendingUp, Send } from 'lucide-react';
-import { Message, ThinkingStep } from '../types';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { streamMessage } from '../api';
-import MessageComponent from '../components/Message';
-import StatusIndicator from '../components/StatusIndicator';
+import EarningsEmptyState from '../components/earnings/EarningsEmptyState';
+import EarningsLoadingState from '../components/earnings/EarningsLoadingState';
+import EarningsReport from '../components/EarningsReport';
+import EarningsFollowUpInput from '../components/earnings/EarningsInput';
 
 function EarningsPage() {
   const [ticker, setTicker] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [currentStatus, setCurrentStatus] = useState('');
-  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
+  const [quarters] = useState(1);
+  const [focusQuery, setFocusQuery] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [rawResponse, setRawResponse] = useState('');
+  const [lastQuery, setLastQuery] = useState('');
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [sourceCount, setSourceCount] = useState(0);
+  const [followUps, setFollowUps] = useState<Array<{question: string, answer: string, isLoading: boolean}>>([]);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  const analyzeEarnings = async () => {
-    if (!ticker.trim()) return;
-
-    setIsLoading(true);
-    setCurrentStatus('Initializing earnings analysis...');
-    setThinkingSteps([]);
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: `Analyze ${ticker.toUpperCase()}'s latest earnings and forward outlook`,
-      timestamp: new Date(),
+  // Timer for "Worked for Xs"
+  useEffect(() => {
+    if (isAnalyzing) {
+      setElapsedTime(0);
+      timerRef.current = setInterval(() => {
+        setElapsedTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
     };
+  }, [isAnalyzing]);
 
-    const assistantMessageId = (Date.now() + 1).toString();
-    const assistantMessage: Message = {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date(),
-      thinkingSteps: [],
-    };
+  // Count sources from tool calls in response
+  const countSources = (text: string): number => {
+    const toolMentions = new Set<string>();
+    const patterns = [
+      /get_quarterly_earnings/gi,
+      /get_analyst_estimates/gi,
+      /get_earnings_surprises/gi,
+      /get_earnings_call_insights/gi,
+      /compare_peer_earnings/gi,
+      /get_price_targets/gi,
+      /get_analyst_ratings/gi,
+      /search_web/gi,
+      /get_stock_info/gi,
+      /get_financial_metrics/gi,
+    ];
+    patterns.forEach(p => {
+      const matches = text.match(p);
+      if (matches) toolMentions.add(p.source);
+    });
+    return Math.max(toolMentions.size, 3);
+  };
 
-    setMessages(prev => [...prev, userMessage, assistantMessage]);
+  const analyzeEarnings = useCallback(async (queryOverride?: string) => {
+    const activeTicker = ticker.trim();
+    if (!activeTicker) return;
+
+    const query = queryOverride || (focusQuery.trim()
+      ? `Analyze ${activeTicker.toUpperCase()}'s last ${quarters} quarter(s) earnings. Focus on: ${focusQuery}`
+      : `Analyze ${activeTicker.toUpperCase()}'s last ${quarters} quarter(s) earnings and forward outlook`);
+
+    setIsAnalyzing(true);
+    setRawResponse('');
+    setLastQuery(query);
+    setSourceCount(0);
+    setFollowUps([]);
+
+    let toolCount = 0;
 
     try {
       await streamMessage(
-        `Analyze ${ticker.toUpperCase()}'s latest earnings and forward outlook`,
-        'earnings',
+        {
+          message: query,
+          agent_type: 'earnings',
+          model: 'claude-sonnet-4-5-20250929',
+          session_id: `earnings-${Date.now()}`,
+        },
         (event) => {
-          if (event.type === 'thinking') {
-            setCurrentStatus(event.content || 'Processing...');
-          } else if (event.type === 'thought') {
-            const step: ThinkingStep = {
-              id: Date.now().toString() + Math.random(),
-              type: 'thought',
-              content: event.content,
-              timestamp: new Date(),
-            };
-            setThinkingSteps(prev => [...prev, step]);
-          } else if (event.type === 'tool') {
-            const step: ThinkingStep = {
-              id: Date.now().toString() + Math.random(),
-              type: 'tool',
-              tool: event.tool,
-              input: event.input,
-              timestamp: new Date(),
-            };
-            setThinkingSteps(prev => [...prev, step]);
-            setCurrentStatus(`Using ${event.tool}...`);
-          } else if (event.type === 'tool_result') {
-            const step: ThinkingStep = {
-              id: Date.now().toString() + Math.random(),
-              type: 'tool_result',
-              content: event.content,
-              timestamp: new Date(),
-            };
-            setThinkingSteps(prev => [...prev, step]);
+          if (event.type === 'tool' || event.type === 'tool_result') {
+            toolCount++;
+            setSourceCount(Math.ceil(toolCount / 2));
           } else if (event.type === 'content' && event.content) {
-            setCurrentStatus('Generating analysis...');
-            setMessages(prev =>
-              prev.map(msg =>
-                msg.id === assistantMessageId
-                  ? { ...msg, content: msg.content + event.content }
-                  : msg
-              )
-            );
+            setRawResponse(prev => prev + event.content);
           } else if (event.type === 'end') {
-            setMessages(prev =>
-              prev.map(msg =>
-                msg.id === assistantMessageId
-                  ? { ...msg, thinkingSteps: thinkingSteps }
-                  : msg
-              )
-            );
-            setIsLoading(false);
-            setCurrentStatus('');
-            setThinkingSteps([]);
+            setRawResponse(prev => {
+              const finalCount = countSources(prev);
+              setSourceCount(Math.max(finalCount, Math.ceil(toolCount / 2)));
+              return prev;
+            });
+            setIsAnalyzing(false);
           } else if (event.type === 'error') {
-            setMessages(prev =>
-              prev.map(msg =>
-                msg.id === assistantMessageId
-                  ? { ...msg, content: `Error: ${event.error}` }
-                  : msg
-              )
-            );
-            setIsLoading(false);
-            setCurrentStatus('');
-            setThinkingSteps([]);
+            console.error('Analysis error:', event.error);
+            setIsAnalyzing(false);
           }
         },
         (error) => {
-          setMessages(prev =>
-            prev.map(msg =>
-              msg.id === assistantMessageId
-                ? { ...msg, content: `Error: ${error}` }
-                : msg
-            )
-          );
-          setIsLoading(false);
-          setCurrentStatus('');
-          setThinkingSteps([]);
+          console.error('Stream error:', error);
+          setIsAnalyzing(false);
         }
       );
     } catch (error) {
       console.error('Error analyzing earnings:', error);
-      setIsLoading(false);
-      setCurrentStatus('');
-      setThinkingSteps([]);
+      setIsAnalyzing(false);
     }
+  }, [ticker, quarters, focusQuery]);
+
+  const askFollowUp = useCallback(async (question: string) => {
+    const idx = followUps.length;
+    setFollowUps(prev => [...prev, { question, answer: '', isLoading: true }]);
+
+    try {
+      await streamMessage(
+        {
+          message: `${question} for ${ticker.toUpperCase()}`,
+          agent_type: 'earnings',
+          model: 'claude-sonnet-4-5-20250929',
+          session_id: `earnings-followup-${Date.now()}`,
+          is_followup: true,
+        },
+        (event) => {
+          if (event.type === 'content' && event.content) {
+            setFollowUps(prev => prev.map((fu, i) =>
+              i === idx ? { ...fu, answer: fu.answer + event.content } : fu
+            ));
+          } else if (event.type === 'end') {
+            setFollowUps(prev => prev.map((fu, i) =>
+              i === idx ? { ...fu, isLoading: false } : fu
+            ));
+          } else if (event.type === 'error') {
+            setFollowUps(prev => prev.map((fu, i) =>
+              i === idx ? { ...fu, answer: `Error: ${event.error}`, isLoading: false } : fu
+            ));
+          }
+        },
+        (error) => {
+          setFollowUps(prev => prev.map((fu, i) =>
+            i === idx ? { ...fu, answer: `Error: ${error}`, isLoading: false } : fu
+          ));
+        }
+      );
+    } catch (error) {
+      console.error('Follow-up error:', error);
+    }
+  }, [followUps.length, ticker]);
+
+  const handleFollowUp = useCallback((question: string) => {
+    askFollowUp(question);
+  }, [askFollowUp]);
+
+  // Keyboard shortcut: Cmd+K to focus ticker
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        const input = document.getElementById('ticker');
+        if (input) input.focus();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (ticker.trim() && !isAnalyzing) {
+          analyzeEarnings();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [ticker, isAnalyzing, analyzeEarnings]);
+
+  const formatTime = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`;
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !isLoading && ticker.trim()) {
-      analyzeEarnings();
-    }
-  };
+  const hasResults = !isAnalyzing && rawResponse;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-gray-50 to-gray-100 p-8 pl-28">
-      <div className="max-w-7xl mx-auto">
-        {/* Page Header */}
-        <div className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="p-2.5 bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-xl shadow-lg shadow-yellow-600/30">
-              <DollarSign className="w-6 h-6 text-white" strokeWidth={2.5} />
-            </div>
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">Earnings Analyst</h1>
-              <p className="text-sm text-gray-600">Fast earnings-focused equity research with quarterly trends and estimates</p>
-            </div>
-          </div>
-        </div>
+    <div className="earnings-page pl-20">
+      <a href="#main-content" className="skip-link">Skip to main content</a>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column - Ticker Input */}
-          <div className="space-y-6">
-            {/* Ticker Input Card */}
-            <div className="bg-white rounded-2xl shadow-sm p-6 border border-gray-200 hover:shadow-md transition-shadow duration-200">
-              <h2 className="text-lg font-bold text-gray-900 mb-5 flex items-center gap-2">
-                <div className="p-1.5 bg-yellow-100 rounded-lg">
-                  <TrendingUp className="w-4 h-4 text-yellow-600" />
+      <main id="main-content" tabIndex={-1} className="flex justify-center items-start min-h-screen">
+        <div className="w-full max-w-[720px] px-6 py-8 mx-auto">
+
+          {/* Empty State */}
+          {!isAnalyzing && !rawResponse && (
+            <EarningsEmptyState
+              ticker={ticker}
+              onTickerChange={setTicker}
+              onAnalyze={analyzeEarnings}
+            />
+          )}
+
+          {/* Loading State */}
+          {isAnalyzing && (
+            <>
+              {/* User query bubble */}
+              <div className="flex justify-end mb-6 animate-fade-in">
+                <div className="query-bubble">{lastQuery}</div>
+              </div>
+
+              <EarningsLoadingState
+                elapsedTime={formatTime(elapsedTime)}
+                sourceCount={sourceCount}
+              />
+            </>
+          )}
+
+          {/* Results */}
+          {hasResults && (
+            <div ref={contentRef} className="animate-fade-in pb-32">
+              {/* User query bubble */}
+              <div className="flex justify-end mb-4">
+                <div className="query-bubble">{lastQuery}</div>
+              </div>
+
+              {/* Status bar */}
+              <div className="status-bar">
+                <div className="status-time">
+                  Worked for {formatTime(elapsedTime)}
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="ml-1">
+                    <path d="M4.5 3L7.5 6L4.5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
                 </div>
-                Analyze Earnings
-              </h2>
 
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
-                    Ticker Symbol
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1.5 bg-yellow-100 rounded-lg">
-                      <DollarSign className="w-4 h-4 text-yellow-600" />
-                    </div>
-                    <input
-                      type="text"
-                      placeholder="AAPL, NVDA, MSFT..."
-                      value={ticker}
-                      onChange={(e) => setTicker(e.target.value.toUpperCase())}
-                      onKeyPress={handleKeyPress}
-                      className="w-full pl-14 pr-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 transition-all duration-200 bg-gray-50 focus:bg-white font-medium"
-                    />
+                <div className="sources-badge">
+                  <div className="source-icons">
+                    <div className="source-icon" style={{ background: '#3B82F6' }} />
+                    <div className="source-icon" style={{ background: '#10B981' }} />
+                    <div className="source-icon" style={{ background: '#F59E0B' }} />
+                    <div className="source-icon" style={{ background: '#8B5CF6' }} />
+                  </div>
+                  <span>{sourceCount} sources</span>
+                </div>
+              </div>
+
+              {/* Document content */}
+              <EarningsReport content={rawResponse} />
+
+              {/* Follow-up Q&A thread */}
+              {followUps.map((fu, i) => (
+                <div key={i} className="mt-8 pt-6 border-t border-gray-200">
+                  <div className="flex justify-end mb-4">
+                    <div className="query-bubble">{fu.question}</div>
+                  </div>
+                  <div className="prose prose-sm max-w-none">
+                    {fu.isLoading && !fu.answer ? (
+                      <div className="text-gray-400 animate-pulse">Thinking...</div>
+                    ) : (
+                      <EarningsReport content={fu.answer} />
+                    )}
                   </div>
                 </div>
-
-                <button
-                  onClick={analyzeEarnings}
-                  disabled={!ticker.trim() || isLoading}
-                  className="w-full py-3 bg-gradient-to-r from-yellow-500 to-yellow-600 text-white rounded-xl font-semibold hover:from-yellow-600 hover:to-yellow-700 disabled:from-gray-300 disabled:to-gray-300 disabled:cursor-not-allowed transition-all duration-200 shadow-lg shadow-yellow-600/30 hover:shadow-xl hover:shadow-yellow-600/40 disabled:shadow-none flex items-center justify-center gap-2"
-                >
-                  <Send className="w-4 h-4" />
-                  {isLoading ? 'Analyzing...' : 'Analyze Earnings'}
-                </button>
-              </div>
-
-              {/* Info Card */}
-              <div className="mt-6 p-4 bg-gradient-to-r from-yellow-50 to-yellow-50/50 rounded-xl border border-yellow-200">
-                <h3 className="text-xs font-bold text-yellow-900 uppercase tracking-wider mb-2">What You'll Get</h3>
-                <ul className="space-y-1.5 text-sm text-yellow-800">
-                  <li className="flex items-start gap-2">
-                    <span className="text-yellow-600 mt-0.5">•</span>
-                    <span>Quarterly earnings trends (last 8 quarters)</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-yellow-600 mt-0.5">•</span>
-                    <span>Earnings surprises vs analyst estimates</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-yellow-600 mt-0.5">•</span>
-                    <span>Management guidance analysis</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-yellow-600 mt-0.5">•</span>
-                    <span>Forward outlook and valuation context</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-yellow-600 mt-0.5">•</span>
-                    <span>BUY/HOLD/SELL rating with price target</span>
-                  </li>
-                </ul>
-              </div>
-
-              {/* Example Queries */}
-              <div className="mt-6">
-                <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-3">Example Queries</h3>
-                <div className="space-y-2">
-                  {['NVDA', 'AAPL', 'MSFT', 'GOOGL'].map((symbol) => (
-                    <button
-                      key={symbol}
-                      onClick={() => setTicker(symbol)}
-                      disabled={isLoading}
-                      className="w-full text-left px-4 py-2.5 bg-gradient-to-r from-gray-50 to-gray-50/50 hover:from-yellow-50 hover:to-yellow-50/50 border border-gray-200 hover:border-yellow-300 rounded-lg transition-all duration-200 text-sm font-medium text-gray-700 hover:text-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Analyze {symbol} earnings
-                    </button>
-                  ))}
-                </div>
-              </div>
+              ))}
             </div>
-          </div>
-
-          {/* Right Column - Analysis Results */}
-          <div className="bg-white rounded-2xl shadow-sm p-6 border border-gray-200 hover:shadow-md transition-shadow duration-200">
-            <h2 className="text-lg font-bold text-gray-900 mb-5 flex items-center gap-2">
-              <div className="p-1.5 bg-yellow-100 rounded-lg">
-                <TrendingUp className="w-4 h-4 text-yellow-600" />
-              </div>
-              Earnings Analysis
-            </h2>
-
-            {messages.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">
-                <DollarSign className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-                <p className="text-lg font-medium mb-2">No analysis yet</p>
-                <p className="text-sm">Enter a ticker symbol and click "Analyze Earnings" to get started</p>
-              </div>
-            ) : (
-              <div className="space-y-6 max-h-[calc(100vh-16rem)] overflow-y-auto">
-                {messages.map((message) => (
-                  <MessageComponent
-                    key={message.id}
-                    message={message}
-                    agent={{
-                      id: 'earnings',
-                      name: 'Earnings Analyst',
-                      description: 'Earnings analysis',
-                      example: '',
-                      icon: '💰',
-                      color: 'bg-yellow-600',
-                    }}
-                  />
-                ))}
-
-                <StatusIndicator status={currentStatus} isVisible={isLoading} thinkingSteps={thinkingSteps} />
-              </div>
-            )}
-          </div>
+          )}
         </div>
-      </div>
+      </main>
+
+      {/* Follow-up input bar - fixed at bottom */}
+      {(hasResults || followUps.length > 0) && (
+        <EarningsFollowUpInput
+          isAnalyzing={isAnalyzing || followUps.some(fu => fu.isLoading)}
+          onSubmit={handleFollowUp}
+        />
+      )}
+
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only" />
     </div>
   );
 }

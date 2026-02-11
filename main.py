@@ -6,6 +6,7 @@ import sys
 from dotenv import load_dotenv
 from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
+from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.research_assistant_agent import create_research_assistant, interactive_session
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
@@ -27,11 +28,15 @@ def main():
 Examples:
   # DCF Analysis (quantitative valuation)
   python main.py --mode dcf --ticker AAPL
-  python main.py --mode dcf --ticker MSFT --model gpt-4
+  python main.py --mode dcf --ticker MSFT --model claude-haiku-4-5-20251001
 
   # Equity Research (comprehensive analysis)
   python main.py --mode analyst --ticker AAPL
-  python main.py --mode analyst --ticker GOOGL --model gpt-4
+  python main.py --mode analyst --ticker GOOGL --model claude-haiku-4-5-20251001
+
+  # Equity Research - LangGraph (structured workflow)
+  python main.py --mode graph --ticker AAPL
+  python main.py --mode graph --ticker MSFT --model claude-haiku-4-5-20251001
 
   # Market Analysis (market conditions, sentiment, regime)
   python main.py --mode market
@@ -42,7 +47,7 @@ Examples:
 
   # Earnings Analysis (fast earnings-focused research)
   python main.py --mode earnings --ticker NVDA
-  python main.py --mode earnings --ticker AAPL --model gpt-4
+  python main.py --mode earnings --ticker AAPL --model claude-haiku-4-5-20251001
 
   # Interactive mode (DCF and Analyst)
   python main.py --mode dcf --interactive
@@ -51,6 +56,7 @@ Examples:
 Modes:
   dcf       - DCF valuation analysis (intrinsic value calculation)
   analyst   - Comprehensive equity research report (industry, competitors, moat, valuation)
+  graph     - Equity research using LangGraph (structured 10-step workflow)
   market    - Market analysis (indices, sectors, news, sentiment, regime classification)
   research  - Conversational research assistant (ask questions, get suggestions, deep-dive)
   portfolio - Portfolio analysis (metrics, diversification, tax optimization)
@@ -61,9 +67,9 @@ Modes:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["dcf", "analyst", "research", "market", "portfolio", "earnings"],
+        choices=["dcf", "analyst", "graph", "research", "market", "portfolio", "earnings"],
         default="dcf",
-        help="Agent mode: 'dcf', 'analyst', 'research', 'market', 'portfolio', or 'earnings' (default: dcf)"
+        help="Agent mode: 'dcf', 'analyst', 'graph', 'research', 'market', 'portfolio', or 'earnings' (default: dcf)"
     )
 
     parser.add_argument(
@@ -75,8 +81,8 @@ Modes:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-5.2",
-        help="OpenAI model to use (default: gpt-5.2)"
+        default="claude-sonnet-4-5-20250929",
+        help="Anthropic model to use (default: claude-sonnet-4-5-20250929)"
     )
 
     parser.add_argument(
@@ -88,9 +94,9 @@ Modes:
     args = parser.parse_args()
 
     # Check for API key
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY environment variable not set.")
-        print("Please create a .env file with your OpenAI API key.")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("Error: ANTHROPIC_API_KEY environment variable not set.")
+        print("Please create a .env file with your Anthropic API key.")
         print("See .env.example for reference.")
         sys.exit(1)
 
@@ -127,7 +133,7 @@ Modes:
             sys.exit(1)
         return
 
-    # Create agent based on mode (dcf, analyst, or earnings)
+    # Create agent based on mode (dcf, analyst, graph, or earnings)
     if args.mode == "dcf":
         print("Initializing DCF Analysis Agent...")
         try:
@@ -143,6 +149,15 @@ Modes:
             print(f"Equity Analyst Agent initialized with model: {args.model}\n")
         except Exception as e:
             print(f"Error initializing equity analyst agent: {e}")
+            sys.exit(1)
+    elif args.mode == "graph":
+        print("Initializing LangGraph Equity Analyst Agent...")
+        try:
+            agent = create_equity_analyst_graph(model=args.model)
+            print(f"LangGraph Equity Analyst initialized with model: {args.model}")
+            print("Using structured 10-step workflow\n")
+        except Exception as e:
+            print(f"Error initializing LangGraph equity analyst: {e}")
             sys.exit(1)
     elif args.mode == "earnings":
         print("Initializing Earnings Analyst Agent...")
@@ -177,6 +192,9 @@ def run_ticker_analysis(agent, ticker: str, mode: str):
         result = agent.quick_dcf(ticker)
     elif mode == "analyst":
         result = agent.research_report(ticker)
+    elif mode == "graph":
+        # LangGraph uses analyze() method
+        result = agent.analyze(ticker)
     elif mode == "earnings":
         result = agent.analyze(ticker)
     else:
@@ -204,6 +222,14 @@ def run_interactive_mode(agent, mode: str):
         print("  - 'Produce an equity research report on AAPL'")
         print("  - 'Analyze Tesla's competitive position'")
         print("  - 'What is Microsoft's competitive moat?'")
+    elif mode == "graph":
+        print("LangGraph Equity Analyst - Interactive Mode")
+        print("=" * 80)
+        print("\nStructured 10-step equity research workflow!")
+        print("Examples:")
+        print("  - 'Analyze AAPL'")
+        print("  - 'Research Tesla'")
+        print("  - 'Full analysis on Microsoft'")
     elif mode == "earnings":
         print("Earnings Analyst Agent - Interactive Mode")
         print("=" * 80)

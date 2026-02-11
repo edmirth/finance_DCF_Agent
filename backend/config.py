@@ -139,7 +139,7 @@ TICKER_BLACKLIST = frozenset([
 # ============================================================================
 
 # Default LLM model for agents
-DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 
 # Agent types and their available names
 AGENT_TYPES = ["dcf", "analyst", "research", "market", "portfolio", "earnings"]

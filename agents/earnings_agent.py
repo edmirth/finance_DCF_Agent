@@ -1,22 +1,23 @@
 """
 Earnings-Focused Equity Research Agent using LangGraph
 
-Generates comprehensive equity research reports in ~15 minutes focusing on:
+Generates equity research reports focusing on:
 - Latest earnings reports & historical trends
 - Analyst estimates & earnings surprises
 - Management guidance analysis
 - Competitive comparison
 - Investment thesis with BUY/HOLD/SELL rating
+
+7-node workflow: data gathering (parallel) → analysis (1 LLM call) → thesis (1 LLM call) → report
 """
-from typing import TypedDict, List, Dict, Optional, Annotated
+from typing import TypedDict, List, Optional, Annotated
 import operator
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 import time
 import logging
 import re
-import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,50 +33,43 @@ def keep_first(left, right):
 
 
 # ============================================================================
-# State Schema - Defines data flow through the graph
+# State Schema
 # ============================================================================
 
 class EarningsAnalysisState(TypedDict):
-    """
-    State object that flows through all nodes in the LangGraph workflow.
-    Each node reads from and writes to this state.
-    Using Annotated with reducers to handle parallel node updates.
-    """
-    # Input - use keep_first to keep first value from parallel nodes
+    # Input
     ticker: Annotated[str, keep_first]
     quarters_back: Annotated[int, keep_first]
 
-    # Company Context (Node 1) - use keep_first since only one node writes
+    # Company Context (Node 1)
     company_name: Annotated[str, keep_first]
     sector: Annotated[str, keep_first]
     industry: Annotated[str, keep_first]
     current_price: Annotated[float, keep_first]
     market_cap: Annotated[float, keep_first]
 
-    # Earnings Data (Nodes 2-4) - different nodes write to different fields
+    # Raw Data (Nodes 2-4, parallel)
     earnings_history: Annotated[str, keep_first]
     analyst_estimates: Annotated[str, keep_first]
     earnings_surprises: Annotated[str, keep_first]
     earnings_guidance: Annotated[str, keep_first]
-    market_news: Annotated[str, keep_first]
     peer_comparison: Annotated[str, keep_first]
 
-    # Analysis Results (Nodes 5-9) - different nodes write to different fields
-    earnings_trend: Annotated[str, keep_first]
-    quality_analysis: Annotated[str, keep_first]
-    guidance_analysis: Annotated[str, keep_first]
-    competitive_analysis: Annotated[str, keep_first]
-    valuation_analysis: Annotated[str, keep_first]
+    # Analysis (Node 6 — single LLM call)
+    comprehensive_analysis: Annotated[str, keep_first]
+    management_accountability: Annotated[str, keep_first]
 
-    # Final Output (Nodes 10-11)
+    # Thesis (Node 7 — single LLM call)
     investment_thesis: Annotated[str, keep_first]
     rating: Annotated[str, keep_first]
     price_target: Annotated[float, keep_first]
     key_catalysts: Annotated[List[str], keep_first]
     key_risks: Annotated[List[str], keep_first]
+
+    # Output
     final_report: Annotated[str, keep_first]
 
-    # Metadata - errors accumulate so use operator.add
+    # Metadata
     start_time: Annotated[float, keep_first]
     errors: Annotated[List[str], operator.add]
 
@@ -85,33 +79,24 @@ class EarningsAnalysisState(TypedDict):
 # ============================================================================
 
 class EarningsAgentExecutorAdapter:
-    """
-    Adapter to make LangGraph compatible with existing backend streaming.
+    """Adapter: translates backend invoke() calls to LangGraph invoke()."""
 
-    Backend expects: agent.agent_executor.invoke({"input": query}, config={...})
-    LangGraph uses: graph.invoke(state, config={...})
-
-    This adapter translates between the two interfaces.
-    """
-
-    def __init__(self, graph):
+    def __init__(self, graph, agent_owner):
         self.graph = graph
-        self.ticker_pattern = re.compile(r'\b[A-Z]{1,5}\b')  # Match stock tickers
+        self.agent_owner = agent_owner
+        self.ticker_pattern = re.compile(r'\b[A-Z]{1,5}\b')
+        self.last_state = None
+        self.last_ticker = None
 
     def invoke(self, input_dict: dict, config: Optional[dict] = None) -> dict:
-        """
-        Translate backend's invoke call to LangGraph invoke.
-
-        Args:
-            input_dict: {"input": "Analyze AAPL's latest earnings"}
-            config: Optional config with callbacks
-
-        Returns:
-            {"output": "Complete earnings report..."}
-        """
         try:
-            # Extract ticker from user query
             query = input_dict.get("input", "")
+            is_followup = input_dict.get("followup", False)
+
+            # Follow-up mode: use cached state, 1 LLM call
+            if is_followup and self.last_state:
+                return self._answer_followup(query, config)
+
             ticker = self._extract_ticker(query)
 
             if not ticker:
@@ -119,7 +104,6 @@ class EarningsAgentExecutorAdapter:
 
             logger.info(f"Starting earnings analysis for {ticker}")
 
-            # Initialize state
             initial_state = {
                 "ticker": ticker,
                 "quarters_back": 8,
@@ -132,13 +116,9 @@ class EarningsAgentExecutorAdapter:
                 "analyst_estimates": "",
                 "earnings_surprises": "",
                 "earnings_guidance": "",
-                "market_news": "",
                 "peer_comparison": "",
-                "earnings_trend": "",
-                "quality_analysis": "",
-                "guidance_analysis": "",
-                "competitive_analysis": "",
-                "valuation_analysis": "",
+                "comprehensive_analysis": "",
+                "management_accountability": "",
                 "investment_thesis": "",
                 "rating": "",
                 "price_target": 0.0,
@@ -149,17 +129,16 @@ class EarningsAgentExecutorAdapter:
                 "errors": []
             }
 
-            # Invoke the graph
             result = self.graph.invoke(initial_state, config=config)
 
-            # Calculate execution time
+            # Cache state for follow-ups
+            self.last_state = result
+            self.last_ticker = ticker
+
             execution_time = time.time() - result["start_time"]
             logger.info(f"Earnings analysis completed in {execution_time:.1f} seconds")
 
-            # Return in backend-expected format
             final_output = result.get("final_report", "Error: No report generated")
-
-            # Append execution time
             final_output += f"\n\n---\n*Analysis completed in {execution_time/60:.1f} minutes*"
 
             return {"output": final_output}
@@ -168,168 +147,173 @@ class EarningsAgentExecutorAdapter:
             logger.error(f"Error in earnings agent: {e}")
             return {"output": f"Error analyzing earnings: {str(e)}"}
 
+    def _answer_followup(self, question: str, config: Optional[dict] = None) -> dict:
+        """Answer follow-up using cached analysis state. Single LLM call."""
+        state = self.last_state
+        logger.info(f"Answering follow-up for {state['ticker']}: {question[:80]}...")
+
+        try:
+            prompt = f"""You are a senior equity research analyst. You just completed a comprehensive
+earnings analysis for {state['company_name']} ({state['ticker']}).
+
+ANALYSIS CONTEXT:
+{state['comprehensive_analysis']}
+
+EARNINGS DATA:
+{state['earnings_history'][:3000]}
+
+MANAGEMENT GUIDANCE:
+{state['earnings_guidance'][:3000]}
+
+INVESTMENT THESIS:
+{state['investment_thesis']}
+
+The investor now asks: {question}
+
+Provide a focused, data-driven answer. Reference specific numbers from the analysis.
+Be concise (2-4 paragraphs). If the question requires data you don't have, say so."""
+
+            llm = ChatAnthropic(
+                model=self.agent_owner.model,
+                temperature=0,
+                max_retries=3,
+                default_request_timeout=60.0,
+                max_tokens=4096,
+            )
+            response = llm.invoke(
+                [
+                    SystemMessage(content="You are a senior equity research analyst answering follow-up questions."),
+                    HumanMessage(content=prompt),
+                ],
+                config=config,
+            )
+
+            logger.info(f"Follow-up answered ({len(response.content)} chars)")
+            return {"output": response.content}
+
+        except Exception as e:
+            logger.error(f"Error answering follow-up: {e}")
+            return {"output": f"Error answering follow-up: {str(e)}"}
+
     def _extract_ticker(self, query: str) -> Optional[str]:
         """Extract ticker symbol from user query"""
-        # Look for common patterns
         query_upper = query.upper()
 
-        # Check for explicit mentions
-        for word in query_upper.split():
-            # Remove punctuation
-            clean_word = re.sub(r'[^\w]', '', word)
-            # Check if it looks like a ticker (1-5 uppercase letters)
-            if len(clean_word) >= 1 and len(clean_word) <= 5 and clean_word.isalpha():
-                # Common stock tickers
-                if clean_word in ['AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'TSLA',
-                                  'META', 'NFLX', 'AMD', 'INTC', 'CSCO', 'ADBE', 'CRM',
-                                  'ORCL', 'IBM', 'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C',
-                                  'V', 'MA', 'PYPL', 'SQ', 'DIS', 'CMCSA', 'T', 'VZ',
-                                  'KO', 'PEP', 'WMT', 'TGT', 'HD', 'LOW', 'NKE', 'SBUX',
-                                  'MCD', 'BA', 'CAT', 'DE', 'MMM', 'GE', 'F', 'GM']:
-                    return clean_word
+        KNOWN_TICKERS = {
+            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'TSLA',
+            'META', 'NFLX', 'AMD', 'INTC', 'CSCO', 'ADBE', 'CRM',
+            'ORCL', 'IBM', 'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C',
+            'V', 'MA', 'PYPL', 'SQ', 'DIS', 'CMCSA', 'T', 'VZ',
+            'KO', 'PEP', 'WMT', 'TGT', 'HD', 'LOW', 'NKE', 'SBUX',
+            'MCD', 'BA', 'CAT', 'DE', 'MMM', 'GE', 'F', 'GM',
+        }
+        COMMON_WORDS = {'THE', 'AND', 'FOR', 'WITH', 'FROM', 'ABOUT', 'WHAT', 'HOW', 'WHY'}
 
-        # If no known ticker found, try to find any valid ticker pattern
+        for word in query_upper.split():
+            clean_word = re.sub(r'[^\w]', '', word)
+            if 1 <= len(clean_word) <= 5 and clean_word.isalpha() and clean_word in KNOWN_TICKERS:
+                return clean_word
+
         matches = self.ticker_pattern.findall(query_upper)
-        if matches:
-            # Return the first match that's not a common word
-            common_words = ['THE', 'AND', 'FOR', 'WITH', 'FROM', 'ABOUT', 'WHAT', 'HOW', 'WHY']
-            for match in matches:
-                if match not in common_words:
-                    return match
+        for match in matches:
+            if match not in COMMON_WORDS:
+                return match
 
         return None
 
 
 # ============================================================================
-# Earnings Agent Class
+# Earnings Agent
 # ============================================================================
 
 class EarningsAgent:
     """
     LangGraph-based earnings research agent.
 
-    Workflow:
+    7-node workflow:
     1. Fetch company info
-    2. Parallel: Fetch earnings, estimates, guidance, news
-    3. Aggregate data
-    4. Parallel: Analyze trend, quality, guidance, competition
-    5. Calculate valuation
-    6. Develop thesis
-    7. Generate report
+    2-4. Parallel: Fetch earnings history, analyst estimates, surprises+transcripts+peers
+    5. Aggregate (sync point)
+    6. Comprehensive analysis (1 LLM call)
+    7. Investment thesis + rating (1 LLM call)
+    8. Generate report
     """
 
-    def __init__(self, model: str = "gpt-5.2"):
-        """
-        Initialize the earnings agent.
-
-        Args:
-            model: LLM model to use (default: gpt-5.2 for speed and quality)
-        """
+    def __init__(self, model: str = "claude-sonnet-4-5-20250929"):
         self.model = model
-        self.llm = ChatOpenAI(model=model, temperature=0)
+        self.llm = ChatAnthropic(
+            model=model,
+            temperature=0,
+            max_retries=3,
+            default_request_timeout=60.0,
+            max_tokens=8192,
+        )
 
-        # Import tools
         from tools.earnings_tools import get_earnings_tools
         self.tools = get_earnings_tools()
 
-        # Build the LangGraph workflow
         self.graph = self._build_graph()
-
-        # Create adapter for backend compatibility
-        self.agent_executor = EarningsAgentExecutorAdapter(self.graph)
+        self.agent_executor = EarningsAgentExecutorAdapter(self.graph, agent_owner=self)
 
         logger.info(f"Earnings Agent initialized with model: {model}")
 
     def _build_graph(self) -> StateGraph:
-        """
-        Build the LangGraph workflow with all nodes and edges.
-
-        This is where we define the execution flow and parallelization.
-        """
-        # Create graph with our state schema
         workflow = StateGraph(EarningsAnalysisState)
 
-        # Add all nodes (we'll implement these methods next)
+        # Nodes
         workflow.add_node("fetch_company_info", self.fetch_company_info)
         workflow.add_node("fetch_earnings_history", self.fetch_earnings_history)
         workflow.add_node("fetch_analyst_estimates", self.fetch_analyst_estimates)
         workflow.add_node("fetch_guidance_and_news", self.fetch_guidance_and_news)
         workflow.add_node("aggregate_data", self.aggregate_data)
-        workflow.add_node("analyze_earnings_trend", self.analyze_earnings_trend)
-        workflow.add_node("analyze_quality", self.analyze_quality)
-        workflow.add_node("analyze_guidance", self.analyze_guidance)
-        workflow.add_node("analyze_competition", self.analyze_competition)
-        workflow.add_node("calculate_valuation", self.calculate_valuation)
+        workflow.add_node("comprehensive_analysis", self.comprehensive_analysis)
         workflow.add_node("develop_thesis", self.develop_thesis)
         workflow.add_node("generate_report", self.generate_report)
 
-        # Define the workflow edges
-        # Start with company info
+        # Edges
         workflow.set_entry_point("fetch_company_info")
 
-        # Phase 1: Parallel data gathering (after company info)
+        # Phase 1: Parallel data gathering
         workflow.add_edge("fetch_company_info", "fetch_earnings_history")
         workflow.add_edge("fetch_company_info", "fetch_analyst_estimates")
         workflow.add_edge("fetch_company_info", "fetch_guidance_and_news")
 
-        # All Phase 1 nodes converge to aggregate
+        # Converge to sync point
         workflow.add_edge("fetch_earnings_history", "aggregate_data")
         workflow.add_edge("fetch_analyst_estimates", "aggregate_data")
         workflow.add_edge("fetch_guidance_and_news", "aggregate_data")
 
-        # Phase 2: Parallel analysis (after aggregation)
-        workflow.add_edge("aggregate_data", "analyze_earnings_trend")
-        workflow.add_edge("aggregate_data", "analyze_quality")
-        workflow.add_edge("aggregate_data", "analyze_guidance")
-        workflow.add_edge("aggregate_data", "analyze_competition")
-
-        # All Phase 2 nodes converge to valuation
-        workflow.add_edge("analyze_earnings_trend", "calculate_valuation")
-        workflow.add_edge("analyze_quality", "calculate_valuation")
-        workflow.add_edge("analyze_guidance", "calculate_valuation")
-        workflow.add_edge("analyze_competition", "calculate_valuation")
-
-        # Phase 3: Sequential synthesis
-        workflow.add_edge("calculate_valuation", "develop_thesis")
+        # Phase 2: Sequential analysis → thesis → report
+        workflow.add_edge("aggregate_data", "comprehensive_analysis")
+        workflow.add_edge("comprehensive_analysis", "develop_thesis")
         workflow.add_edge("develop_thesis", "generate_report")
-
-        # End after report generation
         workflow.add_edge("generate_report", END)
 
-        # Compile and return
         return workflow.compile()
 
     # ========================================================================
-    # Node Implementations (we'll add these step by step)
+    # Node 1: Company Info
     # ========================================================================
 
     def fetch_company_info(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 1: Fetch basic company information.
-
-        This runs first and provides context for all other nodes.
-        """
-        logger.info(f"Node 1: Fetching company info for {state['ticker']}")
+        logger.info(f"[1/7] Fetching company info for {state['ticker']}")
 
         try:
             from data.financial_data import FinancialDataFetcher
             fetcher = FinancialDataFetcher()
-
-            # Get company info
             info = fetcher.get_stock_info(state["ticker"])
 
             if not info:
                 state["errors"].append("Failed to fetch company info")
                 return state
 
-            # Update state
             state["company_name"] = info.get("company_name", "Unknown")
             state["sector"] = info.get("sector", "Unknown")
             state["industry"] = info.get("industry", "Unknown")
             state["current_price"] = info.get("current_price", 0.0)
             state["market_cap"] = info.get("market_cap", 0.0)
 
-            logger.info(f"✓ Company info: {state['company_name']} ({state['sector']})")
+            logger.info(f"  → {state['company_name']} ({state['sector']})")
 
         except Exception as e:
             logger.error(f"Error in fetch_company_info: {e}")
@@ -337,32 +321,21 @@ class EarningsAgent:
 
         return state
 
-    # We'll implement the remaining 11 nodes in the next step
-    # For now, let's add placeholder stubs
+    # ========================================================================
+    # Nodes 2-4: Parallel Data Gathering
+    # ========================================================================
 
     def fetch_earnings_history(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 2: Fetch quarterly earnings history (last 8 quarters).
-
-        This runs in parallel with fetch_analyst_estimates and fetch_guidance_and_news.
-        """
-        logger.info(f"Node 2: Fetching earnings history for {state['ticker']}")
+        logger.info(f"[2/7] Fetching earnings history for {state['ticker']}")
 
         try:
-            # Get the quarterly earnings tool
             from tools.earnings_tools import GetQuarterlyEarningsTool
             tool = GetQuarterlyEarningsTool()
-
-            # Fetch quarterly earnings data
-            earnings_data = tool._run(
+            state["earnings_history"] = tool._run(
                 ticker=state["ticker"],
-                quarters=state["quarters_back"]
+                quarters=state["quarters_back"],
             )
-
-            # Store in state
-            state["earnings_history"] = earnings_data
-            logger.info(f"✓ Earnings history fetched for {state['ticker']}")
-
+            logger.info(f"  → Earnings history fetched")
         except Exception as e:
             logger.error(f"Error in fetch_earnings_history: {e}")
             state["errors"].append(f"Earnings history error: {str(e)}")
@@ -371,25 +344,13 @@ class EarningsAgent:
         return state
 
     def fetch_analyst_estimates(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 3: Fetch analyst consensus estimates.
-
-        This runs in parallel with fetch_earnings_history and fetch_guidance_and_news.
-        """
-        logger.info(f"Node 3: Fetching analyst estimates for {state['ticker']}")
+        logger.info(f"[3/7] Fetching analyst estimates for {state['ticker']}")
 
         try:
-            # Get the analyst estimates tool
             from tools.earnings_tools import GetAnalystEstimatesTool
             tool = GetAnalystEstimatesTool()
-
-            # Fetch analyst estimates
-            estimates_data = tool._run(ticker=state["ticker"])
-
-            # Store in state
-            state["analyst_estimates"] = estimates_data
-            logger.info(f"✓ Analyst estimates fetched for {state['ticker']}")
-
+            state["analyst_estimates"] = tool._run(ticker=state["ticker"])
+            logger.info(f"  → Analyst estimates fetched")
         except Exception as e:
             logger.error(f"Error in fetch_analyst_estimates: {e}")
             state["errors"].append(f"Analyst estimates error: {str(e)}")
@@ -398,41 +359,29 @@ class EarningsAgent:
         return state
 
     def fetch_guidance_and_news(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 4: Fetch earnings surprises, guidance, and peer comparison.
-
-        This runs in parallel with fetch_earnings_history and fetch_analyst_estimates.
-        Combines multiple tool calls into one node.
-        """
-        logger.info(f"Node 4: Fetching surprises, guidance, and peer data for {state['ticker']}")
+        logger.info(f"[4/7] Fetching surprises, call insights, and peer data for {state['ticker']}")
 
         try:
             from tools.earnings_tools import (
                 GetEarningsSurprisesTool,
-                AnalyzeEarningsGuidanceTool,
-                ComparePeerEarningsTool
+                EarningsCallInsightsTool,
+                ComparePeerEarningsTool,
             )
 
-            # Fetch earnings surprises
             surprises_tool = GetEarningsSurprisesTool()
-            surprises_data = surprises_tool._run(
+            state["earnings_surprises"] = surprises_tool._run(
                 ticker=state["ticker"],
-                quarters=state["quarters_back"]
+                quarters=state["quarters_back"],
             )
-            state["earnings_surprises"] = surprises_data
-            logger.info(f"✓ Earnings surprises fetched")
+            logger.info(f"  → Earnings surprises fetched")
 
-            # Fetch earnings guidance
-            guidance_tool = AnalyzeEarningsGuidanceTool()
-            guidance_data = guidance_tool._run(ticker=state["ticker"])
-            state["earnings_guidance"] = guidance_data
-            logger.info(f"✓ Earnings guidance fetched")
+            insights_tool = EarningsCallInsightsTool()
+            state["earnings_guidance"] = insights_tool._run(ticker=state["ticker"], quarters=2)
+            logger.info(f"  → Earnings call insights fetched")
 
-            # Fetch peer comparison
             peer_tool = ComparePeerEarningsTool()
-            peer_data = peer_tool._run(ticker=state["ticker"], peers=None)
-            state["peer_comparison"] = peer_data
-            logger.info(f"✓ Peer comparison fetched")
+            state["peer_comparison"] = peer_tool._run(ticker=state["ticker"], peers=None)
+            logger.info(f"  → Peer comparison fetched")
 
         except Exception as e:
             logger.error(f"Error in fetch_guidance_and_news: {e}")
@@ -446,40 +395,38 @@ class EarningsAgent:
 
         return state
 
+    # ========================================================================
+    # Node 5: Aggregate (sync point)
+    # ========================================================================
+
     def aggregate_data(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 5: Aggregate all gathered data.
+        logger.info("[5/7] All data gathered, ready for analysis")
 
-        This is a synchronization point - waits for all parallel Phase 1 nodes to complete.
-        No actual processing, just ensures all data is ready for analysis.
-        """
-        logger.info("Node 5: All data gathered, ready for analysis")
-
-        # Log what we have
-        has_earnings = bool(state.get("earnings_history"))
-        has_estimates = bool(state.get("analyst_estimates"))
-        has_surprises = bool(state.get("earnings_surprises"))
-        has_guidance = bool(state.get("earnings_guidance"))
-        has_peers = bool(state.get("peer_comparison"))
-
-        logger.info(f"✓ Data completeness: Earnings={has_earnings}, Estimates={has_estimates}, "
-                   f"Surprises={has_surprises}, Guidance={has_guidance}, Peers={has_peers}")
+        has = {
+            "earnings": bool(state.get("earnings_history")),
+            "estimates": bool(state.get("analyst_estimates")),
+            "surprises": bool(state.get("earnings_surprises")),
+            "guidance": bool(state.get("earnings_guidance")),
+            "peers": bool(state.get("peer_comparison")),
+            "accountability": bool(state.get("management_accountability")),
+        }
+        logger.info(f"  → Data: {has}")
 
         return state
 
-    def analyze_earnings_trend(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 6: Analyze earnings growth trends.
+    # ========================================================================
+    # Node 6: Comprehensive Analysis (1 LLM call — replaces 4 separate calls)
+    # ========================================================================
 
-        Uses LLM to analyze quarterly earnings data and identify:
-        - Growth trajectory (accelerating/stable/decelerating)
-        - Revenue and EPS trends
-        - Margin expansion/contraction
-        """
-        logger.info(f"Node 6: Analyzing earnings trends for {state['ticker']}")
+    def comprehensive_analysis(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
+        logger.info(f"[6/7] Running comprehensive analysis for {state['ticker']}")
 
         try:
-            prompt = f"""Analyze the earnings trends for {state['company_name']} ({state['ticker']}):
+            prompt = f"""You are a senior equity research analyst. Analyze all available data for {state['company_name']} ({state['ticker']}) and produce a structured analysis.
+
+CURRENT METRICS:
+- Price: ${state['current_price']:.2f} | Market Cap: ${state['market_cap']/1e9:.2f}B
+- Sector: {state['sector']} | Industry: {state['industry']}
 
 QUARTERLY EARNINGS DATA:
 {state['earnings_history']}
@@ -487,378 +434,207 @@ QUARTERLY EARNINGS DATA:
 EARNINGS SURPRISES:
 {state['earnings_surprises']}
 
-Provide a concise analysis (2-3 paragraphs) covering:
-1. Revenue Growth Trajectory: Is growth accelerating, stable, or decelerating? Cite specific QoQ and YoY numbers.
-2. EPS Trends: How is profitability trending? Any margin expansion/contraction?
-3. Consistency: Does the company consistently beat, meet, or miss expectations?
-4. Key Inflection Points: Any notable changes in trajectory?
-
-Be specific with numbers and percentages. Focus on the trend, not just latest quarter."""
-
-            messages = [
-                SystemMessage(content="You are a financial analyst specializing in earnings analysis."),
-                HumanMessage(content=prompt)
-            ]
-
-            response = self.llm.invoke(messages)
-            state["earnings_trend"] = response.content
-
-            logger.info(f"✓ Earnings trend analysis complete")
-
-        except Exception as e:
-            logger.error(f"Error in analyze_earnings_trend: {e}")
-            state["errors"].append(f"Trend analysis error: {str(e)}")
-            state["earnings_trend"] = "Error analyzing earnings trends"
-
-        return state
-
-    def analyze_quality(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 7: Analyze earnings quality.
-
-        Assesses the quality and sustainability of earnings through:
-        - Cash flow analysis
-        - One-time items
-        - Accounting quality
-        """
-        logger.info(f"Node 7: Analyzing earnings quality for {state['ticker']}")
-
-        try:
-            prompt = f"""Assess the earnings quality for {state['company_name']} ({state['ticker']}):
-
-QUARTERLY EARNINGS DATA (including cash flow):
-{state['earnings_history']}
-
-EARNINGS SURPRISES PATTERN:
-{state['earnings_surprises']}
-
-Provide a concise assessment (2-3 paragraphs) covering:
-1. Cash Flow Quality: How does operating cash flow compare to reported earnings? Is FCF growing?
-2. Earnings Consistency: Are earnings predictable or volatile? Any one-time items?
-3. Surprise Pattern: Does consistent beating indicate genuine strength or lowballing?
-4. Quality Score: Rate as HIGH, MEDIUM, or LOW quality with justification.
-
-Be specific and cite numbers. Conclude with an overall quality assessment."""
-
-            messages = [
-                SystemMessage(content="You are a financial analyst specializing in earnings quality assessment."),
-                HumanMessage(content=prompt)
-            ]
-
-            response = self.llm.invoke(messages)
-            state["quality_analysis"] = response.content
-
-            logger.info(f"✓ Earnings quality analysis complete")
-
-        except Exception as e:
-            logger.error(f"Error in analyze_quality: {e}")
-            state["errors"].append(f"Quality analysis error: {str(e)}")
-            state["quality_analysis"] = "Error analyzing earnings quality"
-
-        return state
-
-    def analyze_guidance(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 8: Analyze management guidance.
-
-        Evaluates forward-looking statements and management outlook.
-        """
-        logger.info(f"Node 8: Analyzing guidance for {state['ticker']}")
-
-        try:
-            prompt = f"""Analyze the forward guidance for {state['company_name']} ({state['ticker']}):
-
-MANAGEMENT GUIDANCE:
+MANAGEMENT GUIDANCE & EARNINGS CALL INSIGHTS:
 {state['earnings_guidance']}
 
 ANALYST CONSENSUS ESTIMATES:
 {state['analyst_estimates']}
 
-Provide analysis (2-3 paragraphs) covering:
-1. Guidance vs. Expectations: Is management guidance above, below, or in-line with consensus?
-2. Guidance Changes: Has guidance been raised, lowered, or maintained recently?
-3. Management Tone: What's the confidence level based on commentary?
-4. Key Drivers: What growth drivers or headwinds did management highlight?
-5. Credibility: Does management have a track record of accurate guidance?
-
-Be specific about guidance numbers and how they compare to street estimates."""
-
-            messages = [
-                SystemMessage(content="You are a financial analyst specializing in management guidance analysis."),
-                HumanMessage(content=prompt)
-            ]
-
-            response = self.llm.invoke(messages)
-            state["guidance_analysis"] = response.content
-
-            logger.info(f"✓ Guidance analysis complete")
-
-        except Exception as e:
-            logger.error(f"Error in analyze_guidance: {e}")
-            state["errors"].append(f"Guidance analysis error: {str(e)}")
-            state["guidance_analysis"] = "Error analyzing guidance"
-
-        return state
-
-    def analyze_competition(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """
-        Node 9: Analyze competitive position.
-
-        Compares company performance vs peers.
-        """
-        logger.info(f"Node 9: Analyzing competitive position for {state['ticker']}")
-
-        try:
-            prompt = f"""Analyze the competitive positioning for {state['company_name']} ({state['ticker']}):
-
-PEER EARNINGS COMPARISON:
+PEER COMPARISON:
 {state['peer_comparison']}
 
-COMPANY EARNINGS TREND:
-{state['earnings_trend']}
+Write a comprehensive analysis with these sections:
 
-Provide analysis (2-3 paragraphs) covering:
-1. Relative Performance: Is {state['ticker']} outperforming or underperforming peers in revenue/EPS growth?
-2. Margin Comparison: How do margins compare to industry peers?
-3. Market Share Implications: Is the company gaining or losing share?
-4. Competitive Strengths: What's driving relative outperformance or underperformance?
-5. Positioning: Rate competitive position as STRONG, MODERATE, or WEAK.
+## EARNINGS TREND
+- Revenue growth trajectory (accelerating/stable/decelerating) with specific QoQ and YoY numbers
+- EPS trends and margin expansion/contraction
+- Beat/miss consistency and any inflection points
 
-Be specific with relative metrics (e.g., "AAPL growing 8% vs peer average 12%")."""
+## EARNINGS QUALITY
+- Cash flow vs reported earnings
+- Earnings predictability, one-time items
+- Quality rating: HIGH, MEDIUM, or LOW
+
+## GUIDANCE & FORWARD OUTLOOK
+- Management guidance vs consensus estimates (above/below/in-line)
+- Guidance changes (raised/lowered/maintained)
+- Management tone and key growth drivers or headwinds
+
+## COMPETITIVE POSITIONING
+- Relative performance vs peers (revenue/EPS growth, margins)
+- Market share trends
+- Position rating: STRONG, MODERATE, or WEAK
+
+## VALUATION
+- Forward P/E and PEG ratio
+- Premium/discount vs history and peers
+- Fair value range with justification
+
+## MANAGEMENT ACCOUNTABILITY
+
+### Promises vs Outcomes
+- What specific commitments did management make in PREVIOUS quarters? (revenue targets, margin goals, product launches, strategic initiatives)
+- Which promises were DELIVERED and which were MISSED?
+- Grade management on follow-through: STRONG, MIXED, or POOR
+
+### Forecasting Accuracy
+- Compare management's prior guidance ranges to actual reported results
+- Are they conservative (consistently beat own guidance), accurate, or optimistic (frequently miss)?
+- Guidance accuracy pattern: CONSERVATIVE, ACCURATE, or OPTIMISTIC
+
+### Red Flags
+- Hedging language or vague deflections on direct questions
+- Lowered or withdrawn guidance without clear justification
+- Blaming external factors for misses while taking credit for beats
+- Unusual changes in accounting, metrics, or KPI definitions
+- Executive departures, especially CFO
+- Growing gap between GAAP and non-GAAP earnings
+- Declining cash flow while reporting earnings growth
+
+List each red flag found, or state "No significant red flags identified" if clean.
+
+Be specific with numbers. Cite data from the inputs. No filler."""
 
             messages = [
-                SystemMessage(content="You are a financial analyst specializing in competitive analysis."),
-                HumanMessage(content=prompt)
+                SystemMessage(content="You are a senior equity research analyst. Be concise, specific, and data-driven."),
+                HumanMessage(content=prompt),
             ]
 
             response = self.llm.invoke(messages)
-            state["competitive_analysis"] = response.content
+            state["comprehensive_analysis"] = response.content
 
-            logger.info(f"✓ Competitive analysis complete")
+            # Extract management accountability section for the report
+            content = response.content
+            acc_start = content.find("## MANAGEMENT ACCOUNTABILITY")
+            if acc_start == -1:
+                acc_start = content.find("MANAGEMENT ACCOUNTABILITY")
+            if acc_start != -1:
+                next_section = content.find("\n## ", acc_start + 5)
+                state["management_accountability"] = content[acc_start:next_section].strip() if next_section != -1 else content[acc_start:].strip()
+
+            logger.info(f"  → Comprehensive analysis complete")
 
         except Exception as e:
-            logger.error(f"Error in analyze_competition: {e}")
-            state["errors"].append(f"Competition analysis error: {str(e)}")
-            state["competitive_analysis"] = "Error analyzing competition"
+            logger.error(f"Error in comprehensive_analysis: {e}")
+            state["errors"].append(f"Analysis error: {str(e)}")
+            state["comprehensive_analysis"] = "Error running comprehensive analysis"
 
         return state
 
-    def calculate_valuation(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """Node 10: Calculate forward valuation metrics"""
-        logger.info(f"Node 10: Calculating valuation for {state['ticker']}")
-
-        try:
-            prompt = f"""Calculate forward valuation metrics for {state['company_name']} ({state['ticker']}):
-
-CURRENT METRICS:
-- Current Price: ${state['current_price']:.2f}
-- Market Cap: ${state['market_cap']/1e9:.2f}B
-
-ANALYST ESTIMATES:
-{state['analyst_estimates']}
-
-EARNINGS TREND:
-{state['earnings_trend']}
-
-QUALITY ANALYSIS:
-{state['quality_analysis']}
-
-COMPETITIVE POSITION:
-{state['competitive_analysis']}
-
-Calculate and explain:
-1. Forward P/E Ratio: Based on next 12 months EPS estimate
-2. PEG Ratio: Forward P/E divided by expected growth rate
-3. Valuation Context: Is the stock trading at premium or discount vs:
-   - Historical average
-   - Sector peers
-   - Growth rate justified multiple
-4. Fair Value Range: Provide reasonable valuation range considering:
-   - Earnings quality (high quality = premium multiple)
-   - Growth trajectory (accelerating = higher multiple)
-   - Competitive position (strong = premium)
-
-Be specific with calculations and justify the multiples."""
-
-            messages = [
-                SystemMessage(content="You are a financial analyst specializing in equity valuation."),
-                HumanMessage(content=prompt)
-            ]
-
-            response = self.llm.invoke(messages)
-            state["valuation_analysis"] = response.content
-
-            logger.info(f"✓ Valuation analysis complete")
-
-        except Exception as e:
-            logger.error(f"Error in calculate_valuation: {e}")
-            state["errors"].append(f"Valuation error: {str(e)}")
-            state["valuation_analysis"] = "Error calculating valuation"
-
-        return state
+    # ========================================================================
+    # Node 7: Investment Thesis + Rating (1 LLM call — replaces 2 separate calls)
+    # ========================================================================
 
     def develop_thesis(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """Node 11: Develop investment thesis with rating and price target"""
-        logger.info(f"Node 11: Developing investment thesis for {state['ticker']}")
+        logger.info(f"[7/7] Developing investment thesis for {state['ticker']}")
 
         try:
-            prompt = f"""Develop a comprehensive investment thesis for {state['company_name']} ({state['ticker']}):
+            prompt = f"""Based on this analysis of {state['company_name']} ({state['ticker']}), provide an investment recommendation.
 
 CURRENT PRICE: ${state['current_price']:.2f}
 
-EARNINGS TREND:
-{state['earnings_trend']}
+ANALYSIS:
+{state['comprehensive_analysis']}
 
-QUALITY ANALYSIS:
-{state['quality_analysis']}
+Provide exactly:
 
-GUIDANCE ANALYSIS:
-{state['guidance_analysis']}
+1. **INVESTMENT RATING**: BUY, HOLD, or SELL
+   - BUY: expected upside >15% with favorable risk/reward
+   - HOLD: expected return 0-15% or mixed signals
+   - SELL: downside risk >10% or deteriorating fundamentals
 
-COMPETITIVE ANALYSIS:
-{state['competitive_analysis']}
+2. **PRICE TARGET (12-month)**: A specific dollar amount (format: "$XXX.XX")
 
-VALUATION ANALYSIS:
-{state['valuation_analysis']}
+3. **INVESTMENT THESIS** (2-3 paragraphs): Why this rating, key drivers, risk/reward
 
-Based on all the analysis above, provide:
+4. **KEY CATALYSTS** (3-5 bullet points): Near-term positive events
 
-1. INVESTMENT RATING: Choose ONE of:
-   - BUY (if expected upside > 15% with favorable risk/reward)
-   - HOLD (if expected return 0-15% or mixed signals)
-   - SELL (if downside risk > 10% or deteriorating fundamentals)
+5. **KEY RISKS** (3-5 bullet points): What could go wrong
 
-2. PRICE TARGET (12-month): Specific price based on:
-   - Forward earnings estimates
-   - Justified valuation multiple
-   - Current price: ${state['current_price']:.2f}
-   Format as: "$XXX.XX"
-
-3. INVESTMENT THESIS (3-4 paragraphs):
-   - Why this rating makes sense
-   - Key drivers of the thesis
-   - Risk/reward assessment
-
-4. BULL CASE (3-4 key points):
-   - What would drive outperformance
-   - Upside catalysts
-   - Positive scenarios
-
-5. BEAR CASE (3-4 key points):
-   - What could go wrong
-   - Downside risks
-   - Negative scenarios
-
-6. KEY CATALYSTS (3-5 specific near-term events):
-   - Upcoming earnings dates
-   - Product launches
-   - Regulatory decisions
-   - Industry events
-   Format each as a short phrase
-
-7. KEY RISKS (3-5 specific risks):
-   - Competitive threats
-   - Execution risks
-   - Market risks
-   Format each as a short phrase
-
-Be specific, quantitative, and decisive. Don't hedge excessively."""
+Be decisive and quantitative. Don't hedge."""
 
             messages = [
                 SystemMessage(content="You are a senior equity research analyst making actionable investment recommendations."),
-                HumanMessage(content=prompt)
+                HumanMessage(content=prompt),
             ]
 
             response = self.llm.invoke(messages)
             thesis_text = response.content
 
-            # Extract structured data from the thesis
             state["investment_thesis"] = thesis_text
 
-            # Extract rating (look for BUY, HOLD, or SELL)
-            rating_match = None
+            # --- Extract structured fields from LLM output ---
+
+            # Rating
+            state["rating"] = "HOLD"  # default
             for line in thesis_text.split('\n'):
                 line_upper = line.upper()
                 if 'RATING' in line_upper or 'RECOMMENDATION' in line_upper:
                     if 'BUY' in line_upper and 'SELL' not in line_upper:
-                        rating_match = 'BUY'
+                        state["rating"] = 'BUY'
                         break
                     elif 'SELL' in line_upper:
-                        rating_match = 'SELL'
+                        state["rating"] = 'SELL'
                         break
                     elif 'HOLD' in line_upper:
-                        rating_match = 'HOLD'
+                        state["rating"] = 'HOLD'
                         break
 
-            state["rating"] = rating_match if rating_match else "HOLD"
-
-            # Extract price target (look for $ followed by numbers)
-            import re
+            # Price target
             price_pattern = r'\$(\d+(?:\.\d{2})?)'
-            prices = re.findall(price_pattern, thesis_text)
-            if prices:
-                # Find the price target (usually the first significant price mentioned after "target")
-                target_price = None
-                for i, line in enumerate(thesis_text.split('\n')):
-                    if 'TARGET' in line.upper() or 'PRICE TARGET' in line.upper():
-                        prices_in_line = re.findall(price_pattern, line)
-                        if prices_in_line:
-                            target_price = float(prices_in_line[0])
-                            break
-
-                if target_price:
-                    state["price_target"] = target_price
-                else:
-                    # Fallback: use first reasonable price found
-                    for p in prices:
-                        p_float = float(p)
-                        # Price target should be within reasonable range of current price
-                        if 0.5 * state['current_price'] < p_float < 3.0 * state['current_price']:
-                            state["price_target"] = p_float
-                            break
-
-            # Extract catalysts (look for CATALYST or CATALYSTS section)
-            catalysts = []
-            in_catalyst_section = False
             for line in thesis_text.split('\n'):
-                line_stripped = line.strip()
-                if 'CATALYST' in line_stripped.upper():
-                    in_catalyst_section = True
-                    continue
-                if in_catalyst_section:
-                    if line_stripped and (line_stripped.startswith('-') or line_stripped.startswith('•') or line_stripped[0].isdigit()):
-                        # Extract the catalyst text
-                        catalyst = line_stripped.lstrip('-•0123456789. ').strip()
-                        if catalyst and len(catalyst) > 10:  # Meaningful catalyst
-                            catalysts.append(catalyst)
-                    elif 'RISK' in line_stripped.upper() or 'BEAR' in line_stripped.upper():
-                        break  # End of catalyst section
+                if 'TARGET' in line.upper() or 'PRICE TARGET' in line.upper():
+                    prices_in_line = re.findall(price_pattern, line)
+                    if prices_in_line:
+                        state["price_target"] = float(prices_in_line[0])
+                        break
+            else:
+                # Fallback: first reasonable price in the text
+                for p in re.findall(price_pattern, thesis_text):
+                    p_float = float(p)
+                    if state['current_price'] > 0 and 0.5 * state['current_price'] < p_float < 3.0 * state['current_price']:
+                        state["price_target"] = p_float
+                        break
 
+            # Catalysts
+            catalysts = []
+            in_section = False
+            for line in thesis_text.split('\n'):
+                stripped = line.strip()
+                if 'CATALYST' in stripped.upper():
+                    in_section = True
+                    continue
+                if in_section:
+                    if stripped and (stripped[0] in '-•' or (stripped[0].isdigit() and '.' in stripped[:3])):
+                        text = stripped.lstrip('-•0123456789. ').strip()
+                        if text and len(text) > 10:
+                            catalysts.append(text)
+                    elif 'RISK' in stripped.upper() or 'BEAR' in stripped.upper():
+                        break
             state["key_catalysts"] = catalysts[:5] if catalysts else ["Next earnings report", "Industry trends", "Market conditions"]
 
-            # Extract risks (look for RISK or RISKS section)
+            # Risks
             risks = []
-            in_risk_section = False
+            in_section = False
             for line in thesis_text.split('\n'):
-                line_stripped = line.strip()
-                if 'RISK' in line_stripped.upper() and 'KEY RISK' in line_stripped.upper():
-                    in_risk_section = True
+                stripped = line.strip()
+                if 'KEY RISK' in stripped.upper() or (stripped.upper().startswith('**KEY RISK') or stripped.upper().startswith('## KEY RISK')):
+                    in_section = True
                     continue
-                if in_risk_section:
-                    if line_stripped and (line_stripped.startswith('-') or line_stripped.startswith('•') or line_stripped[0].isdigit()):
-                        risk = line_stripped.lstrip('-•0123456789. ').strip()
-                        if risk and len(risk) > 10:
-                            risks.append(risk)
-                    elif len(risks) >= 3 and (not line_stripped or line_stripped.startswith('#')):
+                if in_section:
+                    if stripped and (stripped[0] in '-•' or (stripped[0].isdigit() and '.' in stripped[:3])):
+                        text = stripped.lstrip('-•0123456789. ').strip()
+                        if text and len(text) > 10:
+                            risks.append(text)
+                    elif len(risks) >= 3 and (not stripped or stripped.startswith('#')):
                         break
-
             state["key_risks"] = risks[:5] if risks else ["Market volatility", "Execution risk", "Competitive pressure"]
 
-            logger.info(f"✓ Investment thesis developed: {state['rating']} with ${state['price_target']:.2f} target")
+            logger.info(f"  → {state['rating']} | PT ${state['price_target']:.2f} | {len(state['key_catalysts'])} catalysts, {len(state['key_risks'])} risks")
 
         except Exception as e:
             logger.error(f"Error in develop_thesis: {e}")
-            state["errors"].append(f"Thesis development error: {str(e)}")
+            state["errors"].append(f"Thesis error: {str(e)}")
             state["investment_thesis"] = "Error developing investment thesis"
             state["rating"] = "HOLD"
             state["price_target"] = state['current_price']
@@ -867,20 +643,19 @@ Be specific, quantitative, and decisive. Don't hedge excessively."""
 
         return state
 
+    # ========================================================================
+    # Node 8: Generate Report
+    # ========================================================================
+
     def generate_report(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        """Node 12: Generate final formatted report"""
-        logger.info(f"Node 12: Generating final report for {state['ticker']}")
+        logger.info(f"Generating final report for {state['ticker']}")
 
         try:
-            # Calculate upside/downside
-            upside_pct = ((state['price_target'] - state['current_price']) / state['current_price']) * 100
-
-            # Format execution time
+            upside_pct = ((state['price_target'] - state['current_price']) / state['current_price'] * 100) if state['current_price'] > 0 else 0
             execution_time = time.time() - state['start_time']
             minutes = int(execution_time // 60)
             seconds = int(execution_time % 60)
 
-            # Build the comprehensive report
             report = f"""
 {'='*80}
 EARNINGS-FOCUSED EQUITY RESEARCH REPORT
@@ -890,7 +665,6 @@ COMPANY: {state['company_name']} ({state['ticker']})
 SECTOR: {state['sector']} | INDUSTRY: {state['industry']}
 CURRENT PRICE: ${state['current_price']:.2f} | MARKET CAP: ${state['market_cap']/1e9:.2f}B
 
-INVESTMENT RATING: {state['rating']}
 PRICE TARGET (12M): ${state['price_target']:.2f}
 IMPLIED RETURN: {upside_pct:+.1f}%
 
@@ -904,48 +678,40 @@ EXECUTIVE SUMMARY
 {state['investment_thesis']}
 
 {'='*80}
-QUARTERLY EARNINGS ANALYSIS
+COMPREHENSIVE ANALYSIS
+{'='*80}
+
+{state['comprehensive_analysis']}
+
+{'='*80}
+MANAGEMENT ACCOUNTABILITY
+{'='*80}
+
+{state.get('management_accountability', 'No accountability data available.')}
+
+{'='*80}
+QUARTERLY EARNINGS DATA
 {'='*80}
 
 {state['earnings_history']}
-
-EARNINGS TREND ANALYSIS:
-{state['earnings_trend']}
 
 EARNINGS SURPRISES:
 {state['earnings_surprises']}
 
 {'='*80}
-EARNINGS QUALITY ASSESSMENT
+MANAGEMENT GUIDANCE & EARNINGS CALL INSIGHTS
 {'='*80}
 
-{state['quality_analysis']}
-
-{'='*80}
-GUIDANCE & FORWARD ESTIMATES
-{'='*80}
+{state['earnings_guidance']}
 
 ANALYST ESTIMATES:
 {state['analyst_estimates']}
 
-GUIDANCE ANALYSIS:
-{state['guidance_analysis']}
-
 {'='*80}
-COMPETITIVE POSITIONING
+PEER COMPARISON
 {'='*80}
 
-PEER COMPARISON:
 {state['peer_comparison']}
-
-COMPETITIVE ANALYSIS:
-{state['competitive_analysis']}
-
-{'='*80}
-VALUATION ASSESSMENT
-{'='*80}
-
-{state['valuation_analysis']}
 
 {'='*80}
 KEY CATALYSTS
@@ -966,16 +732,9 @@ KEY RISKS
 
             report += f"""
 {'='*80}
-MARKET CONTEXT
-{'='*80}
-
-{state['market_news']}
-
-{'='*80}
 BOTTOM LINE
 {'='*80}
 
-RATING: {state['rating']}
 PRICE TARGET: ${state['price_target']:.2f} (Current: ${state['current_price']:.2f}, Upside: {upside_pct:+.1f}%)
 
 """
@@ -999,37 +758,20 @@ Analysis completed in {minutes}m {seconds}s
 """
 
             state["final_report"] = report
-            logger.info(f"✓ Final report generated ({len(report)} characters)")
+            logger.info(f"  → Report generated ({len(report)} chars)")
 
         except Exception as e:
             logger.error(f"Error in generate_report: {e}")
             state["errors"].append(f"Report generation error: {str(e)}")
-            state["final_report"] = f"""
-ERROR GENERATING REPORT
-
-An error occurred while formatting the final report for {state['ticker']}.
-
-Raw Analysis Available:
-- Earnings Trend: {state['earnings_trend'][:200]}...
-- Rating: {state['rating']}
-- Price Target: ${state['price_target']:.2f}
-
-Error: {str(e)}
-"""
+            state["final_report"] = f"ERROR GENERATING REPORT for {state['ticker']}: {str(e)}"
 
         return state
 
+    # ========================================================================
+    # Direct CLI method
+    # ========================================================================
+
     def analyze(self, ticker: str, quarters_back: int = 8) -> str:
-        """
-        Direct analysis method for CLI usage.
-
-        Args:
-            ticker: Stock ticker symbol
-            quarters_back: Number of quarters to analyze
-
-        Returns:
-            Complete earnings research report
-        """
         initial_state = {
             "ticker": ticker,
             "quarters_back": quarters_back,
@@ -1042,13 +784,9 @@ Error: {str(e)}
             "analyst_estimates": "",
             "earnings_surprises": "",
             "earnings_guidance": "",
-            "market_news": "",
             "peer_comparison": "",
-            "earnings_trend": "",
-            "quality_analysis": "",
-            "guidance_analysis": "",
-            "competitive_analysis": "",
-            "valuation_analysis": "",
+            "comprehensive_analysis": "",
+            "management_accountability": "",
             "investment_thesis": "",
             "rating": "",
             "price_target": 0.0,
@@ -1056,7 +794,7 @@ Error: {str(e)}
             "key_risks": [],
             "final_report": "",
             "start_time": time.time(),
-            "errors": []
+            "errors": [],
         }
 
         result = self.graph.invoke(initial_state)
@@ -1067,15 +805,6 @@ Error: {str(e)}
 # Factory Function
 # ============================================================================
 
-def create_earnings_agent(model: str = "gpt-5.2") -> EarningsAgent:
-    """
-    Factory function to create an earnings agent.
-    Matches the pattern used by other agents in the system.
-
-    Args:
-        model: LLM model to use (default: gpt-5.2)
-
-    Returns:
-        Configured EarningsAgent instance
-    """
+def create_earnings_agent(model: str = "claude-sonnet-4-5-20250929") -> EarningsAgent:
+    """Factory function to create an earnings agent."""
     return EarningsAgent(model=model)

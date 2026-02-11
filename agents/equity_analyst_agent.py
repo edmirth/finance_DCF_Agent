@@ -2,7 +2,7 @@
 Equity Analyst Agent - Professional equity research and investment analysis
 """
 from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools.dcf_tools import get_dcf_tools
 from tools.equity_analyst_tools import get_equity_analyst_tools
@@ -18,18 +18,18 @@ logger = logging.getLogger(__name__)
 class EquityAnalystAgent:
     """AI Agent for comprehensive equity research analysis"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True):
         """
         Initialize the Equity Analyst Agent
 
         Args:
-            api_key: OpenAI API key (if not provided, will use OPENAI_API_KEY env var)
-            model: OpenAI model to use (default: gpt-4-turbo-preview)
+            api_key: Anthropic API key (if not provided, will use ANTHROPIC_API_KEY env var)
+            model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
             show_reasoning: Whether to display agent reasoning steps (default: True)
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
+            raise ValueError("Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable.")
 
         self.model = model
         self.show_reasoning = show_reasoning
@@ -45,11 +45,14 @@ class EquityAnalystAgent:
     def _create_agent(self) -> AgentExecutor:
         """Create the LangChain agent with tools using tool calling pattern"""
 
-        # Initialize LLM with GPT-5.2
-        llm = ChatOpenAI(
+        # Initialize LLM
+        llm = ChatAnthropic(
             model=self.model,
             temperature=0,
-            api_key=self.api_key
+            anthropic_api_key=self.api_key,
+            max_retries=3,  # Retry failed API calls
+            default_request_timeout=60.0,  # Request timeout in seconds
+            max_tokens=8192,  # Max output tokens
         )
 
         # Create system message with workflow instructions
@@ -336,7 +339,14 @@ EXECUTION FLOW SUMMARY
                 {"input": query},
                 {"callbacks": [self.reasoning_callback]}
             )
-            return result.get("output", "No output generated")
+            output = result.get("output", "No output generated")
+            # Normalize Anthropic content blocks (list) to string
+            if isinstance(output, list):
+                output = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in output
+                )
+            return output
         except Exception as e:
             logger.error(f"Error during analysis: {e}")
             return f"Error: {str(e)}"
@@ -368,13 +378,13 @@ Format your final answer as a professional equity research report."""
         return self.analyze(query)
 
 
-def create_equity_analyst_agent(api_key: Optional[str] = None, model: str = "gpt-5.2", show_reasoning: bool = True) -> EquityAnalystAgent:
+def create_equity_analyst_agent(api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> EquityAnalystAgent:
     """
     Factory function to create an equity analyst agent
 
     Args:
-        api_key: OpenAI API key
-        model: OpenAI model to use
+        api_key: Anthropic API key
+        model: Anthropic model to use
         show_reasoning: Whether to display agent reasoning steps (default: True)
 
     Returns:
