@@ -47,6 +47,9 @@ export interface Message {
   agentType?: string;
   thinkingSteps?: ThinkingStep[];
   ticker?: string; // Ticker extracted from query metadata
+  followUps?: string[]; // Follow-up questions generated after response
+  routedAgent?: string; // Which agent auto-routing selected (e.g. 'analyst')
+  isAutoRouted?: boolean; // Whether this message was handled via auto-routing
 }
 
 export interface Agent {
@@ -67,13 +70,19 @@ export interface ChatRequest {
 }
 
 export interface StreamEvent {
-  type: 
+  type:
     | 'start' | 'content' | 'token_delta' | 'end' | 'error' | 'thinking' | 'thought' | 'tool' | 'tool_result'
     | 'agent_finish' | 'phase_start' | 'search_query' | 'source_review' | 'phase_progress' | 'agent_thought'
     | 'plan_created' | 'plan_updated' | 'reflection' | 'ticker_metadata'
     // New streaming thinking events
     | 'thinking_start' | 'thinking_chunk' | 'thinking_end'
-    | 'reflection_start' | 'reflection_chunk' | 'reflection_end';
+    | 'reflection_start' | 'reflection_chunk' | 'reflection_end'
+    // Earnings progress events
+    | 'earnings_progress'
+    // Follow-up questions
+    | 'follow_ups'
+    // Auto-routing decision
+    | 'routing_decision';
   content?: string;
   agent?: string;
   error?: string;
@@ -96,6 +105,24 @@ export interface StreamEvent {
     description: string;
   };
   plan?: string[];  // Array of plan steps for plan_created/plan_updated events
+
+  // Earnings progress fields
+  node?: string;
+  status?: string;
+  detail?: string;
+
+  // Follow-up questions
+  questions?: string[];
+}
+
+export interface UploadedFile {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  content: string;
+  status: 'uploading' | 'ready' | 'error';
+  error?: string;
 }
 
 export interface PortfolioHolding {
@@ -110,4 +137,61 @@ export interface Citation {
   title: string;
   url?: string;
   type: 'financial_data' | 'web_search' | 'news' | 'calculation';
+}
+
+// ============================================================
+// Persistence layer types
+// ============================================================
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  agent_type: string;
+  created_at: string;
+  last_active_at: string;
+}
+
+export interface SessionMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  agent_type: string | null;
+  ticker: string | null;
+  thinking_steps: any[];
+  follow_ups: string[];
+  created_at: string;
+}
+
+export interface SessionDetail extends SessionSummary {
+  messages: SessionMessage[];
+}
+
+export interface AnalysisSummary {
+  id: string;
+  ticker: string | null;
+  agent_type: string;
+  title: string;
+  content_preview: string;
+  tags: string[];
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalysisDetail extends Omit<AnalysisSummary, 'content_preview'> {
+  content: string;
+}
+
+export interface WatchlistTicker {
+  id: string;
+  ticker: string;
+  notes: string | null;
+  added_at: string;
+}
+
+export interface WatchlistDetail {
+  id: string;
+  name: string;
+  created_at: string;
+  tickers: WatchlistTicker[];
 }

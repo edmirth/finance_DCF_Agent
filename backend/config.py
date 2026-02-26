@@ -48,10 +48,11 @@ CHART_PERIOD_DAYS: Dict[str, int] = {
     "1M": 30,
     "3M": 90,
     "6M": 180,
-    "YTD": 365,  # Approximate, will be calculated based on current date
+    "YTD": 365,  # Overridden in filter_chart_data_by_period for exact Jan 1
     "1Y": 365,
     "5Y": 1825,
     "ALL": MAX_HISTORICAL_DAYS,
+    "MAX": MAX_HISTORICAL_DAYS,
 }
 
 # ============================================================================
@@ -132,7 +133,21 @@ TICKER_BLACKLIST = frozenset([
     # Financial metrics (could be mistaken for tickers)
     'FCF', 'EBITDA', 'EBIT', 'EPS', 'ROE', 'ROI', 'ROIC', 'CAGR',
     'DCF', 'NPV', 'IRR', 'WACC', 'PE', 'PS', 'PB', 'EV',
+
+    # Fiscal / reporting period abbreviations
+    'FY', 'FQ', 'YTD', 'HTD', 'QTD', 'TTM', 'LTM',
+
+    # SEC filing / document references
+    'MD', 'MDA', 'QA', 'ITEM',
 ])
+
+# ============================================================================
+# Database Configuration
+# ============================================================================
+
+# SQLite by default; set to postgresql+asyncpg://... to use Postgres
+import os as _os
+DATABASE_URL: str = _os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./finance_agent.db")
 
 # ============================================================================
 # Agent Configuration

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Agent, ChatRequest, StreamEvent } from './types';
+import { Agent, ChatRequest, StreamEvent, SessionSummary, SessionDetail, AnalysisSummary, AnalysisDetail, WatchlistDetail } from './types';
 
 const API_BASE_URL = '/api';
 
@@ -98,9 +98,21 @@ export const streamMessage = async (
   }
 };
 
+// Document upload
+export const uploadDocument = async (file: File): Promise<{ filename: string; content: string; file_type: string }> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await axios.post(`${API_BASE_URL}/upload-document`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+};
+
 // Stock chart types
 export interface StockQuote {
   symbol: string;
+  name: string;
+  exchange: string;
   price: number;
   changesPercentage: number;
   change: number;
@@ -130,7 +142,13 @@ export interface StockChartData {
   historical: ChartDataPoint[];
 }
 
-export type TimePeriod = '1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL';
+export interface ComparisonChartData {
+  tickers: string[];
+  quotes: Record<string, StockQuote>;
+  historical: Record<string, ChartDataPoint[]>;
+}
+
+export type TimePeriod = '1M' | '6M' | 'YTD' | '1Y' | '5Y' | 'MAX';
 
 export const getStockChart = async (
   ticker: string,
@@ -138,6 +156,16 @@ export const getStockChart = async (
 ): Promise<StockChartData> => {
   const response = await api.get(`/stock-chart/${ticker}`, {
     params: { period }
+  });
+  return response.data;
+};
+
+export const getStockChartComparison = async (
+  tickers: string[],
+  period: TimePeriod = '1M'
+): Promise<ComparisonChartData> => {
+  const response = await api.get('/stock-chart/compare', {
+    params: { tickers: tickers.join(','), period }
   });
   return response.data;
 };
@@ -165,6 +193,90 @@ const getAgentColor = (agentId: string): string => {
     earnings: 'bg-yellow-500',
   };
   return colors[agentId] || 'bg-gray-500';
+};
+
+// ============================================================
+// Sessions (Chat History)
+// ============================================================
+
+export const getSessions = async (limit = 50): Promise<SessionSummary[]> => {
+  const response = await api.get('/sessions', { params: { limit } });
+  return response.data;
+};
+
+export const getSession = async (sessionId: string): Promise<SessionDetail> => {
+  const response = await api.get(`/sessions/${sessionId}`);
+  return response.data;
+};
+
+export const deleteSession = async (sessionId: string): Promise<void> => {
+  await api.delete(`/sessions/${sessionId}`);
+};
+
+// ============================================================
+// Analyses (Research Library)
+// ============================================================
+
+export interface AnalysisListParams {
+  ticker?: string;
+  tag?: string;
+  q?: string;
+  agent_type?: string;
+}
+
+export const getAnalyses = async (params?: AnalysisListParams): Promise<AnalysisSummary[]> => {
+  const response = await api.get('/analyses', { params });
+  return response.data;
+};
+
+export const getAnalysis = async (id: string): Promise<AnalysisDetail> => {
+  const response = await api.get(`/analyses/${id}`);
+  return response.data;
+};
+
+export const updateAnalysisTags = async (id: string, tags: string[]): Promise<{ id: string; tags: string[] }> => {
+  const response = await api.patch(`/analyses/${id}`, { tags });
+  return response.data;
+};
+
+export const exportAnalysis = (id: string): string => {
+  // Returns a URL for direct browser download
+  return `${API_BASE_URL}/analyses/${id}/export`;
+};
+
+export const deleteAnalysis = async (id: string): Promise<void> => {
+  await api.delete(`/analyses/${id}`);
+};
+
+// ============================================================
+// Watchlists
+// ============================================================
+
+export const getWatchlists = async (): Promise<WatchlistDetail[]> => {
+  const response = await api.get('/watchlists');
+  return response.data;
+};
+
+export const createWatchlist = async (name: string): Promise<{ id: string; name: string; created_at: string }> => {
+  const response = await api.post('/watchlists', { name });
+  return response.data;
+};
+
+export const addTickerToWatchlist = async (
+  watchlistId: string,
+  ticker: string,
+  notes?: string
+): Promise<{ id: string; ticker: string; notes: string | null; added_at: string }> => {
+  const response = await api.post(`/watchlists/${watchlistId}/tickers`, { ticker, notes });
+  return response.data;
+};
+
+export const removeTickerFromWatchlist = async (watchlistId: string, ticker: string): Promise<void> => {
+  await api.delete(`/watchlists/${watchlistId}/tickers/${ticker}`);
+};
+
+export const deleteWatchlist = async (watchlistId: string): Promise<void> => {
+  await api.delete(`/watchlists/${watchlistId}`);
 };
 
 export default api;

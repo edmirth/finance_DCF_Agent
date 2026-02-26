@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
 import Portfolio from './pages/Portfolio';
 import EarningsPage from './pages/EarningsPage';
+import LibraryPage from './pages/LibraryPage';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="/" element={<ChatPage />} />
           <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/earnings" element={<EarningsPage />} />
+          <Route path="/library" element={<LibraryPage />} />
         </Routes>
       </div>
     </div>

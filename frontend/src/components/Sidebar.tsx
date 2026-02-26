@@ -1,12 +1,138 @@
-import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
-import { Home, Briefcase, Sparkles, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { Home, Briefcase, Sparkles, ChevronLeft, ChevronRight, BookOpen, MessageSquare, Trash2 } from 'lucide-react';
+import { getSessions, deleteSession } from '../api';
+import { SessionSummary } from '../types';
+
+const AGENT_TYPE_LABELS: Record<string, string> = {
+  dcf: 'DCF',
+  analyst: 'Analyst',
+  earnings: 'Earnings',
+  graph: 'Graph',
+  research: 'Research',
+  market: 'Market',
+  portfolio: 'Portfolio',
+  auto: 'Auto',
+};
+
+const AGENT_TYPE_COLORS: Record<string, string> = {
+  dcf: '#3B82F6',
+  analyst: '#8B5CF6',
+  earnings: '#F59E0B',
+  graph: '#10B981',
+  research: '#10B981',
+  market: '#F97316',
+  portfolio: '#6366F1',
+  auto: '#6B7280',
+};
+
+function SessionRow({
+  session,
+  onDelete,
+  onSelect,
+}: {
+  session: SessionSummary;
+  onDelete: (id: string) => void;
+  onSelect: (id: string) => void;
+}) {
+  const color = AGENT_TYPE_COLORS[session.agent_type] || '#6B7280';
+  const label = AGENT_TYPE_LABELS[session.agent_type] || session.agent_type;
+  const dateStr = new Date(session.last_active_at).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onDelete(session.id);
+  };
+
+  return (
+    <div
+      onClick={() => onSelect(session.id)}
+      className="group flex items-start gap-2 px-3 py-2 rounded-xl hover:bg-slate-50 cursor-pointer transition-all duration-150"
+    >
+      <MessageSquare className="w-3.5 h-3.5 text-slate-400 mt-0.5 flex-shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p
+          className="text-xs font-medium text-slate-700 truncate leading-tight"
+          title={session.title}
+          style={{ letterSpacing: '-0.01em' }}
+        >
+          {session.title}
+        </p>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span
+            style={{
+              fontSize: '0.625rem',
+              fontWeight: 600,
+              color,
+              background: `${color}14`,
+              padding: '1px 5px',
+              borderRadius: '4px',
+              letterSpacing: '0.02em',
+            }}
+          >
+            {label}
+          </span>
+          <span className="text-slate-400" style={{ fontSize: '0.625rem' }}>
+            {dateStr}
+          </span>
+        </div>
+      </div>
+      <button
+        onClick={handleDelete}
+        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-all duration-150 flex-shrink-0"
+      >
+        <Trash2 className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
 
 function Sidebar() {
+  const navigate = useNavigate();
   const [isCollapsed, setIsCollapsed] = useState(() => {
     const stored = localStorage.getItem('sidebarCollapsed');
     return stored === 'true';
   });
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+
+  useEffect(() => {
+    loadSessions();
+    // Refresh sessions every 30 seconds to pick up new conversations
+    const interval = setInterval(loadSessions, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Listen for a custom event so Chat can trigger a refresh after saving
+  useEffect(() => {
+    const handler = () => loadSessions();
+    window.addEventListener('sessionSaved', handler);
+    return () => window.removeEventListener('sessionSaved', handler);
+  }, []);
+
+  const loadSessions = async () => {
+    try {
+      const data = await getSessions(10);
+      setSessions(data);
+    } catch {
+      // ignore — backend might not be up yet
+    }
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    try {
+      await deleteSession(id);
+      setSessions(prev => prev.filter(s => s.id !== id));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSelectSession = (id: string) => {
+    navigate(`/?session=${id}`);
+  };
 
   const toggleSidebar = () => {
     const newState = !isCollapsed;
@@ -54,7 +180,7 @@ function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-5 overflow-hidden">
+      <nav className="flex-1 p-5 overflow-y-auto overflow-x-hidden">
         <div className="space-y-2">
           {!isCollapsed && (
             <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4" style={{ letterSpacing: '0.05em' }}>
@@ -63,6 +189,7 @@ function Sidebar() {
           )}
           <NavLink
             to="/"
+            end
             className={({ isActive }) =>
               `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
                 isActive
@@ -81,32 +208,6 @@ function Sidebar() {
                   <div className="flex-1 overflow-hidden">
                     <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Home</span>
                     <p className="text-xs text-slate-400 mt-0.5 truncate font-light">AI-powered analysis</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
-
-          <NavLink
-            to="/earnings"
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Earnings Analyst' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <DollarSign className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Earnings Analyst</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Fast earnings research</p>
                   </div>
                 )}
               </>
@@ -138,10 +239,62 @@ function Sidebar() {
               </>
             )}
           </NavLink>
+
+          <NavLink
+            to="/library"
+            className={({ isActive }) =>
+              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
+                isActive
+                  ? 'text-slate-900'
+                  : 'text-slate-700 hover:bg-slate-50'
+              } ${isCollapsed ? 'justify-center' : ''}`
+            }
+            title={isCollapsed ? 'Library' : ''}
+          >
+            {({ isActive }) => (
+              <>
+                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
+                  <BookOpen className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
+                </div>
+                {!isCollapsed && (
+                  <div className="flex-1 overflow-hidden">
+                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Library</span>
+                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Saved analyses</p>
+                  </div>
+                )}
+              </>
+            )}
+          </NavLink>
         </div>
 
+        {/* Recent Conversations */}
+        {!isCollapsed && sessions.length > 0 && (
+          <div className="mt-6">
+            <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3" style={{ letterSpacing: '0.05em' }}>
+              Recent
+            </p>
+            <div className="space-y-0.5">
+              {sessions.map(session => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  onDelete={handleDeleteSession}
+                  onSelect={handleSelectSession}
+                />
+              ))}
+            </div>
+            <NavLink
+              to="/library"
+              className="block mt-3 px-3 text-xs text-emerald-600 hover:text-emerald-700 font-medium transition-colors duration-150"
+              style={{ letterSpacing: '-0.01em' }}
+            >
+              View all analyses →
+            </NavLink>
+          </div>
+        )}
+
         {/* Quick Info Card */}
-        {!isCollapsed && (
+        {!isCollapsed && sessions.length === 0 && (
           <div className="mt-6 p-5 glass-effect rounded-2xl border border-slate-200/80 shadow-lg">
             <div className="flex items-center gap-2.5 mb-2.5">
               <div className="p-1.5 bg-gradient-to-br from-gold-400 to-gold-500 rounded-lg shadow-md">
