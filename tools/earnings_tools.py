@@ -7,11 +7,12 @@ guidance analysis, and peer comparison.
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Type
+import json
 import os
 import requests
-from openai import OpenAI
 import logging
 from dotenv import load_dotenv
+from shared.tavily_client import get_tavily_client, EARNINGS_DOMAINS
 
 # Load environment variables
 load_dotenv()
@@ -108,7 +109,41 @@ class GetQuarterlyEarningsTool(BaseTool):
                 return f"Error: No quarterly data available for {ticker}"
 
             # Format the data for analysis
-            return self._format_quarterly_earnings(quarterly_data, ticker, quarters)
+            result = self._format_quarterly_earnings(quarterly_data, ticker, quarters)
+
+            # Append chart block
+            try:
+                income_stmts = quarterly_data.get("income_statements", [])
+                reversed_stmts = list(reversed(income_stmts))
+                chart_data_list = []
+                for stmt in reversed_stmts:
+                    period = stmt.get("fiscal_period", "")
+                    revenue = stmt.get("revenue") or 0
+                    net_income = stmt.get("net_income") or 0
+                    shares = stmt.get("weighted_average_shares") or 0
+                    eps = round(net_income / shares, 2) if shares else 0
+                    revenue_b = round(revenue / 1e9, 2)
+                    chart_data_list.append({"period": period, "revenue_b": revenue_b, "eps": eps})
+                if chart_data_list:
+                    chart_id = f"quarterly_earnings_{ticker.upper()}"
+                    chart_spec = {
+                        "id": chart_id,
+                        "chart_type": "bar_line",
+                        "title": f"{ticker.upper()} Quarterly Revenue & EPS",
+                        "data": chart_data_list,
+                        "series": [
+                            {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB", "yAxis": "left"},
+                            {"key": "eps", "label": "EPS ($)", "type": "line", "color": "#10B981", "yAxis": "right"}
+                        ],
+                        "y_format": "currency_b",
+                        "y_right_format": "currency"
+                    }
+                    result += f"\n---CHART_DATA:{chart_id}---\n{json.dumps(chart_spec)}\n---END_CHART_DATA:{chart_id}---"
+                    result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss revenue/EPS trends. Do NOT reproduce the CHART_DATA block.]"
+            except Exception:
+                pass
+
+            return result
 
         except Exception as e:
             logger.error(f"Error in get_quarterly_earnings: {e}")
@@ -215,14 +250,14 @@ class GetAnalystEstimatesTool(BaseTool):
     args_schema: Type[BaseModel] = AnalystEstimatesInput
 
     def _run(self, ticker: str) -> str:
-        """Fetch from FMP API or fallback to Perplexity"""
+        """Fetch from FMP API or fallback to Tavily search"""
         try:
             fmp_key = os.getenv("FMP_API_KEY")
 
             if fmp_key:
                 return self._fetch_from_fmp(ticker, fmp_key)
             else:
-                logger.warning("FMP_API_KEY not found, using Perplexity fallback")
+                logger.warning("FMP_API_KEY not found, using web search fallback")
                 return self._search_analyst_estimates(ticker)
 
         except Exception as e:
@@ -249,7 +284,7 @@ class GetAnalystEstimatesTool(BaseTool):
             annual_data = annual_resp.json()
 
             if not quarterly_data and not annual_data:
-                logger.warning(f"No FMP analyst estimates for {ticker}, using Perplexity fallback")
+                logger.warning(f"No FMP analyst estimates for {ticker}, using web search fallback")
                 return self._search_analyst_estimates(ticker)
 
             return self._format_fmp_estimates(quarterly_data, annual_data, ticker)
@@ -350,41 +385,56 @@ class GetAnalystEstimatesTool(BaseTool):
             num_eps = latest.get('numAnalystsEps', 0) or 0
             output.append(f"Analysts:      {num_rev} (revenue) / {num_eps} (EPS)")
 
-        return "\n".join(output)
+        result = "\n".join(output)
+
+        # Append chart block
+        try:
+            chart_data_list = []
+            for est in quarterly:
+                date = est.get("date", "")
+                eps_avg = est.get("epsAvg", 0) or 0
+                eps_high = est.get("epsHigh", 0) or 0
+                eps_low = est.get("epsLow", 0) or 0
+                chart_data_list.append({"period": date, "eps_avg": eps_avg, "eps_high": eps_high, "eps_low": eps_low})
+            if chart_data_list:
+                chart_id = f"analyst_estimates_{ticker.upper()}"
+                chart_spec = {
+                    "id": chart_id,
+                    "chart_type": "line",
+                    "title": f"{ticker.upper()} Forward EPS Estimates",
+                    "data": chart_data_list,
+                    "series": [
+                        {"key": "eps_avg", "label": "Consensus EPS", "type": "line", "color": "#2563EB"},
+                        {"key": "eps_high", "label": "High Est.", "type": "line", "color": "#10B981"},
+                        {"key": "eps_low", "label": "Low Est.", "type": "line", "color": "#F59E0B"}
+                    ],
+                    "y_format": "currency"
+                }
+                result += f"\n---CHART_DATA:{chart_id}---\n{json.dumps(chart_spec)}\n---END_CHART_DATA:{chart_id}---"
+                result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss analyst consensus estimates. Do NOT reproduce the CHART_DATA block.]"
+        except Exception:
+            pass
+
+        return result
 
     def _search_analyst_estimates(self, ticker: str) -> str:
-        """Fallback: Use Perplexity to search for estimates"""
+        """Fallback: Use Tavily to search for estimates"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return f"Error: No FMP_API_KEY or PERPLEXITY_API_KEY found. Cannot fetch analyst estimates for {ticker}"
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
-
-            query = f"""What are the latest analyst consensus estimates for {ticker}?
-            Provide:
-            1. Current quarter EPS estimate
-            2. Next quarter EPS estimate
-            3. Current fiscal year EPS estimate
-            4. Next fiscal year EPS estimate
-            5. Revenue estimates
-            6. Number of analysts covering
-            7. Recent estimate revisions (upgrades/downgrades)
-
-            Use the most recent data available with sources."""
-
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {"role": "system", "content": "You are a financial data analyst. Provide specific numbers with sources and dates."},
-                    {"role": "user", "content": query}
-                ]
+            result = tavily.search_text(
+                query=f"{ticker} analyst consensus estimates EPS revenue current quarter next quarter fiscal year",
+                topic="finance",
+                search_depth="advanced",
+                max_results=5,
+                include_answer="advanced",
+                include_domains=EARNINGS_DOMAINS,
             )
 
-            return f"ANALYST ESTIMATES: {ticker} (via web search)\n\n" + response.choices[0].message.content
+            return f"ANALYST ESTIMATES: {ticker} (via web search)\n\n{result}"
 
         except Exception as e:
-            logger.error(f"Perplexity search error: {e}")
+            logger.error(f"Tavily search error: {e}")
             return f"Error searching for analyst estimates: {str(e)}"
 
 
@@ -408,127 +458,20 @@ class GetEarningsSurprisesTool(BaseTool):
     args_schema: Type[BaseModel] = EarningsSurprisesInput
 
     def _run(self, ticker: str, quarters: int = 8) -> str:
-        """Fetch earnings surprises. Cascade: Alpha Vantage → FMP → Perplexity."""
+        """Fetch earnings surprises. Cascade: FMP → Tavily."""
         try:
-            # --- Cascade 1: Alpha Vantage (free, full history in 1 call) ---
-            av_result = self._fetch_surprises_from_alpha_vantage(ticker, quarters)
-            if av_result:
-                return av_result
-
-            # --- Cascade 2: FMP ---
+            # --- Cascade 1: FMP ---
             fmp_key = os.getenv("FMP_API_KEY")
             if fmp_key:
                 return self._fetch_from_fmp(ticker, fmp_key, quarters)
 
-            # --- Cascade 3: Perplexity ---
-            logger.warning("No structured data sources available, using Perplexity fallback")
+            # --- Cascade 2: Tavily web search ---
+            logger.warning("No structured data sources available, using web search fallback")
             return self._search_earnings_surprises(ticker, quarters)
 
         except Exception as e:
             logger.error(f"Error in get_earnings_surprises: {e}")
             return f"Error fetching earnings surprises for {ticker}: {str(e)}"
-
-    def _fetch_surprises_from_alpha_vantage(self, ticker: str, quarters: int) -> Optional[str]:
-        """Fetch earnings surprises from Alpha Vantage EARNINGS endpoint.
-
-        Returns formatted string, or None to fall through to next source.
-        """
-        try:
-            from data.alpha_vantage import AlphaVantageClient, AlphaVantageRateLimitError
-
-            client = AlphaVantageClient()
-            if not client.api_key:
-                logger.info("ALPHA_VANTAGE_API_KEY not set, skipping Alpha Vantage for surprises")
-                return None
-
-            earnings_data = client.get_earnings(ticker)
-            if not earnings_data:
-                return None
-
-            quarterly = earnings_data.get("quarterlyEarnings", [])
-            if not quarterly:
-                return None
-
-            return self._format_av_earnings_surprises(quarterly[:quarters], ticker)
-
-        except Exception as e:
-            logger.info(f"Alpha Vantage earnings surprise fetch failed for {ticker}: {e}")
-            return None
-
-    def _format_av_earnings_surprises(self, data: List[Dict], ticker: str) -> str:
-        """Format Alpha Vantage quarterlyEarnings into surprise table.
-
-        AV fields: fiscalDateEnding, reportedDate, reportedEPS, estimatedEPS,
-                    surprise, surprisePercentage
-        """
-        output = [f"EARNINGS SURPRISES HISTORY: {ticker} (via Alpha Vantage)\n"]
-        output.append("=" * 80)
-        output.append("")
-        output.append(f"{'Date':<12} {'Actual EPS':<15} {'Est EPS':<15} {'Surprise':<15} {'Surprise %':<12}")
-        output.append("-" * 80)
-
-        beats = 0
-        misses = 0
-        meets = 0
-
-        for entry in data:
-            date_str = entry.get("reportedDate", entry.get("fiscalDateEnding", "Unknown"))
-            reported_eps = entry.get("reportedEPS", "None")
-            estimated_eps = entry.get("estimatedEPS", "None")
-            surprise = entry.get("surprise", "None")
-            surprise_pct = entry.get("surprisePercentage", "None")
-
-            # Parse numeric values (AV returns strings)
-            try:
-                actual = float(reported_eps) if reported_eps != "None" else 0
-            except (ValueError, TypeError):
-                actual = 0
-            try:
-                estimated = float(estimated_eps) if estimated_eps != "None" else 0
-            except (ValueError, TypeError):
-                estimated = 0
-            try:
-                surprise_val = float(surprise) if surprise != "None" else actual - estimated
-            except (ValueError, TypeError):
-                surprise_val = actual - estimated
-            try:
-                surprise_pct_val = float(surprise_pct) if surprise_pct != "None" else (
-                    (surprise_val / estimated * 100) if estimated != 0 else 0
-                )
-            except (ValueError, TypeError):
-                surprise_pct_val = (surprise_val / estimated * 100) if estimated != 0 else 0
-
-            # Classify
-            if surprise_pct_val > 1:
-                beats += 1
-                result = "BEAT"
-            elif surprise_pct_val < -1:
-                misses += 1
-                result = "MISS"
-            else:
-                meets += 1
-                result = "MEET"
-
-            output.append(
-                f"{date_str:<12} ${actual:>13.2f} ${estimated:>13.2f} ${surprise_val:>13.2f} {surprise_pct_val:>10.1f}% {result}"
-            )
-
-        # Summary stats
-        total = beats + misses + meets
-        if total > 0:
-            output.append("")
-            output.append("SURPRISE PATTERN:")
-            output.append("-" * 80)
-            output.append(f"Beats: {beats}/{total} ({beats/total*100:.1f}%)")
-            output.append(f"Meets: {meets}/{total} ({meets/total*100:.1f}%)")
-            output.append(f"Misses: {misses}/{total} ({misses/total*100:.1f}%)")
-
-            if beats >= total * 0.75:
-                output.append("\n✓ Strong track record: Consistently beats expectations")
-            elif misses >= total * 0.5:
-                output.append("\n⚠ Weak track record: Frequently misses expectations")
-
-        return "\n".join(output)
 
     def _fetch_from_fmp(self, ticker: str, api_key: str, quarters: int) -> str:
         """Fetch historical earnings surprises from FMP /stable/earnings endpoint"""
@@ -545,17 +488,47 @@ class GetEarningsSurprisesTool(BaseTool):
             all_data = response.json()
 
             if not all_data:
-                logger.warning(f"No FMP earnings data for {ticker}, using Perplexity fallback")
+                logger.warning(f"No FMP earnings data for {ticker}, using web search fallback")
                 return self._search_earnings_surprises(ticker, quarters)
 
             # Filter out future quarters (epsActual is null)
             historical = [e for e in all_data if e.get("epsActual") is not None]
 
             if not historical:
-                logger.warning(f"No historical earnings data for {ticker}, using Perplexity fallback")
+                logger.warning(f"No historical earnings data for {ticker}, using web search fallback")
                 return self._search_earnings_surprises(ticker, quarters)
 
-            return self._format_earnings_surprises_from_calendar(historical[:quarters], ticker)
+            result = self._format_earnings_surprises_from_calendar(historical[:quarters], ticker)
+
+            # Append chart block
+            try:
+                chart_data_list = []
+                for item in historical[:quarters]:
+                    period = item.get("date", "")
+                    eps_actual = item.get("epsActual") or 0
+                    eps_estimated = item.get("epsEstimated") or 0
+                    beat = eps_actual >= eps_estimated
+                    chart_data_list.append({"period": period, "eps_actual": eps_actual, "eps_estimate": eps_estimated, "beat": beat})
+                if chart_data_list:
+                    chart_id = f"earnings_surprises_{ticker.upper()}"
+                    chart_spec = {
+                        "id": chart_id,
+                        "chart_type": "beat_miss_bar",
+                        "title": f"{ticker.upper()} EPS: Actual vs. Estimate",
+                        "data": chart_data_list,
+                        "series": [
+                            {"key": "eps_estimate", "label": "Estimate", "type": "bar", "color": "#E5E7EB", "yAxis": "left"},
+                            {"key": "eps_actual", "label": "Actual", "type": "bar", "color": "#2563EB", "yAxis": "left",
+                             "colorByField": "beat", "colorIfTrue": "#10B981", "colorIfFalse": "#EF4444"}
+                        ],
+                        "y_format": "currency"
+                    }
+                    result += f"\n---CHART_DATA:{chart_id}---\n{json.dumps(chart_spec)}\n---END_CHART_DATA:{chart_id}---"
+                    result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss earnings surprises (beats/misses). Do NOT reproduce the CHART_DATA block.]"
+            except Exception:
+                pass
+
+            return result
 
         except requests.exceptions.RequestException as e:
             logger.error(f"FMP API error: {e}")
@@ -622,7 +595,7 @@ class GetEarningsSurprisesTool(BaseTool):
         # Note about limited data
         if total < 4:
             output.append("")
-            output.append("⚠ Limited historical data. Recommend using Perplexity search for complete history.")
+            output.append("⚠ Limited historical data. Recommend using web search for complete history.")
 
         return "\n".join(output)
 
@@ -678,35 +651,23 @@ class GetEarningsSurprisesTool(BaseTool):
         return "\n".join(output)
 
     def _search_earnings_surprises(self, ticker: str, quarters: int) -> str:
-        """Fallback: Search with Perplexity"""
+        """Fallback: Search with Tavily"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return f"Error: No FMP_API_KEY or PERPLEXITY_API_KEY found"
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
-
-            query = f"""What are the earnings surprises for {ticker} over the last {quarters} quarters?
-            For each quarter, provide:
-            1. Earnings date
-            2. Actual EPS
-            3. Expected/Estimated EPS
-            4. Whether it was a beat, miss, or meet
-
-            Also provide the overall pattern (how many beats vs misses)."""
-
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {"role": "system", "content": "You are a financial analyst. Provide specific EPS numbers with dates."},
-                    {"role": "user", "content": query}
-                ]
+            result = tavily.search_text(
+                query=f"{ticker} earnings surprises last {quarters} quarters actual EPS vs estimated EPS beat miss",
+                topic="finance",
+                search_depth="advanced",
+                max_results=5,
+                include_answer="advanced",
+                include_domains=EARNINGS_DOMAINS,
             )
 
-            return f"EARNINGS SURPRISES: {ticker} (via web search)\n\n" + response.choices[0].message.content
+            return f"EARNINGS SURPRISES: {ticker} (via web search)\n\n{result}"
 
         except Exception as e:
-            logger.error(f"Perplexity search error: {e}")
+            logger.error(f"Tavily search error: {e}")
             return f"Error searching for earnings surprises: {str(e)}"
 
 
@@ -732,35 +693,21 @@ class AnalyzeEarningsGuidanceTool(BaseTool):
     def _run(self, ticker: str) -> str:
         """Search for recent earnings call guidance"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return f"Error: PERPLEXITY_API_KEY not found. Cannot analyze guidance for {ticker}"
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
-
-            query = f"""Analyze the most recent earnings call and guidance for {ticker}:
-
-            1. Latest quarterly results vs expectations
-            2. Management guidance for next quarter and full year (revenue, EPS, margins)
-            3. Any changes to previous guidance (raised, lowered, maintained)
-            4. Key themes from management commentary
-            5. Q&A highlights on outlook, strategy, and risks
-            6. Forward-looking statements about growth drivers
-
-            Focus on specific numbers and guidance changes. Use the most recent earnings call."""
-
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {"role": "system", "content": "You are an earnings call analyst. Extract specific guidance numbers and key strategic themes."},
-                    {"role": "user", "content": query}
-                ]
+            result = tavily.search_text(
+                query=f"{ticker} most recent earnings call guidance: quarterly results, management guidance revenue EPS margins, guidance changes raised lowered, forward outlook growth drivers",
+                topic="finance",
+                search_depth="advanced",
+                max_results=5,
+                include_answer="advanced",
+                include_domains=EARNINGS_DOMAINS,
             )
 
             output = [f"EARNINGS GUIDANCE ANALYSIS: {ticker}\n"]
             output.append("=" * 80)
             output.append("")
-            output.append(response.choices[0].message.content)
+            output.append(result)
 
             return "\n".join(output)
 
@@ -792,47 +739,27 @@ class ComparePeerEarningsTool(BaseTool):
     def _run(self, ticker: str, peers: Optional[List[str]] = None) -> str:
         """Compare earnings with peers"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return f"Error: PERPLEXITY_API_KEY not found"
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
-
-            # Build query
             if peers:
                 peer_list = ", ".join(peers)
-                query = f"""Compare {ticker}'s recent earnings performance to its peers {peer_list}:
-
-                For each company, provide:
-                1. Latest quarter revenue growth (YoY)
-                2. Latest quarter EPS growth (YoY)
-                3. Operating margin trends
-                4. Key differentiators
-
-                Assess {ticker}'s relative competitive position."""
+                query = f"{ticker} vs {peer_list} earnings comparison: revenue growth EPS growth operating margin trends competitive position"
             else:
-                query = f"""Identify {ticker}'s top 3-4 industry competitors and compare their recent earnings:
+                query = f"{ticker} industry competitors earnings comparison: revenue growth EPS growth margin trends competitive position which company performing best"
 
-                1. Who are the main competitors?
-                2. Latest quarter revenue growth comparison
-                3. Latest quarter EPS growth comparison
-                4. Margin trends comparison
-                5. Which company is performing best/worst and why?
-
-                Assess {ticker}'s relative competitive position."""
-
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {"role": "system", "content": "You are a competitive analyst. Provide specific metrics and data-driven comparisons."},
-                    {"role": "user", "content": query}
-                ]
+            result = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=5,
+                include_answer="advanced",
+                include_domains=EARNINGS_DOMAINS,
             )
 
             output = [f"PEER EARNINGS COMPARISON: {ticker}\n"]
             output.append("=" * 80)
             output.append("")
-            output.append(response.choices[0].message.content)
+            output.append(result)
 
             return "\n".join(output)
 
@@ -862,32 +789,34 @@ class GetPriceTargetTool(BaseTool):
     args_schema: Type[BaseModel] = PriceTargetInput
 
     def _run(self, ticker: str) -> str:
-        """Fetch price targets from FMP stable API"""
+        """Fetch price targets from FMP stable API, with Tavily fallback"""
         try:
             fmp_key = os.getenv("FMP_API_KEY")
 
-            if not fmp_key:
-                return f"Error: FMP_API_KEY not found. Cannot fetch price targets for {ticker}"
+            if fmp_key:
+                try:
+                    url = "https://financialmodelingprep.com/stable/price-target-consensus"
+                    params = {"symbol": ticker, "apikey": fmp_key}
+                    response = requests.get(url, params=params, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+                    if data and isinstance(data, list) and len(data) > 0:
+                        return self._format_price_targets(data[0], ticker)
+                except Exception as e:
+                    logger.warning(f"FMP price targets failed for {ticker}, falling back to Tavily: {e}")
 
-            # Use new stable API endpoint
-            url = "https://financialmodelingprep.com/stable/price-target-consensus"
-            params = {
-                "symbol": ticker,
-                "apikey": fmp_key
-            }
+            # Tavily fallback
+            logger.info(f"Using Tavily fallback for {ticker} price targets")
+            tavily = get_tavily_client()
+            result = tavily.search_text(
+                f"{ticker} stock analyst price target consensus 2025 2026",
+                include_domains=EARNINGS_DOMAINS,
+                max_results=5,
+            )
+            if result and "No results" not in result:
+                return f"ANALYST PRICE TARGETS: {ticker} (via web search)\n{'=' * 80}\n\n{result}\n\nNote: Data sourced from web search. Verify with primary sources."
+            return f"No price target data available for {ticker}"
 
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if not data or not isinstance(data, list) or len(data) == 0:
-                return f"No price target data available for {ticker}"
-
-            return self._format_price_targets(data[0], ticker)
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"FMP API error: {e}")
-            return f"Error fetching price targets for {ticker}: {str(e)}"
         except Exception as e:
             logger.error(f"Error in get_price_targets: {e}")
             return f"Error fetching price targets for {ticker}: {str(e)}"
@@ -947,33 +876,34 @@ class GetAnalystRatingsTool(BaseTool):
     args_schema: Type[BaseModel] = AnalystRatingsInput
 
     def _run(self, ticker: str, limit: int = 15) -> str:
-        """Fetch analyst ratings from FMP stable API"""
+        """Fetch analyst ratings from FMP stable API, with Tavily fallback"""
         try:
             fmp_key = os.getenv("FMP_API_KEY")
 
-            if not fmp_key:
-                return f"Error: FMP_API_KEY not found. Cannot fetch analyst ratings for {ticker}"
+            if fmp_key:
+                try:
+                    url = "https://financialmodelingprep.com/stable/grades"
+                    params = {"symbol": ticker, "limit": limit, "apikey": fmp_key}
+                    response = requests.get(url, params=params, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+                    if data and isinstance(data, list) and len(data) > 0:
+                        return self._format_analyst_ratings(data[:limit], ticker)
+                except Exception as e:
+                    logger.warning(f"FMP analyst ratings failed for {ticker}, falling back to Tavily: {e}")
 
-            # Use new stable API endpoint
-            url = "https://financialmodelingprep.com/stable/grades"
-            params = {
-                "symbol": ticker,
-                "limit": limit,
-                "apikey": fmp_key
-            }
+            # Tavily fallback
+            logger.info(f"Using Tavily fallback for {ticker} analyst ratings")
+            tavily = get_tavily_client()
+            result = tavily.search_text(
+                f"{ticker} stock analyst ratings upgrades downgrades recent",
+                include_domains=EARNINGS_DOMAINS,
+                max_results=5,
+            )
+            if result and "No results" not in result:
+                return f"RECENT ANALYST RATINGS: {ticker} (via web search)\n{'=' * 80}\n\n{result}\n\nNote: Data sourced from web search. Verify with primary sources."
+            return f"No analyst ratings available for {ticker}"
 
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if not data or not isinstance(data, list) or len(data) == 0:
-                return f"No analyst ratings available for {ticker}"
-
-            return self._format_analyst_ratings(data[:limit], ticker)
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"FMP API error: {e}")
-            return f"Error fetching analyst ratings for {ticker}: {str(e)}"
         except Exception as e:
             logger.error(f"Error in get_analyst_ratings: {e}")
             return f"Error fetching analyst ratings for {ticker}: {str(e)}"
@@ -1069,7 +999,7 @@ class EarningsCallInsightsTool(BaseTool):
     def _run(self, ticker: str, query: Optional[str] = None, quarters: int = 1) -> str:
         """Fetch and analyze earnings call transcript(s).
 
-        Data source cascade: FMP (unlimited) → Alpha Vantage (25/day free) → Perplexity web search.
+        Data source cascade: FMP → Tavily web search.
         """
         try:
             # Validate inputs
@@ -1100,107 +1030,18 @@ class EarningsCallInsightsTool(BaseTool):
 
                 if transcript_data:
                     logger.info(f"Using FMP transcript data for {ticker}")
-                    return self._analyze_with_perplexity(
+                    return self._analyze_transcript_with_claude(
                         ticker=ticker, company_name=company_name,
                         transcript_data=transcript_data, query=query, quarters=quarters,
                     )
 
-            # --- Cascade 2: Alpha Vantage (free, 25 req/day) ---
-            transcript_data = self._fetch_from_alpha_vantage(ticker, quarters)
-            if transcript_data:
-                logger.info(f"Using Alpha Vantage transcript data for {ticker}")
-                return self._analyze_with_perplexity(
-                    ticker=ticker, company_name=company_name,
-                    transcript_data=transcript_data, query=query, quarters=quarters,
-                )
-
-            # --- Cascade 3: Perplexity web search (always available) ---
-            logger.info(f"No transcript sources available for {ticker}, using Perplexity search fallback")
-            return self._analyze_via_perplexity_search(ticker, company_name, query, quarters)
+            # --- Cascade 2: Tavily web search (always available) ---
+            logger.info(f"No transcript sources available for {ticker}, using web search fallback")
+            return self._analyze_via_web_search(ticker, company_name, query, quarters)
 
         except Exception as e:
             logger.error(f"Error in earnings insights tool: {e}", exc_info=True)
             return f"Error analyzing earnings call for {ticker}: {str(e)}"
-
-    def _fetch_from_alpha_vantage(self, ticker: str, quarters: int) -> Optional[any]:
-        """Try to fetch transcript(s) from Alpha Vantage.
-
-        Returns transcript data in FMP-compatible format (single dict or list of dicts),
-        or None if unavailable.
-        """
-        try:
-            from data.alpha_vantage import AlphaVantageClient, AlphaVantageRateLimitError
-
-            client = AlphaVantageClient()
-            if not client.api_key:
-                logger.info("ALPHA_VANTAGE_API_KEY not set, skipping Alpha Vantage")
-                return None
-
-            if quarters == 1:
-                # Get latest transcript
-                available = client.get_available_quarters(ticker)
-                if not available:
-                    logger.info(f"No Alpha Vantage earnings quarters found for {ticker}")
-                    return None
-
-                av_data = client.get_earnings_transcript(ticker, available[0])
-                if not av_data:
-                    return None
-
-                return self._convert_av_transcript(av_data)
-            else:
-                # Batch transcripts
-                av_transcripts = client.get_batch_transcripts(ticker, quarters)
-                if not av_transcripts:
-                    return None
-
-                converted = [self._convert_av_transcript(t) for t in av_transcripts]
-                converted = [c for c in converted if c is not None]
-                return converted if converted else None
-
-        except Exception as e:
-            # Import may fail or client may raise — always fall through gracefully
-            logger.info(f"Alpha Vantage transcript fetch failed for {ticker}: {e}")
-            return None
-
-    @staticmethod
-    def _convert_av_transcript(av_data: Dict) -> Optional[Dict]:
-        """Convert Alpha Vantage transcript format to FMP-compatible dict.
-
-        AV format: {symbol, quarter, year, transcript: [{speaker, text, role}, ...]}
-        FMP format: {content, quarter, year, date}
-
-        The _analyze_with_perplexity method expects FMP format with a 'content' string.
-        """
-        if not av_data:
-            return None
-
-        segments = av_data.get("transcript", [])
-        if not segments:
-            return None
-
-        # Build content string from segments
-        content_parts = []
-        for seg in segments:
-            speaker = seg.get("speaker", "Unknown")
-            role = seg.get("role", "")
-            text = seg.get("text", "")
-            if role:
-                content_parts.append(f"{speaker} ({role}): {text}")
-            else:
-                content_parts.append(f"{speaker}: {text}")
-
-        content = "\n\n".join(content_parts)
-
-        quarter_num = av_data.get("quarter", "")
-        year = av_data.get("year", "")
-
-        return {
-            "content": content,
-            "quarter": f"Q{quarter_num}" if quarter_num else "Unknown",
-            "year": str(year) if year else "Unknown",
-            "date": f"{year}-Q{quarter_num}" if year and quarter_num else "Unknown",
-        }
 
     def _get_fmp_earnings_dates(self, ticker: str, api_key: str, limit: int = 8) -> List[tuple]:
         """Get (year, quarter) tuples for recent earnings from FMP /stable/earnings.
@@ -1363,94 +1204,43 @@ class EarningsCallInsightsTool(BaseTool):
             logger.debug(f"Error fetching batch transcripts for {ticker}: {e}")
             return None
 
-    def _analyze_via_perplexity_search(
+    def _analyze_via_web_search(
         self,
         ticker: str,
         company_name: str,
         query: Optional[str],
         quarters: int
     ) -> str:
-        """Fallback: Use Perplexity to search for earnings call information when transcripts unavailable"""
+        """Fallback: Use Tavily to search for earnings call information when transcripts unavailable"""
         try:
-            perplexity_key = os.getenv("PERPLEXITY_API_KEY")
-            if not perplexity_key:
-                return f"Error: No earnings call transcripts available for {ticker} and PERPLEXITY_API_KEY not found."
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=perplexity_key, base_url="https://api.perplexity.ai")
-
-            # Build search query based on whether user has specific question
             if query:
-                search_query = f"""Analyze {company_name} ({ticker}) earnings call commentary specifically about: {query}
-
-                Provide:
-                1. What management said about this topic (with quotes if available)
-                2. Relevant metrics or numbers mentioned
-                3. Forward guidance related to this topic
-                4. Analyst questions and management responses
-                5. Overall tone and confidence level
-
-                Use the most recent earnings call(s)."""
+                search_query = f"{company_name} ({ticker}) earnings call commentary about {query}: management quotes, guidance, analyst questions, tone"
             else:
                 period_text = "most recent earnings call" if quarters == 1 else f"last {quarters} earnings calls"
-                search_query = f"""Provide a comprehensive analysis of {company_name} ({ticker}) {period_text}:
+                search_query = f"{company_name} ({ticker}) {period_text} analysis: revenue EPS results, management commentary quotes, forward guidance, analyst Q&A themes, sentiment outlook"
 
-                1. FINANCIAL HIGHLIGHTS
-                   - Revenue, EPS, margins vs expectations
-                   - YoY and QoQ growth trends
-
-                2. MANAGEMENT COMMENTARY
-                   - Key quotes from CEO, CFO (with attribution)
-                   - Strategic priorities and initiatives
-                   - Business performance drivers
-
-                3. FORWARD GUIDANCE
-                   - Specific guidance for next quarter/year
-                   - Changes from previous guidance
-                   - Growth outlook and expectations
-
-                4. ANALYST Q&A THEMES
-                   - Main topics analysts focused on
-                   - Key concerns raised
-                   - Management responses and tone
-
-                5. SENTIMENT ANALYSIS
-                   - Management confidence level
-                   - Red flags or positive signals
-                   - Comparison to previous calls
-
-                6. MANAGEMENT ACCOUNTABILITY
-                   - Key promises management made on previous calls
-                   - Which were delivered and which were missed?
-                   - Forecasting accuracy (do they beat/miss their own guidance?)
-                   - Any red flags (hedging, metric changes, executive departures)
-
-                Include specific numbers, quotes with attribution, and dates."""
-
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert earnings call analyst. Extract specific insights, management quotes, guidance numbers, and sentiment from earnings calls. Be comprehensive but concise. Use markdown formatting."
-                    },
-                    {"role": "user", "content": search_query}
-                ]
+            result = tavily.search_text(
+                query=search_query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+                include_domains=EARNINGS_DOMAINS,
             )
 
             header = f"# Earnings Call Analysis: {company_name} ({ticker})\n"
             header += f"**Period:** {'Latest Quarter' if quarters == 1 else f'Last {quarters} Quarters'}\n"
-            header += f"**Source:** Web search via Perplexity\n\n"
-            header += "ℹ️ *Note: This analysis is based on web sources (earnings call summaries, news, analyst reports). "
-            header += "FMP transcript access requires a premium subscription. "
-            header += "Analysis quality remains high using authoritative financial sources.*\n\n"
+            header += f"**Source:** Web search via Tavily\n\n"
 
-            return header + response.choices[0].message.content
+            return header + result
 
         except Exception as e:
-            logger.error(f"Error in Perplexity search fallback: {e}")
-            return f"Error: Unable to fetch earnings call information for {ticker}. FMP transcripts unavailable and Perplexity search failed: {str(e)}"
+            logger.error(f"Error in Tavily search fallback: {e}")
+            return f"Error: Unable to fetch earnings call information for {ticker}. Transcripts unavailable and web search failed: {str(e)}"
 
-    def _analyze_with_perplexity(
+    def _analyze_transcript_with_claude(
         self,
         ticker: str,
         company_name: str,
@@ -1458,170 +1248,98 @@ class EarningsCallInsightsTool(BaseTool):
         query: Optional[str],
         quarters: int
     ) -> str:
-        """Use Perplexity to intelligently analyze transcript(s)"""
+        """Use Claude directly to analyze transcript(s) — better quality than external APIs"""
         try:
-            # Get Perplexity API key
-            perplexity_key = os.getenv("PERPLEXITY_API_KEY")
-            if not perplexity_key:
-                return "Error: PERPLEXITY_API_KEY not found in environment."
+            from langchain_anthropic import ChatAnthropic
 
             # Prepare transcript text
             if quarters == 1:
-                # Single transcript
                 transcript_text = transcript_data.get('content', '')
                 quarter = transcript_data.get('quarter', 'Unknown')
                 year = transcript_data.get('year', 'Unknown')
                 date = transcript_data.get('date', 'Unknown')
 
-                # Truncate if too long
                 if len(transcript_text) > 100000:
                     logger.warning(f"Transcript too long ({len(transcript_text)} chars), truncating to 100K")
                     transcript_text = transcript_text[:100000] + "\n\n[Transcript truncated due to length...]"
 
                 context = f"{company_name} ({ticker}) - {quarter} {year} Earnings Call ({date})"
             else:
-                # Multiple transcripts
                 transcript_parts = []
                 for t in transcript_data:
-                    quarter = t.get('quarter', 'Unknown')
-                    year = t.get('year', 'Unknown')
+                    q = t.get('quarter', 'Unknown')
+                    y = t.get('year', 'Unknown')
                     content = t.get('content', '')
-                    transcript_parts.append(f"\n\n{'='*80}\n{quarter} {year} EARNINGS CALL\n{'='*80}\n\n{content[:25000]}")
+                    transcript_parts.append(f"\n\n{'='*80}\n{q} {y} EARNINGS CALL\n{'='*80}\n\n{content[:25000]}")
 
                 transcript_text = "\n".join(transcript_parts)
                 context = f"{company_name} ({ticker}) - Last {quarters} Quarters"
+                quarter = "Multiple"
+                year = ""
+                date = ""
 
-            # Build Perplexity analysis prompt
             system_prompt = """You are an expert financial analyst specializing in earnings call analysis.
 
-Your task is to extract actionable insights from earnings call transcripts for investors conducting due diligence.
+Extract actionable insights from earnings call transcripts for investors conducting due diligence.
 
 ANALYSIS FRAMEWORK:
 
-1. **FINANCIAL HIGHLIGHTS**
-   - Key metrics: Revenue, EPS, margins, cash flow
-   - Beat/miss vs consensus estimates
-   - Year-over-year and quarter-over-quarter trends
-   - Notable changes from previous quarters
+1. **FINANCIAL HIGHLIGHTS** - Key metrics, beat/miss vs consensus, YoY/QoQ trends
+2. **MANAGEMENT COMMENTARY** - Verbatim quotes with attribution (CEO, CFO), strategic insights, tone
+3. **FORWARD GUIDANCE** - Specific numbers, changes from previous guidance, confidence level
+4. **ANALYST Q&A THEMES** - Topics, concerns raised, management responses
+5. **TONE & SENTIMENT** - Confident/Cautious/Defensive/Mixed, red flags or positive signals
+6. **MANAGEMENT ACCOUNTABILITY** - Promises made, guidance stated, compare to previous quarter
 
-2. **MANAGEMENT COMMENTARY** (CRITICAL - USE VERBATIM QUOTES)
-   - Extract exact quotes from CEO, CFO, and executives
-   - Include speaker attribution (e.g., "Tim Cook, CEO:")
-   - Focus on strategic insights, not just number recitation
-   - Capture tone and confidence level
+Use markdown formatting with headers, bullet points, **bold** for key metrics, > blockquotes for quotes.
+Be comprehensive but concise - aim for 800-1200 words."""
 
-3. **FORWARD GUIDANCE**
-   - Specific numbers for next quarter/year (revenue, EPS, margins)
-   - Qualitative outlook (growth drivers, headwinds)
-   - Changes from previous guidance (raised, lowered, maintained)
-   - Management's confidence level in guidance
-
-4. **ANALYST Q&A THEMES**
-   - What topics did analysts focus on?
-   - Key questions and management responses (summarize, don't quote entire Q&A)
-   - Concerns raised and how management addressed them
-   - New information revealed in Q&A vs prepared remarks
-
-5. **TONE & SENTIMENT ANALYSIS**
-   - Overall tone: Confident, Cautious, Defensive, Mixed
-   - Body language indicators (hedging language, enthusiasm, defensiveness)
-   - Compare tone to previous calls
-   - Red flags or positive signals
-
-6. **MANAGEMENT ACCOUNTABILITY**
-   - Specific promises or commitments made (with quotes and attribution)
-   - Forward guidance numbers stated (revenue range, EPS target, margin goals)
-   - Strategic initiatives announced (product launches, market entries, cost cuts)
-   - Compare to PREVIOUS quarter's promises: delivered or missed?
-   - Red flags: hedging, metric changes, executive departures, GAAP vs non-GAAP gaps
-
-OUTPUT FORMAT:
-- Use clear markdown sections with headers
-- Use bullet points for readability
-- Use **bold** for key metrics and important points
-- Use > blockquotes for verbatim management quotes
-- Use emojis sparingly for visual clarity (📈📉✅⚠️)
-- Be comprehensive but concise - aim for 800-1200 words
-
-IMPORTANT RULES:
-1. ALWAYS include verbatim quotes with attribution
-2. Be objective - report what was said, not your opinion
-3. Quantify whenever possible (use specific numbers)
-4. Flag any red flags or concerning statements
-5. If query is provided, focus analysis on that topic while still covering key points"""
-
-            # Build user prompt
             if query:
-                user_prompt = f"""Analyze the earnings call transcript(s) below for {context}.
+                user_prompt = f"""Analyze the earnings call transcript(s) for {context}.
 
 **SPECIFIC FOCUS:** {query}
 
-While your primary focus should be on "{query}", also provide:
-- Brief financial highlights
-- Key management quotes related to this topic
-- Forward guidance if relevant
-- Overall takeaways
+Provide analysis focused on "{query}" while covering key financial highlights and guidance.
 
 TRANSCRIPT(S):
-{transcript_text}
-
-Provide a focused analysis that answers the user's specific question while maintaining context."""
+{transcript_text}"""
             else:
-                user_prompt = f"""Analyze the earnings call transcript(s) below for {context}.
+                user_prompt = f"""Analyze the earnings call transcript(s) for {context}.
 
 Provide a comprehensive analysis following the framework in your instructions.
 
 TRANSCRIPT(S):
-{transcript_text}
+{transcript_text}"""
 
-Provide a thorough earnings call analysis that an investor would use for due diligence."""
+            logger.info(f"Sending transcript to Claude for analysis (length: {len(transcript_text)} chars)")
 
-            # Call Perplexity API
-            headers = {
-                "Authorization": f"Bearer {perplexity_key}",
-                "Content-Type": "application/json"
-            }
-
-            payload = {
-                "model": "sonar-pro",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 4000,
-                "temperature": 0.2,
-                "return_citations": False,
-                "return_related_questions": False
-            }
-
-            logger.info(f"Sending transcript to Perplexity for analysis (length: {len(transcript_text)} chars)")
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60
+            llm = ChatAnthropic(
+                model="claude-sonnet-4-5-20250929",
+                temperature=0.2,
+                max_tokens=4000,
             )
 
-            if response.status_code == 200:
-                result = response.json()
-                analysis = result['choices'][0]['message']['content']
+            messages = [
+                ("system", system_prompt),
+                ("human", user_prompt),
+            ]
 
-                # Add header with metadata
-                if quarters == 1:
-                    header = f"# Earnings Call Analysis: {company_name} ({ticker})\n"
-                    header += f"**Quarter:** {quarter} {year}\n"
-                    header += f"**Call Date:** {date}\n\n"
-                else:
-                    header = f"# Earnings Call Analysis: {company_name} ({ticker})\n"
-                    header += f"**Period:** Last {quarters} Quarters\n\n"
+            response = llm.invoke(messages)
+            analysis = response.content
 
-                return header + analysis
+            # Add header with metadata
+            if quarters == 1:
+                header = f"# Earnings Call Analysis: {company_name} ({ticker})\n"
+                header += f"**Quarter:** {quarter} {year}\n"
+                header += f"**Call Date:** {date}\n\n"
             else:
-                logger.error(f"Perplexity API error: {response.status_code} - {response.text}")
-                return f"Error: Failed to analyze transcript with Perplexity (HTTP {response.status_code})"
+                header = f"# Earnings Call Analysis: {company_name} ({ticker})\n"
+                header += f"**Period:** Last {quarters} Quarters\n\n"
+
+            return header + analysis
 
         except Exception as e:
-            logger.error(f"Error in Perplexity analysis: {e}", exc_info=True)
+            logger.error(f"Error in Claude transcript analysis: {e}", exc_info=True)
             return f"Error analyzing transcript: {str(e)}"
 
 
