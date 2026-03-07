@@ -48,12 +48,13 @@ class EarningsAnalysisState(TypedDict):
     current_price: Annotated[float, keep_first]
     market_cap: Annotated[float, keep_first]
 
-    # Raw Data (Nodes 2-4, parallel)
+    # Raw Data (Nodes 2-5, parallel)
     earnings_history: Annotated[str, keep_first]
     analyst_estimates: Annotated[str, keep_first]
     earnings_surprises: Annotated[str, keep_first]
     earnings_guidance: Annotated[str, keep_first]
     peer_comparison: Annotated[str, keep_first]
+    sec_filings_summary: Annotated[str, keep_first]
 
     # Analysis (Node 6 — single LLM call)
     comprehensive_analysis: Annotated[str, keep_first]
@@ -117,6 +118,7 @@ class EarningsAgentExecutorAdapter:
                 "earnings_surprises": "",
                 "earnings_guidance": "",
                 "peer_comparison": "",
+                "sec_filings_summary": "",
                 "comprehensive_analysis": "",
                 "management_accountability": "",
                 "investment_thesis": "",
@@ -177,8 +179,9 @@ Be concise (2-4 paragraphs). If the question requires data you don't have, say s
                 model=self.agent_owner.model,
                 temperature=0,
                 max_retries=3,
-                default_request_timeout=60.0,
+                default_request_timeout=180.0,
                 max_tokens=4096,
+                streaming=True,
             )
             response = llm.invoke(
                 [
@@ -196,26 +199,103 @@ Be concise (2-4 paragraphs). If the question requires data you don't have, say s
             return {"output": f"Error answering follow-up: {str(e)}"}
 
     def _extract_ticker(self, query: str) -> Optional[str]:
-        """Extract ticker symbol from user query"""
-        query_upper = query.upper()
+        """Extract ticker symbol from user query.
 
+        Uses a strict precedence to avoid picking up common English words as tickers.
+        Only returns a ticker when there is a strong explicit signal.
+        """
+        # --- Signal 1 (highest confidence): $AAPL format ---
+        dollar_match = re.search(r'\$([A-Za-z]{1,5})\b', query)
+        if dollar_match:
+            return dollar_match.group(1).upper()
+
+        # --- Signal 2: "Company Name (TICK)" format ---
+        paren_match = re.search(r'\(([A-Z]{1,5})\)', query)
+        if paren_match:
+            return paren_match.group(1).upper()
+
+        # --- Signal 2.5: company full-name → ticker lookup ---
+        # Handles cases like "NVIDIA just reported..." where the company name
+        # is written out (often > 5 chars) and won't be caught by ticker regex.
+        COMPANY_NAME_MAP = {
+            'NVIDIA': 'NVDA', 'APPLE': 'AAPL', 'MICROSOFT': 'MSFT',
+            'GOOGLE': 'GOOGL', 'ALPHABET': 'GOOGL', 'AMAZON': 'AMZN',
+            'TESLA': 'TSLA', 'FACEBOOK': 'META', 'NETFLIX': 'NFLX',
+            'INTEL': 'INTC', 'DISNEY': 'DIS', 'WALMART': 'WMT',
+            'VISA': 'V', 'MASTERCARD': 'MA', 'PFIZER': 'PFE',
+            'JPMORGAN': 'JPM', 'PALANTIR': 'PLTR', 'SALESFORCE': 'CRM',
+            'ORACLE': 'ORCL', 'QUALCOMM': 'QCOM', 'BROADCOM': 'AVGO',
+            'SHOPIFY': 'SHOP', 'SPOTIFY': 'SPOT', 'COINBASE': 'COIN',
+            'UBER': 'UBER', 'AIRBNB': 'ABNB', 'SNOWFLAKE': 'SNOW',
+            'DATADOG': 'DDOG', 'CROWDSTRIKE': 'CRWD', 'PALO': 'PANW',
+        }
+        query_upper = query.upper()
+        for word in query_upper.split():
+            clean = re.sub(r'[^\w]', '', word)
+            if clean in COMPANY_NAME_MAP:
+                return COMPANY_NAME_MAP[clean]
+
+        # --- Signal 3: known large-cap tickers mentioned explicitly ---
         KNOWN_TICKERS = {
             'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'TSLA',
             'META', 'NFLX', 'AMD', 'INTC', 'CSCO', 'ADBE', 'CRM',
-            'ORCL', 'IBM', 'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C',
-            'V', 'MA', 'PYPL', 'SQ', 'DIS', 'CMCSA', 'T', 'VZ',
-            'KO', 'PEP', 'WMT', 'TGT', 'HD', 'LOW', 'NKE', 'SBUX',
-            'MCD', 'BA', 'CAT', 'DE', 'MMM', 'GE', 'F', 'GM',
+            'ORCL', 'IBM', 'JPM', 'BAC', 'WFC', 'GS', 'MS',
+            'V', 'MA', 'PYPL', 'SQ', 'DIS', 'CMCSA', 'VZ',
+            'KO', 'PEP', 'WMT', 'TGT', 'HD', 'NKE', 'SBUX',
+            'MCD', 'BA', 'CAT', 'MMM', 'GE', 'F', 'GM',
+            'UBER', 'LYFT', 'SNAP', 'PINS', 'SPOT', 'HOOD', 'COIN',
+            'SHOP', 'SE', 'MELI', 'BABA', 'JD', 'PDD', 'TSM',
+            'AVGO', 'QCOM', 'TXN', 'MU', 'LRCX', 'AMAT', 'KLAC',
+            'PANW', 'CRWD', 'ZS', 'OKTA', 'DDOG', 'SNOW', 'MDB',
+            'NOW', 'WDAY', 'VEEV', 'HUBS', 'ZM', 'TEAM', 'DOCN',
+            'AMGN', 'GILD', 'BIIB', 'REGN', 'MRNA', 'PFE', 'JNJ',
+            'UNH', 'CVS', 'CI', 'HUM', 'MCK', 'ABT', 'MDT',
+            'XOM', 'CVX', 'COP', 'SLB', 'EOG', 'PXD', 'OXY',
+            'BRK', 'BRKB', 'JPM', 'C', 'AXP', 'BLK', 'SCHW',
+            'PLTR', 'ABNB', 'RBLX', 'DASH', 'RIVN', 'LCID',
         }
-        COMMON_WORDS = {'THE', 'AND', 'FOR', 'WITH', 'FROM', 'ABOUT', 'WHAT', 'HOW', 'WHY'}
-
         for word in query_upper.split():
-            clean_word = re.sub(r'[^\w]', '', word)
-            if 1 <= len(clean_word) <= 5 and clean_word.isalpha() and clean_word in KNOWN_TICKERS:
-                return clean_word
+            clean = re.sub(r'[^\w]', '', word)
+            if clean in KNOWN_TICKERS:
+                return clean
 
-        matches = self.ticker_pattern.findall(query_upper)
-        for match in matches:
+        # --- Signal 4 (weakest): all-caps standalone word, but only with comprehensive filter ---
+        # This is a last resort. We use a large exclusion list to avoid false positives
+        # from ordinary English words (ARE, WHEN, THESE, SURGE, WHAT, etc.)
+        COMMON_WORDS = {
+            # Articles / prepositions / conjunctions
+            'THE', 'AND', 'FOR', 'WITH', 'FROM', 'ABOUT', 'WHAT', 'HOW', 'WHY',
+            'BUT', 'NOT', 'ARE', 'WAS', 'HAS', 'HAD', 'HAVE', 'BEEN', 'WILL',
+            'WHEN', 'THAT', 'THIS', 'THEN', 'THAN', 'THEY', 'THEM', 'THEIR',
+            'BEEN', 'SOME', 'EACH', 'SUCH', 'ALSO', 'INTO', 'OVER', 'ONLY',
+            'MORE', 'MOST', 'VERY', 'JUST', 'BACK', 'EVEN', 'BOTH', 'WELL',
+            'MUCH', 'SAME', 'WERE', 'DOES', 'SAID', 'SAYS', 'COME', 'CAME',
+            'MAKE', 'MADE', 'LIKE', 'LOOK', 'GOOD', 'NEXT', 'NEAR', 'HERE',
+            'GIVE', 'GAVE', 'TAKE', 'TOOK', 'KNOW', 'KNEW', 'SHOW', 'SHOWED',
+            # Question words
+            'WHICH', 'WHERE', 'WHOSE', 'WHILE',
+            # Finance/context words that are NOT tickers
+            'SURGE', 'THESE', 'MIGHT', 'COULD', 'WOULD', 'SHOULD', 'SHALL',
+            'YOUR', 'THEIR', 'OURS', 'MINE', 'HERS', 'YEAR', 'HALF', 'FULL',
+            'PLAN', 'PART', 'SIDE', 'CALL', 'SELL', 'HOLD', 'BEAT', 'MISS',
+            'RISE', 'FELL', 'GREW', 'LOST', 'RATE', 'COST', 'CASH', 'DEBT',
+            'GAIN', 'LOSS', 'DEAL', 'HIGH', 'LAST', 'INTO', 'UPON', 'AFTER',
+            'BEFORE', 'BELOW', 'ABOVE', 'ALONG', 'SINCE', 'UNTIL', 'WHILE',
+            'REVENUE', 'MARGIN', 'GROWTH', 'INCOME', 'STOCK', 'SHARE', 'PRICE',
+            'MARKET', 'SECTOR', 'QUARTER', 'FISCAL', 'ANNUAL', 'GUIDANCE',
+            # Acronyms and abbreviations
+            'USD', 'EUR', 'CEO', 'CFO', 'CTO', 'IPO', 'ETF', 'SEC', 'FDA',
+            'FCF', 'EPS', 'ROE', 'ROI', 'ROIC', 'CAGR', 'EBIT', 'EBITDA',
+            'YOY', 'QOQ', 'MOM', 'TTM', 'LTM', 'GDP', 'CPI', 'PMI',
+            'NYSE', 'NASDAQ', 'AMEX', 'INC', 'LLC', 'LTD', 'CORP',
+            # Fiscal / reporting period abbreviations (common false positives)
+            'FY', 'FQ', 'MD', 'QA', 'MDA', 'YTD', 'HTD', 'QTD',
+            # SEC filing section references
+            'ITEM',
+        }
+        # Only match if word appears to be intentionally uppercased (2-5 all-caps letters)
+        caps_matches = re.findall(r'\b([A-Z]{2,5})\b', query)  # original case, not query_upper
+        for match in caps_matches:
             if match not in COMMON_WORDS:
                 return match
 
@@ -245,17 +325,30 @@ class EarningsAgent:
             model=model,
             temperature=0,
             max_retries=3,
-            default_request_timeout=60.0,
+            default_request_timeout=180.0,
             max_tokens=8192,
+            streaming=True,
         )
 
         from tools.earnings_tools import get_earnings_tools
         self.tools = get_earnings_tools()
 
+        # Progress streaming (injected by api_server before graph invocation)
+        self._progress_queue = None
+        self._progress_loop = None
+
         self.graph = self._build_graph()
         self.agent_executor = EarningsAgentExecutorAdapter(self.graph, agent_owner=self)
 
         logger.info(f"Earnings Agent initialized with model: {model}")
+
+    def _emit_progress(self, node: str, status: str, detail: str = ""):
+        """Push a progress event to the SSE queue (no-op if no queue injected)."""
+        queue = self._progress_queue
+        loop = self._progress_loop
+        if queue is not None and loop is not None:
+            event = {"type": "earnings_progress", "node": node, "status": status, "detail": detail}
+            loop.call_soon_threadsafe(queue.put_nowait, event)
 
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(EarningsAnalysisState)
@@ -265,6 +358,7 @@ class EarningsAgent:
         workflow.add_node("fetch_earnings_history", self.fetch_earnings_history)
         workflow.add_node("fetch_analyst_estimates", self.fetch_analyst_estimates)
         workflow.add_node("fetch_guidance_and_news", self.fetch_guidance_and_news)
+        workflow.add_node("fetch_sec_filings", self.fetch_sec_filings)
         workflow.add_node("aggregate_data", self.aggregate_data)
         workflow.add_node("comprehensive_analysis", self.comprehensive_analysis)
         workflow.add_node("develop_thesis", self.develop_thesis)
@@ -273,15 +367,17 @@ class EarningsAgent:
         # Edges
         workflow.set_entry_point("fetch_company_info")
 
-        # Phase 1: Parallel data gathering
+        # Phase 1: Parallel data gathering (4 nodes in parallel)
         workflow.add_edge("fetch_company_info", "fetch_earnings_history")
         workflow.add_edge("fetch_company_info", "fetch_analyst_estimates")
         workflow.add_edge("fetch_company_info", "fetch_guidance_and_news")
+        workflow.add_edge("fetch_company_info", "fetch_sec_filings")
 
         # Converge to sync point
         workflow.add_edge("fetch_earnings_history", "aggregate_data")
         workflow.add_edge("fetch_analyst_estimates", "aggregate_data")
         workflow.add_edge("fetch_guidance_and_news", "aggregate_data")
+        workflow.add_edge("fetch_sec_filings", "aggregate_data")
 
         # Phase 2: Sequential analysis → thesis → report
         workflow.add_edge("aggregate_data", "comprehensive_analysis")
@@ -295,8 +391,9 @@ class EarningsAgent:
     # Node 1: Company Info
     # ========================================================================
 
-    def fetch_company_info(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
+    def fetch_company_info(self, state: EarningsAnalysisState) -> dict:
         logger.info(f"[1/7] Fetching company info for {state['ticker']}")
+        self._emit_progress("fetch_company_info", "started", "Looking up company info")
 
         try:
             from data.financial_data import FinancialDataFetcher
@@ -304,63 +401,76 @@ class EarningsAgent:
             info = fetcher.get_stock_info(state["ticker"])
 
             if not info:
-                state["errors"].append("Failed to fetch company info")
-                return state
+                self._emit_progress("fetch_company_info", "completed", "Partial data (error)")
+                return {"errors": ["Failed to fetch company info"]}
 
-            state["company_name"] = info.get("company_name", "Unknown")
-            state["sector"] = info.get("sector", "Unknown")
-            state["industry"] = info.get("industry", "Unknown")
-            state["current_price"] = info.get("current_price", 0.0)
-            state["market_cap"] = info.get("market_cap", 0.0)
+            result = {
+                "company_name": info.get("company_name", "Unknown"),
+                "sector": info.get("sector", "Unknown"),
+                "industry": info.get("industry", "Unknown"),
+                "current_price": info.get("current_price", 0.0),
+                "market_cap": info.get("market_cap", 0.0),
+            }
 
-            logger.info(f"  → {state['company_name']} ({state['sector']})")
+            logger.info(f"  → {result['company_name']} ({result['sector']})")
+            self._emit_progress("fetch_company_info", "completed", f"{result['company_name']} ({result['sector']})")
+            return result
 
         except Exception as e:
             logger.error(f"Error in fetch_company_info: {e}")
-            state["errors"].append(f"Company info error: {str(e)}")
-
-        return state
+            self._emit_progress("fetch_company_info", "completed", "Partial data (error)")
+            return {"errors": [f"Company info error: {str(e)}"]}
 
     # ========================================================================
     # Nodes 2-4: Parallel Data Gathering
     # ========================================================================
 
-    def fetch_earnings_history(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
+    def fetch_earnings_history(self, state: EarningsAnalysisState) -> dict:
         logger.info(f"[2/7] Fetching earnings history for {state['ticker']}")
+        self._emit_progress("fetch_earnings_history", "started", "Fetching quarterly earnings")
 
         try:
             from tools.earnings_tools import GetQuarterlyEarningsTool
             tool = GetQuarterlyEarningsTool()
-            state["earnings_history"] = tool._run(
+            earnings_history = tool._run(
                 ticker=state["ticker"],
                 quarters=state["quarters_back"],
             )
             logger.info(f"  → Earnings history fetched")
+            self._emit_progress("fetch_earnings_history", "completed", "Earnings history loaded")
+            return {"earnings_history": earnings_history}
         except Exception as e:
             logger.error(f"Error in fetch_earnings_history: {e}")
-            state["errors"].append(f"Earnings history error: {str(e)}")
-            state["earnings_history"] = f"Error fetching earnings data: {str(e)}"
+            self._emit_progress("fetch_earnings_history", "completed", "Partial data (error)")
+            return {
+                "earnings_history": f"Error fetching earnings data: {str(e)}",
+                "errors": [f"Earnings history error: {str(e)}"],
+            }
 
-        return state
-
-    def fetch_analyst_estimates(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
+    def fetch_analyst_estimates(self, state: EarningsAnalysisState) -> dict:
         logger.info(f"[3/7] Fetching analyst estimates for {state['ticker']}")
+        self._emit_progress("fetch_analyst_estimates", "started", "Getting analyst consensus")
 
         try:
             from tools.earnings_tools import GetAnalystEstimatesTool
             tool = GetAnalystEstimatesTool()
-            state["analyst_estimates"] = tool._run(ticker=state["ticker"])
+            analyst_estimates = tool._run(ticker=state["ticker"])
             logger.info(f"  → Analyst estimates fetched")
+            self._emit_progress("fetch_analyst_estimates", "completed", "Analyst estimates loaded")
+            return {"analyst_estimates": analyst_estimates}
         except Exception as e:
             logger.error(f"Error in fetch_analyst_estimates: {e}")
-            state["errors"].append(f"Analyst estimates error: {str(e)}")
-            state["analyst_estimates"] = f"Error fetching analyst estimates: {str(e)}"
+            self._emit_progress("fetch_analyst_estimates", "completed", "Partial data (error)")
+            return {
+                "analyst_estimates": f"Error fetching analyst estimates: {str(e)}",
+                "errors": [f"Analyst estimates error: {str(e)}"],
+            }
 
-        return state
-
-    def fetch_guidance_and_news(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
+    def fetch_guidance_and_news(self, state: EarningsAnalysisState) -> dict:
         logger.info(f"[4/7] Fetching surprises, call insights, and peer data for {state['ticker']}")
+        self._emit_progress("fetch_guidance_and_news", "started", "Analyzing earnings calls & peers")
 
+        result = {}
         try:
             from tools.earnings_tools import (
                 GetEarningsSurprisesTool,
@@ -368,39 +478,83 @@ class EarningsAgent:
                 ComparePeerEarningsTool,
             )
 
+            self._emit_progress("fetch_guidance_and_news", "sub_progress", "Fetching earnings surprises")
             surprises_tool = GetEarningsSurprisesTool()
-            state["earnings_surprises"] = surprises_tool._run(
+            result["earnings_surprises"] = surprises_tool._run(
                 ticker=state["ticker"],
                 quarters=state["quarters_back"],
             )
             logger.info(f"  → Earnings surprises fetched")
 
+            self._emit_progress("fetch_guidance_and_news", "sub_progress", "Reading earnings call transcripts")
             insights_tool = EarningsCallInsightsTool()
-            state["earnings_guidance"] = insights_tool._run(ticker=state["ticker"], quarters=2)
+            result["earnings_guidance"] = insights_tool._run(ticker=state["ticker"], quarters=2)
             logger.info(f"  → Earnings call insights fetched")
 
+            self._emit_progress("fetch_guidance_and_news", "sub_progress", "Comparing peer earnings")
             peer_tool = ComparePeerEarningsTool()
-            state["peer_comparison"] = peer_tool._run(ticker=state["ticker"], peers=None)
+            result["peer_comparison"] = peer_tool._run(ticker=state["ticker"], peers=None)
             logger.info(f"  → Peer comparison fetched")
+
+            self._emit_progress("fetch_guidance_and_news", "completed", "Guidance and peers loaded")
+            return result
 
         except Exception as e:
             logger.error(f"Error in fetch_guidance_and_news: {e}")
-            state["errors"].append(f"Guidance/news error: {str(e)}")
-            if not state.get("earnings_surprises"):
-                state["earnings_surprises"] = f"Error: {str(e)}"
-            if not state.get("earnings_guidance"):
-                state["earnings_guidance"] = f"Error: {str(e)}"
-            if not state.get("peer_comparison"):
-                state["peer_comparison"] = f"Error: {str(e)}"
-
-        return state
+            result.setdefault("earnings_surprises", f"Error: {str(e)}")
+            result.setdefault("earnings_guidance", f"Error: {str(e)}")
+            result.setdefault("peer_comparison", f"Error: {str(e)}")
+            result["errors"] = [f"Guidance/news error: {str(e)}"]
+            self._emit_progress("fetch_guidance_and_news", "completed", "Partial data (error)")
+            return result
 
     # ========================================================================
-    # Node 5: Aggregate (sync point)
+    # Node 5: SEC Filings (parallel with Nodes 2-4)
     # ========================================================================
 
-    def aggregate_data(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        logger.info("[5/7] All data gathered, ready for analysis")
+    def fetch_sec_filings(self, state: EarningsAnalysisState) -> dict:
+        logger.info(f"[5/8] Fetching SEC filings for {state['ticker']}")
+        self._emit_progress("fetch_sec_filings", "started", "Reading SEC EDGAR filings")
+
+        try:
+            from tools.sec_tools import AnalyzeSECFilingTool
+
+            # Fetch the most recent 10-Q (quarterly report) for management commentary
+            self._emit_progress("fetch_sec_filings", "sub_progress", "Analyzing latest 10-Q filing")
+            analyze_tool = AnalyzeSECFilingTool()
+            sec_summary = analyze_tool._run(
+                ticker=state["ticker"],
+                filing_type="10-Q",
+                sections="all",
+            )
+
+            # If 10-Q not available, fall back to 10-K
+            if sec_summary.startswith("No 10-Q filing") or sec_summary.startswith("Error"):
+                self._emit_progress("fetch_sec_filings", "sub_progress", "10-Q unavailable, trying 10-K")
+                sec_summary = analyze_tool._run(
+                    ticker=state["ticker"],
+                    filing_type="10-K",
+                    sections="all",
+                )
+
+            logger.info(f"  → SEC filing summary fetched ({len(sec_summary)} chars)")
+            self._emit_progress("fetch_sec_filings", "completed", "SEC filing analysis complete")
+            return {"sec_filings_summary": sec_summary}
+
+        except Exception as e:
+            logger.error(f"Error in fetch_sec_filings: {e}")
+            self._emit_progress("fetch_sec_filings", "completed", "SEC data unavailable")
+            return {
+                "sec_filings_summary": f"SEC filing data unavailable: {str(e)}",
+                "errors": [f"SEC filings error: {str(e)}"],
+            }
+
+    # ========================================================================
+    # Node 6: Aggregate (sync point)
+    # ========================================================================
+
+    def aggregate_data(self, state: EarningsAnalysisState) -> dict:
+        logger.info("[6/8] All data gathered, ready for analysis")
 
         has = {
             "earnings": bool(state.get("earnings_history")),
@@ -409,17 +563,19 @@ class EarningsAgent:
             "guidance": bool(state.get("earnings_guidance")),
             "peers": bool(state.get("peer_comparison")),
             "accountability": bool(state.get("management_accountability")),
+            "sec_filings": bool(state.get("sec_filings_summary")),
         }
         logger.info(f"  → Data: {has}")
 
-        return state
+        return {}
 
     # ========================================================================
     # Node 6: Comprehensive Analysis (1 LLM call — replaces 4 separate calls)
     # ========================================================================
 
-    def comprehensive_analysis(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        logger.info(f"[6/7] Running comprehensive analysis for {state['ticker']}")
+    def comprehensive_analysis(self, state: EarningsAnalysisState) -> dict:
+        logger.info(f"[7/8] Running comprehensive analysis for {state['ticker']}")
+        self._emit_progress("comprehensive_analysis", "started", "Running financial analysis")
 
         try:
             prompt = f"""You are a senior equity research analyst. Analyze all available data for {state['company_name']} ({state['ticker']}) and produce a structured analysis.
@@ -442,6 +598,9 @@ ANALYST CONSENSUS ESTIMATES:
 
 PEER COMPARISON:
 {state['peer_comparison']}
+
+SEC FILING ANALYSIS (10-Q/10-K — Primary Source):
+{state.get('sec_filings_summary', 'Not available')}
 
 Write a comprehensive analysis with these sections:
 
@@ -493,7 +652,13 @@ Write a comprehensive analysis with these sections:
 
 List each red flag found, or state "No significant red flags identified" if clean.
 
-Be specific with numbers. Cite data from the inputs. No filler."""
+Be specific with numbers. Cite data from the inputs. No filler.
+
+CHART PLACEHOLDERS — include these on their own line where relevant:
+- Where you discuss quarterly revenue/EPS trends: {{CHART:quarterly_earnings_{state['ticker']}}}
+- Where you discuss earnings surprises (beats/misses): {{CHART:earnings_surprises_{state['ticker']}}}
+- Where you discuss analyst consensus estimates: {{CHART:analyst_estimates_{state['ticker']}}}
+Do NOT reproduce any ---CHART_DATA--- blocks."""
 
             messages = [
                 SystemMessage(content="You are a senior equity research analyst. Be concise, specific, and data-driven."),
@@ -501,7 +666,7 @@ Be specific with numbers. Cite data from the inputs. No filler."""
             ]
 
             response = self.llm.invoke(messages)
-            state["comprehensive_analysis"] = response.content
+            result = {"comprehensive_analysis": response.content}
 
             # Extract management accountability section for the report
             content = response.content
@@ -510,23 +675,27 @@ Be specific with numbers. Cite data from the inputs. No filler."""
                 acc_start = content.find("MANAGEMENT ACCOUNTABILITY")
             if acc_start != -1:
                 next_section = content.find("\n## ", acc_start + 5)
-                state["management_accountability"] = content[acc_start:next_section].strip() if next_section != -1 else content[acc_start:].strip()
+                result["management_accountability"] = content[acc_start:next_section].strip() if next_section != -1 else content[acc_start:].strip()
 
             logger.info(f"  → Comprehensive analysis complete")
+            self._emit_progress("comprehensive_analysis", "completed", "Analysis complete")
+            return result
 
         except Exception as e:
             logger.error(f"Error in comprehensive_analysis: {e}")
-            state["errors"].append(f"Analysis error: {str(e)}")
-            state["comprehensive_analysis"] = "Error running comprehensive analysis"
-
-        return state
+            self._emit_progress("comprehensive_analysis", "completed", "Partial data (error)")
+            return {
+                "comprehensive_analysis": "Error running comprehensive analysis",
+                "errors": [f"Analysis error: {str(e)}"],
+            }
 
     # ========================================================================
     # Node 7: Investment Thesis + Rating (1 LLM call — replaces 2 separate calls)
     # ========================================================================
 
-    def develop_thesis(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
-        logger.info(f"[7/7] Developing investment thesis for {state['ticker']}")
+    def develop_thesis(self, state: EarningsAnalysisState) -> dict:
+        logger.info(f"[8/8] Developing investment thesis for {state['ticker']}")
+        self._emit_progress("develop_thesis", "started", "Developing investment thesis")
 
         try:
             prompt = f"""Based on this analysis of {state['company_name']} ({state['ticker']}), provide an investment recommendation.
@@ -561,39 +730,40 @@ Be decisive and quantitative. Don't hedge."""
             response = self.llm.invoke(messages)
             thesis_text = response.content
 
-            state["investment_thesis"] = thesis_text
+            result = {"investment_thesis": thesis_text}
 
             # --- Extract structured fields from LLM output ---
 
             # Rating
-            state["rating"] = "HOLD"  # default
+            result["rating"] = "HOLD"  # default
             for line in thesis_text.split('\n'):
                 line_upper = line.upper()
                 if 'RATING' in line_upper or 'RECOMMENDATION' in line_upper:
                     if 'BUY' in line_upper and 'SELL' not in line_upper:
-                        state["rating"] = 'BUY'
+                        result["rating"] = 'BUY'
                         break
                     elif 'SELL' in line_upper:
-                        state["rating"] = 'SELL'
+                        result["rating"] = 'SELL'
                         break
                     elif 'HOLD' in line_upper:
-                        state["rating"] = 'HOLD'
+                        result["rating"] = 'HOLD'
                         break
 
             # Price target
+            result["price_target"] = 0.0
             price_pattern = r'\$(\d+(?:\.\d{2})?)'
             for line in thesis_text.split('\n'):
                 if 'TARGET' in line.upper() or 'PRICE TARGET' in line.upper():
                     prices_in_line = re.findall(price_pattern, line)
                     if prices_in_line:
-                        state["price_target"] = float(prices_in_line[0])
+                        result["price_target"] = float(prices_in_line[0])
                         break
             else:
                 # Fallback: first reasonable price in the text
                 for p in re.findall(price_pattern, thesis_text):
                     p_float = float(p)
                     if state['current_price'] > 0 and 0.5 * state['current_price'] < p_float < 3.0 * state['current_price']:
-                        state["price_target"] = p_float
+                        result["price_target"] = p_float
                         break
 
             # Catalysts
@@ -611,7 +781,7 @@ Be decisive and quantitative. Don't hedge."""
                             catalysts.append(text)
                     elif 'RISK' in stripped.upper() or 'BEAR' in stripped.upper():
                         break
-            state["key_catalysts"] = catalysts[:5] if catalysts else ["Next earnings report", "Industry trends", "Market conditions"]
+            result["key_catalysts"] = catalysts[:5] if catalysts else ["Next earnings report", "Industry trends", "Market conditions"]
 
             # Risks
             risks = []
@@ -628,27 +798,31 @@ Be decisive and quantitative. Don't hedge."""
                             risks.append(text)
                     elif len(risks) >= 3 and (not stripped or stripped.startswith('#')):
                         break
-            state["key_risks"] = risks[:5] if risks else ["Market volatility", "Execution risk", "Competitive pressure"]
+            result["key_risks"] = risks[:5] if risks else ["Market volatility", "Execution risk", "Competitive pressure"]
 
-            logger.info(f"  → {state['rating']} | PT ${state['price_target']:.2f} | {len(state['key_catalysts'])} catalysts, {len(state['key_risks'])} risks")
+            logger.info(f"  → {result['rating']} | PT ${result['price_target']:.2f} | {len(result['key_catalysts'])} catalysts, {len(result['key_risks'])} risks")
+            self._emit_progress("develop_thesis", "completed", f"{result['rating']} rating")
+            return result
 
         except Exception as e:
             logger.error(f"Error in develop_thesis: {e}")
-            state["errors"].append(f"Thesis error: {str(e)}")
-            state["investment_thesis"] = "Error developing investment thesis"
-            state["rating"] = "HOLD"
-            state["price_target"] = state['current_price']
-            state["key_catalysts"] = ["Unable to determine catalysts"]
-            state["key_risks"] = ["Unable to determine risks"]
-
-        return state
+            self._emit_progress("develop_thesis", "completed", "Partial data (error)")
+            return {
+                "investment_thesis": "Error developing investment thesis",
+                "rating": "HOLD",
+                "price_target": state['current_price'],
+                "key_catalysts": ["Unable to determine catalysts"],
+                "key_risks": ["Unable to determine risks"],
+                "errors": [f"Thesis error: {str(e)}"],
+            }
 
     # ========================================================================
     # Node 8: Generate Report
     # ========================================================================
 
-    def generate_report(self, state: EarningsAnalysisState) -> EarningsAnalysisState:
+    def generate_report(self, state: EarningsAnalysisState) -> dict:
         logger.info(f"Generating final report for {state['ticker']}")
+        self._emit_progress("generate_report", "started", "Writing report")
 
         try:
             upside_pct = ((state['price_target'] - state['current_price']) / state['current_price'] * 100) if state['current_price'] > 0 else 0
@@ -757,15 +931,17 @@ Analysis completed in {minutes}m {seconds}s
 {'='*80}
 """
 
-            state["final_report"] = report
             logger.info(f"  → Report generated ({len(report)} chars)")
+            self._emit_progress("generate_report", "completed", "Report ready")
+            return {"final_report": report}
 
         except Exception as e:
             logger.error(f"Error in generate_report: {e}")
-            state["errors"].append(f"Report generation error: {str(e)}")
-            state["final_report"] = f"ERROR GENERATING REPORT for {state['ticker']}: {str(e)}"
-
-        return state
+            self._emit_progress("generate_report", "completed", "Partial data (error)")
+            return {
+                "final_report": f"ERROR GENERATING REPORT for {state['ticker']}: {str(e)}",
+                "errors": [f"Report generation error: {str(e)}"],
+            }
 
     # ========================================================================
     # Direct CLI method
@@ -785,6 +961,7 @@ Analysis completed in {minutes}m {seconds}s
             "earnings_surprises": "",
             "earnings_guidance": "",
             "peer_comparison": "",
+            "sec_filings_summary": "",
             "comprehensive_analysis": "",
             "management_accountability": "",
             "investment_thesis": "",
