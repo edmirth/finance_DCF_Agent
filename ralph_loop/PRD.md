@@ -531,17 +531,17 @@ const handleDownload = async () => {
 ```
 
 **Acceptance Criteria:**
-- [ ] `recharts` and `html2canvas` are installed (in package.json) — add if missing
-- [ ] AgentChart.tsx created with correct props interface
-- [ ] Card uses `bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg p-4 my-4`
-- [ ] Grid: horizontal only (`vertical={false}`) with `stroke="#E5E7EB"`
-- [ ] Axis tick color `#6B7280`, font Inter, size 12
-- [ ] `beat_miss_bar` type renders conditional Cell colors using `colorByField`/`colorIfTrue`/`colorIfFalse`
-- [ ] PNG download button top-right, uses html2canvas at scale=2
-- [ ] `y_format` and `y_right_format` drive axis tick formatters from FORMAT map
-- [ ] Right Y-axis rendered when any series has `yAxis: "right"`
-- [ ] Component exported as named export `AgentChart`
-- [ ] Typecheck passes
+- [x] `recharts` and `html2canvas` are installed (in package.json) — add if missing
+- [x] AgentChart.tsx created with correct props interface
+- [x] Card uses `bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg p-4 my-4`
+- [x] Grid: horizontal only (`vertical={false}`) with `stroke="#E5E7EB"`
+- [x] Axis tick color `#6B7280`, font Inter, size 12
+- [x] `beat_miss_bar` type renders conditional Cell colors using `colorByField`/`colorIfTrue`/`colorIfFalse`
+- [x] PNG download button top-right, uses html2canvas at scale=2
+- [x] `y_format` and `y_right_format` drive axis tick formatters from FORMAT map
+- [x] Right Y-axis rendered when any series has `yAxis: "right"`
+- [x] Component exported as named export `AgentChart`
+- [x] Typecheck passes
 - [ ] Verify changes work in browser
 
 ---

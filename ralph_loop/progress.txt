@@ -56,6 +56,15 @@
   - Verified with `str.format(input='x', agent_scratchpad='', ...)` — confirmed `{{CHART:id}}` appears in output
 ---
 
+## Iteration 7 - US-007: Update api_server.py to collect, persist, and return chart specs
+- What was implemented: Added `collected_charts: dict = {}`, handled `chart_data` events as a separate elif branch (not added to `collected_thinking`), passed `chart_specs` to `_persist_conversation()`, added `chart_specs: Optional[dict] = None` param, saved as JSON on assistant DBMessage, returned `chart_specs` in `get_session()` endpoint
+- Files changed: `backend/api_server.py`
+- Learnings for future iterations:
+  - `chart_data` events need to be both captured (for DB) AND streamed to frontend — both via `collected_charts` and `yield f"data: ..."`
+  - Using an `elif event["type"] == "chart_data":` branch ensures chart events don't bleed into `collected_thinking`
+  - `_persist_conversation()` uses `Optional[dict] = None` default to stay backwards-compatible
+---
+
 ## Iteration 6 - US-006: Update earnings_agent.py with hardcoded chart placeholders
 - What was implemented: Added 3 chart placeholder instructions to the `comprehensive_analysis` prompt f-string; `develop_thesis` and `generate_report` nodes left unchanged
 - Files changed: `agents/earnings_agent.py`
