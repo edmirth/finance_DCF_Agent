@@ -9,14 +9,14 @@ These tools enable interactive, conversational financial analysis with:
 - Market comparisons
 """
 
-import os
 import asyncio
+import json
 import logging
-import requests
 from typing import Optional, List, Dict, Any
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 from data.financial_data import FinancialDataFetcher
+from shared.tavily_client import get_tavily_client
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -79,18 +79,24 @@ class QuickFinancialDataTool(BaseTool):
             except Exception as e:
                 if "404" in str(e) or "not found" in str(e).lower():
                     return f"Error: Ticker '{ticker}' not found. Please verify the symbol is correct."
-                return f"Error: Failed to fetch stock info for {ticker}. The API may be experiencing issues."
+                return f"Error: Temporary API failure fetching data for {ticker}. Please try again."
 
             try:
                 key_metrics = fetcher.get_key_metrics(ticker)
             except Exception as e:
-                return f"Error: Failed to fetch financial metrics for {ticker}. Some data may be unavailable for this company."
+                return f"Error: Temporary API failure fetching metrics for {ticker}. Please try again."
 
             if not stock_info or 'company_name' not in stock_info:
-                return f"Error: No data available for ticker '{ticker}'. This may be a delisted or invalid ticker."
+                error_type = getattr(fetcher, 'last_error_type', None)
+                if error_type == "not_found":
+                    return f"Error: Ticker '{ticker}' not found. Please verify the symbol is correct (e.g., NFLX, not Netflix)."
+                elif error_type == "auth_failure":
+                    return f"Error: Financial data API authentication failed. Please check your FINANCIAL_DATASETS_API_KEY."
+                else:
+                    return f"Error: Temporary API failure — could not retrieve data for '{ticker}'. Please try again in a moment."
 
             if not key_metrics:
-                return f"Error: Financial metrics unavailable for {ticker}. This company may lack complete financial data."
+                return f"Error: Financial metrics temporarily unavailable for {ticker}. Please try again."
 
             # Build response
             result = f"**{stock_info.get('company_name', ticker)} ({ticker})**\n\n"
@@ -235,6 +241,30 @@ class QuickFinancialDataTool(BaseTool):
                 elif len(hist_fcf) >= 2:
                     result += f"**FCF CAGR:** N/A (negative or zero values in history)\n"
 
+            try:
+                _hist_years = list(reversed(key_metrics.get('historical_years', [])))
+                _hist_rev = list(reversed(key_metrics.get('historical_revenue', [])))
+                _chart_data = [
+                    {"period": str(_hist_years[i]), "revenue_b": round(_hist_rev[i] / 1e9, 2)}
+                    for i in range(min(len(_hist_years), len(_hist_rev)))
+                    if _hist_rev[i]
+                ]
+                if _chart_data:
+                    chart_id = f"quick_data_{ticker}"
+                    chart_json = json.dumps({
+                        "id": chart_id,
+                        "chart_type": "bar",
+                        "title": f"{ticker} Revenue History ($B)",
+                        "data": _chart_data,
+                        "series": [
+                            {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB"}
+                        ],
+                        "y_format": "currency_b"
+                    })
+                    result += f"\n---CHART_DATA:{chart_id}---\n{chart_json}\n---END_CHART_DATA:{chart_id}---\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss revenue history. Do NOT reproduce the CHART_DATA block.]"
+            except Exception:
+                pass
+
             return result.strip()
 
         except Exception as e:
@@ -330,7 +360,10 @@ class FinancialCalculatorTool(BaseTool):
                 fetcher = FinancialDataFetcher()
                 metrics = fetcher.get_key_metrics(ticker)
                 if not metrics:
-                    return f"Error: Could not retrieve data for {ticker}"
+                    error_type = getattr(fetcher, 'last_error_type', None)
+                    if error_type == "not_found":
+                        return f"Error: Ticker '{ticker}' not found. Please verify the symbol is correct."
+                    return f"Error: Temporary API failure — could not retrieve data for '{ticker}'. Please try again."
 
                 revenue = metrics.get('latest_revenue', 0)
                 net_income = metrics.get('latest_net_income', 0)
@@ -506,109 +539,52 @@ class RecentNewsTool(BaseTool):
             current_price = (stock_info.get('current_price') or 0) if stock_info else 0
             market_cap = (stock_info.get('market_cap') or 0) if stock_info else 0
 
-            # Use Perplexity API to search for comprehensive news
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found in environment"
+            # Use Tavily to search for comprehensive news
+            tavily = get_tavily_client()
 
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-
-            # Build comprehensive search query
+            # Build search query
             if query:
-                search_focus = f"{query} related news"
+                search_query = f"{company_name} ({ticker}) {query} news"
             else:
-                search_focus = "recent news, earnings reports, product launches, strategic initiatives, analyst coverage, and market developments"
+                search_query = f"{company_name} ({ticker}) recent news earnings developments analyst coverage"
 
-            payload = {
-                "model": "sonar-pro",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": f"""You are an expert financial journalist providing comprehensive news coverage and analysis.
-
-Your task is to research and report on recent developments for {company_name} ({ticker}).
-
-INSTRUCTIONS:
-1. Search for actual news articles, press releases, earnings reports, and analyst commentary from the past 30-60 days
-2. Focus on material events: earnings, product launches, strategic shifts, M&A, regulatory issues, executive changes, market share changes
-3. For each news item, provide:
-   - A descriptive headline that captures the essence of the story
-   - The date (as specific as possible)
-   - Comprehensive summary of what happened
-   - Business context and implications
-   - Source attribution
-4. Organize by theme/category (Earnings & Financials, Products & Innovation, Strategic Moves, Market Performance, etc.)
-5. Include relevant numbers and metrics when discussing financial news
-6. Write in a journalistic style - comprehensive but clear
-7. If you find limited recent news, expand the time window or discuss the company's current business situation and recent quarter performance
-
-DO NOT:
-- Make up news that doesn't exist
-- Use vague broker recommendations as "news"
-- List items without context
-- Be overly cautious - if you find news in your search, report it with full detail
-
-LENGTH: Write as much as needed to fully cover recent developments. Comprehensive analysis is valued over brevity."""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""Research and provide a comprehensive news report on {company_name} ({ticker}).
-
-Search for: {search_focus}
-
-Current context:
-- Stock Price: ${current_price:.2f}
-- Market Cap: ${market_cap/1e9:.2f}B
-
-Provide a detailed report with actual headlines, dates, summaries, and business implications. Organize by category for readability."""
-                    }
-                ],
-                "max_tokens": 3000,  # Allow longer, more comprehensive responses
-                "temperature": 0.2,
-                "return_citations": True,
-                "return_related_questions": False
-            }
-
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=45
+            result = tavily.search(
+                query=search_query,
+                topic="news",
+                search_depth="advanced",
+                max_results=10,
+                include_answer="advanced",
+                time_range="month",
             )
 
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                citations = result.get('citations', [])
+            answer = result.get("answer", "No news summary available.")
+            sources = result.get("results", [])
 
-                # Build comprehensive response with context
-                output = f"# News & Developments: {company_name} ({ticker})\n\n"
+            # Build comprehensive response with context
+            output = f"# News & Developments: {company_name} ({ticker})\n\n"
 
-                # Add current snapshot
-                output += f"**Current Snapshot** (as of latest data):\n"
-                output += f"- Stock Price: ${current_price:.2f}\n"
-                output += f"- Market Capitalization: ${market_cap/1e9:.2f}B\n"
-                if metrics:
-                    latest_revenue = metrics.get('latest_revenue', 0)
-                    if latest_revenue > 0:
-                        output += f"- Latest Annual Revenue: ${latest_revenue/1e9:.2f}B\n"
-                output += f"\n---\n\n"
+            # Add current snapshot
+            output += f"**Current Snapshot** (as of latest data):\n"
+            output += f"- Stock Price: ${current_price:.2f}\n"
+            output += f"- Market Capitalization: ${market_cap/1e9:.2f}B\n"
+            if metrics:
+                latest_revenue = metrics.get('latest_revenue', 0)
+                if latest_revenue > 0:
+                    output += f"- Latest Annual Revenue: ${latest_revenue/1e9:.2f}B\n"
+            output += f"\n---\n\n"
 
-                # Add news content
-                output += content
+            # Add news content
+            output += answer
 
-                # Add sources at the end
-                if citations:
-                    output += "\n\n---\n\n## Sources\n\n"
-                    for citation in citations:
-                        output += f"- {citation}\n"
+            # Add sources at the end
+            if sources:
+                output += "\n\n---\n\n## Sources\n\n"
+                for source in sources:
+                    title = source.get("title", "Source")
+                    url = source.get("url", "")
+                    output += f"- [{title}]({url})\n"
 
-                return output
-            else:
-                return f"Error fetching news: HTTP {response.status_code}"
+            return output
 
         except Exception as e:
             return f"Error getting news for {ticker}: {str(e)}"
@@ -675,10 +651,16 @@ class CompanyComparisonTool(BaseTool):
                 return f"Error: Could not retrieve data for {ticker2}. Please verify the ticker is correct."
 
             if not info1 or not metrics1:
-                return f"Error: Incomplete data for {ticker1}. This ticker may be invalid or delisted."
+                error_type = getattr(fetcher, 'last_error_type', None)
+                if error_type == "not_found":
+                    return f"Error: Ticker '{ticker1}' not found. Please verify the symbol is correct."
+                return f"Error: Temporary API failure — could not retrieve data for '{ticker1}'. Please try again."
 
             if not info2 or not metrics2:
-                return f"Error: Incomplete data for {ticker2}. This ticker may be invalid or delisted."
+                error_type = getattr(fetcher, 'last_error_type', None)
+                if error_type == "not_found":
+                    return f"Error: Ticker '{ticker2}' not found. Please verify the symbol is correct."
+                return f"Error: Temporary API failure — could not retrieve data for '{ticker2}'. Please try again."
 
             name1 = info1.get('company_name', ticker1)
             name2 = info2.get('company_name', ticker2)
@@ -1024,10 +1006,14 @@ class DateContextTool(BaseTool):
 
 def get_research_assistant_tools() -> List[BaseTool]:
     """Get all research assistant tools"""
+    from tools.sec_tools import GetSECFilingsTool, AnalyzeSECFilingTool, GetSECFinancialsTool
     return [
         QuickFinancialDataTool(),
         DateContextTool(),  # Temporal awareness for date queries
         FinancialCalculatorTool(),
         RecentNewsTool(),
         CompanyComparisonTool(),
+        GetSECFilingsTool(),
+        AnalyzeSECFilingTool(),
+        GetSECFinancialsTool(),
     ]

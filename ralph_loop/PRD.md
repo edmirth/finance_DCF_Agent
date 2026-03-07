@@ -180,14 +180,14 @@ Arrays: newest-first → reverse. Series: Revenue ($B) bar only
 ```
 
 **Acceptance Criteria:**
-- [ ] `import json` added at top of file
-- [ ] `GetQuarterlyEarningsTool._run()` appends chart block with `bar_line` chart data when income_stmts available
-- [ ] EPS calculation is null-safe: `eps = round(net_income / shares, 2) if shares else 0`
-- [ ] `GetEarningsSurprisesTool._fetch_from_fmp()` appends `beat_miss_bar` chart block after formatting
-- [ ] `GetAnalystEstimatesTool._format_fmp_estimates()` appends `line` chart block before returning
-- [ ] All chart block construction wrapped in `try/except Exception: pass` so failures are silent
-- [ ] Each block uses exact format: `\n---CHART_DATA:{id}---\n{json}\n---END_CHART_DATA:{id}---\n[CHART_INSTRUCTION: ...]`
-- [ ] Typecheck passes
+- [x] `import json` added at top of file
+- [x] `GetQuarterlyEarningsTool._run()` appends chart block with `bar_line` chart data when income_stmts available
+- [x] EPS calculation is null-safe: `eps = round(net_income / shares, 2) if shares else 0`
+- [x] `GetEarningsSurprisesTool._fetch_from_fmp()` appends `beat_miss_bar` chart block after formatting
+- [x] `GetAnalystEstimatesTool._format_fmp_estimates()` appends `line` chart block before returning
+- [x] All chart block construction wrapped in `try/except Exception: pass` so failures are silent
+- [x] Each block uses exact format: `\n---CHART_DATA:{id}---\n{json}\n---END_CHART_DATA:{id}---\n[CHART_INSTRUCTION: ...]`
+- [x] Typecheck passes
 
 ---
 
@@ -250,13 +250,13 @@ After building `result.strip()` (just before `return result.strip()`):
 ```
 
 **Acceptance Criteria:**
-- [ ] `GetFinancialMetricsTool._run()` appends `bar_line` chart block to result string (before return)
-- [ ] Arrays are reversed from newest-first to oldest-first before building chart data
-- [ ] Data items with falsy revenue or fcf are skipped
-- [ ] `QuickFinancialDataTool._run()` appends `bar` chart block when historical data available
-- [ ] `import json` present at top of research_assistant_tools.py
-- [ ] All chart block construction wrapped in `try/except Exception: pass`
-- [ ] Typecheck passes
+- [x] `GetFinancialMetricsTool._run()` appends `bar_line` chart block to result string (before return)
+- [x] Arrays are reversed from newest-first to oldest-first before building chart data
+- [x] Data items with falsy revenue or fcf are skipped
+- [x] `QuickFinancialDataTool._run()` appends `bar` chart block when historical data available
+- [x] `import json` present at top of research_assistant_tools.py
+- [x] All chart block construction wrapped in `try/except Exception: pass`
+- [x] Typecheck passes
 
 ---
 

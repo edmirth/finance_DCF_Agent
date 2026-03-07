@@ -13,3 +13,13 @@
   - Models and imports were already in place from previous work; check both before assuming anything is missing
   - SQLite `ALTER TABLE ADD COLUMN` raises if column exists; `try/except Exception: pass` makes it idempotent
 ---
+
+## Iteration 2 - US-002: Add chart blocks to earnings_tools.py
+- What was implemented: Added `import json`, chart block appended in `GetQuarterlyEarningsTool._run()`, `GetEarningsSurprisesTool._fetch_from_fmp()`, and `GetAnalystEstimatesTool._format_fmp_estimates()`
+- Files changed: `tools/earnings_tools.py`
+- Learnings for future iterations:
+  - In f-strings, to produce literal `{{CHART:id}}` in output, use `{{{{CHART:{chart_id}}}}}` (4 braces each side)
+  - `_fetch_from_fmp()` in surprises tool returns formatted result directly — capture it then append chart block before returning
+  - EPS null-safe: `eps = round(net_income / shares, 2) if shares else 0`
+  - Arrays from API are newest-first; reverse with `list(reversed(...))` for chronological chart display
+---

@@ -7,84 +7,14 @@ from pydantic import BaseModel, Field
 from data.financial_data import FinancialDataFetcher
 from calculators.dcf_calculator import DCFCalculator, DCFAssumptions
 from tools.equity_analyst_tools import CompetitorAnalysisTool
-from shared.retry_utils import retry_with_backoff, RetryConfig
+from shared.tavily_client import get_tavily_client
+from data.fred_client import get_fred_client
 import json
 import logging
 import os
-from openai import OpenAI
+import re
 
 logger = logging.getLogger(__name__)
-
-
-# =========================================================================
-# Retry-Wrapped API Helpers
-# =========================================================================
-
-@retry_with_backoff(RetryConfig(
-    max_attempts=3,
-    base_delay=1.5,
-    max_delay=45.0
-))
-def _perplexity_api_call(client: OpenAI, query: str, system_prompt: str):
-    """
-    Internal function with retry logic for Perplexity API completion calls.
-
-    Args:
-        client: OpenAI client configured for Perplexity
-        query: User query
-        system_prompt: System prompt for the model
-
-    Returns:
-        ChatCompletion response from Perplexity
-
-    Raises:
-        Exception: On API errors (will be retried by decorator)
-    """
-    response = client.chat.completions.create(
-        model="sonar-pro",
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": query
-            }
-        ],
-    )
-    return response
-
-
-def _perplexity_search(api_key: str, query: str, system_prompt: str = None) -> str:
-    """
-    Helper function for Perplexity search with retry logic.
-
-    Args:
-        api_key: Perplexity API key
-        query: Search query
-        system_prompt: Optional system prompt (defaults to financial assistant)
-
-    Returns:
-        Response content from Perplexity
-
-    Raises:
-        Exception: On API errors (after retries exhausted)
-    """
-    if system_prompt is None:
-        system_prompt = "You are a financial research assistant. Provide accurate, sourced information about financial metrics, company data, and market conditions. Include specific numbers and cite your sources."
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://api.perplexity.ai"
-    )
-
-    response = _perplexity_api_call(client, query, system_prompt)
-
-    if response.choices and len(response.choices) > 0:
-        return response.choices[0].message.content
-    else:
-        raise Exception("No results returned from Perplexity API")
 
 
 # Tool Input Schemas
@@ -166,6 +96,16 @@ class DCFAnalysisInput(BaseModel):
         description="Number of years to project (typically 5 years)"
     )
 
+    # === OVERRIDE FIELDS (use when API data is missing or unreliable) ===
+    current_price: Optional[float] = Field(
+        default=None,
+        description="Current stock price in USD. Pass this when you know the price from get_stock_info (e.g., 227.52). Used when API returns 0."
+    )
+    shares_outstanding: Optional[float] = Field(
+        default=None,
+        description="Shares outstanding in millions (e.g., 15441.0). Pass this from get_financial_metrics. Used when API returns 0."
+    )
+
 
 class WebSearchInput(BaseModel):
     """Input for web search tool"""
@@ -203,7 +143,7 @@ class GetStockInfoTool(BaseTool):
     def _run(self, ticker: str) -> str:
         """Fetch stock information"""
         fetcher = FinancialDataFetcher()
-        info = fetcher.get_stock_info(ticker.upper())
+        info = fetcher.get_stock_info(ticker.strip().upper())
 
         if not info:
             return f"Error: Could not fetch information for ticker {ticker}"
@@ -233,93 +173,187 @@ class GetFinancialMetricsTool(BaseTool):
     def _run(self, ticker: str) -> str:
         """Fetch financial metrics"""
         fetcher = FinancialDataFetcher()
-        metrics = fetcher.get_key_metrics(ticker.upper())
+        metrics = fetcher.get_key_metrics(ticker.strip().upper())
 
         if not metrics:
             return f"Error: Could not fetch financial metrics for ticker {ticker}"
 
-        # Calculate historical growth rates
-        revenue_growth = 0.0
-        fcf_growth = 0.0
+        # --- Margins: prefer API-provided values, fall back to manual calculation ---
+        latest_rev = metrics.get('latest_revenue', 0) or 1
+        has_rev = metrics.get('latest_revenue', 0) > 0
 
-        if "historical_revenue" in metrics:
-            revenue_growth = fetcher.calculate_historical_growth_rate(
-                metrics["historical_revenue"]
-            )
+        gross_margin = metrics.get('gross_margin') or (
+            metrics.get('latest_gross_profit', 0) / latest_rev if has_rev else None
+        )
+        operating_margin = metrics.get('operating_margin') or (
+            metrics.get('latest_ebit', 0) / latest_rev if has_rev else 0
+        )
+        net_margin = metrics.get('net_margin') or (
+            metrics.get('latest_net_income', 0) / latest_rev if has_rev else 0
+        )
+        fcf_margin = metrics.get('latest_fcf', 0) / latest_rev if has_rev else 0
 
-        if "historical_fcf" in metrics:
-            fcf_growth = fetcher.calculate_historical_growth_rate(
-                metrics["historical_fcf"]
-            )
+        # --- DCF driver ratios: still derived from raw statements ---
+        capex_to_revenue = metrics.get('latest_capex', 0) / latest_rev if has_rev else 0
+        da_to_revenue = metrics.get('latest_depreciation_amortization', 0) / latest_rev if has_rev else 0
+        nwc_to_revenue = metrics.get('net_working_capital', 0) / latest_rev if has_rev else 0
+        cost_of_debt = (
+            metrics.get('latest_interest_expense', 0) / metrics.get('total_debt', 1)
+            if metrics.get('total_debt', 0) > 0 else 0.05
+        )
 
-        # Calculate operating ratios
-        ebit_margin = (metrics.get('latest_ebit', 0) / metrics.get('latest_revenue', 1)) if metrics.get('latest_revenue', 0) > 0 else 0
-        capex_to_revenue = (metrics.get('latest_capex', 0) / metrics.get('latest_revenue', 1)) if metrics.get('latest_revenue', 0) > 0 else 0
-        da_to_revenue = (metrics.get('latest_depreciation_amortization', 0) / metrics.get('latest_revenue', 1)) if metrics.get('latest_revenue', 0) > 0 else 0
-        nwc_to_revenue = (metrics.get('net_working_capital', 0) / metrics.get('latest_revenue', 1)) if metrics.get('latest_revenue', 0) > 0 else 0
-        cost_of_debt = (metrics.get('latest_interest_expense', 0) / metrics.get('total_debt', 1)) if metrics.get('total_debt', 0) > 0 else 0.05
+        # --- Growth rates: prefer API, fall back to manual CAGR ---
+        revenue_growth = metrics.get('revenue_growth_rate') or fetcher.calculate_historical_growth_rate(
+            metrics.get('historical_revenue', [])
+        )
+        fcf_growth = metrics.get('fcf_growth_rate') or fetcher.calculate_historical_growth_rate(
+            metrics.get('historical_fcf', [])
+        )
+        earnings_growth = metrics.get('earnings_growth_rate')
 
-        result = f"""
-Financial Metrics for {ticker.upper()}:
+        def pct(v):
+            return f"{v * 100:.1f}%" if v is not None else "N/A"
 
-Current Financials:
-- Latest Revenue: ${metrics.get('latest_revenue', 0):,.0f}
-- Latest EBIT (Operating Income): ${metrics.get('latest_ebit', 0):,.0f}
-- Latest Free Cash Flow: ${metrics.get('latest_fcf', 0):,.0f}
-- Latest CapEx: ${metrics.get('latest_capex', 0):,.0f}
-- Latest D&A: ${metrics.get('latest_depreciation_amortization', 0):,.0f}
+        def dollar(v, label=""):
+            if v is None:
+                return "N/A"
+            if abs(v) >= 1e12:
+                return f"${v/1e12:.2f}T"
+            if abs(v) >= 1e9:
+                return f"${v/1e9:.2f}B"
+            if abs(v) >= 1e6:
+                return f"${v/1e6:.0f}M"
+            return f"${v:,.0f}"
+
+        result = f"""Financial Metrics for {ticker.upper()}:
+
+Current Financials (TTM):
+- Revenue: {dollar(metrics.get('latest_revenue', 0))}
+- Gross Profit: {dollar(metrics.get('latest_gross_profit', 0))} (Gross Margin: {pct(gross_margin)})
+- EBIT (Operating Income): {dollar(metrics.get('latest_ebit', 0))} (EBIT Margin: {pct(operating_margin)})
+- Net Income: {dollar(metrics.get('latest_net_income', 0))} (Net Margin: {pct(net_margin)})
+- Free Cash Flow: {dollar(metrics.get('latest_fcf', 0))} (FCF Margin: {pct(fcf_margin)})
+- CapEx: {dollar(metrics.get('latest_capex', 0))}
+- D&A: {dollar(metrics.get('latest_depreciation_amortization', 0))}
 
 Balance Sheet:
-- Total Debt: ${metrics.get('total_debt', 0):,.0f}
-- Cash & Equivalents: ${metrics.get('cash_and_equivalents', 0):,.0f}
-- Net Working Capital: ${metrics.get('net_working_capital', 0):,.0f}
+- Total Debt: {dollar(metrics.get('total_debt', 0))}
+- Cash & Equivalents: {dollar(metrics.get('cash_and_equivalents', 0))}
+- Net Debt: {dollar(metrics.get('total_debt', 0) - metrics.get('cash_and_equivalents', 0))}
+- Shareholders Equity: {dollar(metrics.get('shareholders_equity', 0))}
+- Net Working Capital: {dollar(metrics.get('net_working_capital', 0))}
 - Shares Outstanding: {metrics.get('shares_outstanding', 0):,.0f}
 
-Tax & Debt Metrics:
-- Effective Tax Rate: {metrics.get('effective_tax_rate', 0.21) * 100:.1f}%
-- Interest Expense: ${metrics.get('latest_interest_expense', 0):,.0f}
+Capital Structure & Rates:
+- Effective Tax Rate: {pct(metrics.get('effective_tax_rate', 0.21))}
+- Interest Expense: {dollar(metrics.get('latest_interest_expense', 0))}
 - Implied Cost of Debt: {cost_of_debt * 100:.2f}%
 - Beta: {metrics.get('beta', 1.0):.2f}
 
-Operating Ratios (for DCF assumptions):
-- EBIT Margin: {ebit_margin * 100:.1f}%
-- CapEx/Revenue: {capex_to_revenue * 100:.1f}%
-- D&A/Revenue: {da_to_revenue * 100:.1f}%
-- NWC/Revenue: {nwc_to_revenue * 100:.1f}%
+Profitability Margins (API):
+- Gross Margin: {pct(gross_margin)}
+- Operating (EBIT) Margin: {pct(operating_margin)}
+- Net Margin: {pct(net_margin)}
+- FCF Margin: {pct(fcf_margin)}
+
+Return Metrics (API):
+- Return on Equity (ROE): {pct(metrics.get('return_on_equity'))}
+- Return on Assets (ROA): {pct(metrics.get('return_on_assets'))}
+- Return on Invested Capital (ROIC): {pct(metrics.get('return_on_invested_capital'))}
+
+Valuation Multiples (API):
+- P/E Ratio: {f"{metrics['price_to_earnings']:.1f}x" if metrics.get('price_to_earnings') else "N/A"}
+- Price / Book: {f"{metrics['price_to_book']:.2f}x" if metrics.get('price_to_book') else "N/A"}
+- Price / Sales: {f"{metrics['price_to_sales']:.2f}x" if metrics.get('price_to_sales') else "N/A"}
+- EV / EBITDA: {f"{metrics['ev_to_ebitda']:.1f}x" if metrics.get('ev_to_ebitda') else "N/A"}
+- EV / Revenue: {f"{metrics['ev_to_revenue']:.2f}x" if metrics.get('ev_to_revenue') else "N/A"}
+- PEG Ratio: {f"{metrics['peg_ratio']:.2f}" if metrics.get('peg_ratio') else "N/A"}
+- FCF Yield: {pct(metrics.get('fcf_yield'))}
+- Enterprise Value: {dollar(metrics.get('enterprise_value_api'))}
+
+Per-Share Metrics (API):
+- EPS: {f"${metrics['earnings_per_share']:.2f}" if metrics.get('earnings_per_share') else "N/A"}
+- Book Value / Share: {f"${metrics['book_value_per_share']:.2f}" if metrics.get('book_value_per_share') else "N/A"}
+- FCF / Share: {f"${metrics['fcf_per_share']:.2f}" if metrics.get('fcf_per_share') else "N/A"}
+
+Leverage & Liquidity (API):
+- Debt / Equity: {f"{metrics['debt_to_equity_ratio']:.2f}x" if metrics.get('debt_to_equity_ratio') else "N/A"}
+- Debt / Assets: {f"{metrics['debt_to_assets_ratio']:.2f}x" if metrics.get('debt_to_assets_ratio') else "N/A"}
+- Interest Coverage: {f"{metrics['interest_coverage_ratio']:.1f}x" if metrics.get('interest_coverage_ratio') else "N/A"}
+- Current Ratio: {f"{metrics['current_ratio']:.2f}" if metrics.get('current_ratio') else "N/A"}
+- Quick Ratio: {f"{metrics['quick_ratio']:.2f}" if metrics.get('quick_ratio') else "N/A"}
+
+DCF Driver Ratios (from raw statements):
+- CapEx / Revenue: {pct(capex_to_revenue)}
+- D&A / Revenue: {pct(da_to_revenue)}
+- NWC / Revenue: {pct(nwc_to_revenue)}
 """
 
-        # Add historical financials section if data is available
-        historical_section = "\nHistorical Financials (Last 5 Years, Most Recent First):\n"
-        has_historical_data = False
+        # Build year-by-year historical table
+        years = metrics.get('historical_years', [])
+        revenues = metrics.get('historical_revenue', [])
+        gross_profits_hist = metrics.get('historical_gross_profit', [])
+        net_incomes = metrics.get('historical_net_income', [])
+        ebits = metrics.get('historical_ebit', [])
+        fcfs = metrics.get('historical_fcf', [])
 
-        if metrics.get('historical_revenue'):
-            has_historical_data = True
-            revenue_values = metrics['historical_revenue'][:5]
-            revenue_str = " → ".join([f"${r/1e9:.2f}B" for r in revenue_values])
-            historical_section += f"- Revenue: {revenue_str}\n"
+        if revenues and years:
+            n = min(len(revenues), len(years), 5)
+            result += "\nHistorical Financials — Year by Year (most recent first):\n"
+            result += "| Fiscal Year | Revenue | Gross Profit | Gross Margin | EBIT | EBIT Margin | Net Income | Net Margin | FCF | FCF Margin |\n"
+            result += "|-------------|---------|-------------|-------------|------|------------|-----------|------------|-----|------------|\n"
+            for i in range(n):
+                rev = revenues[i] if i < len(revenues) else 0
+                gp = gross_profits_hist[i] if i < len(gross_profits_hist) else 0
+                ebit = ebits[i] if i < len(ebits) else 0
+                ni = net_incomes[i] if i < len(net_incomes) else 0
+                fcf = fcfs[i] if i < len(fcfs) else 0
+                yr = years[i] if i < len(years) else "N/A"
 
-        if metrics.get('historical_net_income'):
-            has_historical_data = True
-            ni_values = metrics['historical_net_income'][:5]
-            ni_str = " → ".join([f"${ni/1e9:.2f}B" if ni >= 0 else f"-${abs(ni)/1e9:.2f}B" for ni in ni_values])
-            historical_section += f"- Net Income: {ni_str}\n"
+                gm_pct = f"{gp/rev*100:.1f}%" if rev > 0 and gp else "N/A"
+                ebit_pct = f"{ebit/rev*100:.1f}%" if rev > 0 else "N/A"
+                ni_pct = f"{ni/rev*100:.1f}%" if rev > 0 else "N/A"
+                fcf_pct = f"{fcf/rev*100:.1f}%" if rev > 0 else "N/A"
 
-        if metrics.get('historical_fcf'):
-            has_historical_data = True
-            fcf_values = metrics['historical_fcf'][:5]
-            fcf_str = " → ".join([f"${fcf/1e9:.2f}B" if fcf >= 0 else f"-${abs(fcf)/1e9:.2f}B" for fcf in fcf_values])
-            historical_section += f"- Free Cash Flow: {fcf_str}\n"
+                def fmt(v): return f"${v/1e9:.2f}B" if abs(v) >= 1e9 else f"${v/1e6:.0f}M"
 
-        if has_historical_data:
-            result += historical_section
+                result += f"| {yr} | {fmt(rev)} | {fmt(gp) if gp else 'N/A'} | {gm_pct} | {fmt(ebit)} | {ebit_pct} | {fmt(ni)} | {ni_pct} | {fmt(fcf) if fcf else 'N/A'} | {fcf_pct} |\n"
 
-        result += f"""
-Historical Growth Rates:
-- Revenue CAGR: {revenue_growth * 100:.2f}%
-- FCF CAGR: {fcf_growth * 100:.2f}%
+        result += f"\nGrowth Rates (API where available, else 5Y CAGR):\n"
+        result += f"- Revenue Growth: {pct(revenue_growth)}\n"
+        result += f"- FCF Growth: {pct(fcf_growth)}\n"
+        if earnings_growth is not None:
+            result += f"- Earnings Growth: {pct(earnings_growth)}\n"
+        if metrics.get('ebitda_growth_rate') is not None:
+            result += f"- EBITDA Growth: {pct(metrics.get('ebitda_growth_rate'))}\n"
 
-These metrics should be used as inputs for DCF analysis assumptions.
-"""
+        try:
+            _years = list(reversed(metrics.get('historical_years', [])))
+            _rev = list(reversed(metrics.get('historical_revenue', [])))
+            _fcf_list = list(reversed(metrics.get('historical_fcf', [])))
+            _chart_data = [
+                {"period": str(_years[i]), "revenue_b": round(_rev[i] / 1e9, 2), "fcf_b": round(_fcf_list[i] / 1e9, 2)}
+                for i in range(min(len(_years), len(_rev), len(_fcf_list)))
+                if _rev[i] and _fcf_list[i]
+            ]
+            if _chart_data:
+                chart_id = f"financial_metrics_{ticker.upper()}"
+                chart_json = json.dumps({
+                    "id": chart_id,
+                    "chart_type": "bar_line",
+                    "title": f"{ticker.upper()} Annual Revenue & FCF",
+                    "data": _chart_data,
+                    "series": [
+                        {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB", "yAxis": "left"},
+                        {"key": "fcf_b", "label": "FCF ($B)", "type": "line", "color": "#10B981", "yAxis": "right"}
+                    ],
+                    "y_format": "currency_b",
+                    "y_right_format": "currency_b"
+                })
+                result += f"\n---CHART_DATA:{chart_id}---\n{chart_json}\n---END_CHART_DATA:{chart_id}---\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss revenue and FCF history. Do NOT reproduce the CHART_DATA block.]"
+        except Exception:
+            pass
+
         return result
 
     async def _arun(self, ticker: str) -> str:
@@ -366,7 +400,9 @@ class PerformDCFAnalysisTool(BaseTool):
         risk_free_rate: Optional[float] = None,
         market_risk_premium: Optional[float] = None,
         cost_of_debt: Optional[float] = None,
-        projection_years: int = 5
+        projection_years: int = 5,
+        current_price: Optional[float] = None,
+        shares_outstanding: Optional[float] = None,
     ) -> str:
         """Perform DCF analysis"""
         try:
@@ -417,6 +453,12 @@ class PerformDCFAnalysisTool(BaseTool):
                         market_risk_premium = parsed_params['market_risk_premium']
                     if cost_of_debt is None and 'cost_of_debt' in parsed_params:
                         cost_of_debt = parsed_params['cost_of_debt']
+                    # Extract current_price and shares_outstanding from JSON if provided
+                    # (fallback for old-style JSON input; schema fields take precedence)
+                    if current_price is None:
+                        current_price = parsed_params.get('current_price', None)
+                    if shares_outstanding is None:
+                        shares_outstanding = parsed_params.get('shares_outstanding', None)
 
                 except json.JSONDecodeError:
                     # If JSON parsing fails, fall back to regex extraction
@@ -443,10 +485,18 @@ class PerformDCFAnalysisTool(BaseTool):
             if not metrics or not info:
                 return f"Error: Could not fetch data for {ticker_clean}"
 
-            # Extract required values
+            # Extract required values — prefer explicitly-passed values over API data
             current_revenue = metrics.get('latest_revenue', 0)
-            current_price = info.get('current_price', 0)
-            shares_outstanding = metrics.get('shares_outstanding', 0)
+            api_price = info.get('current_price', 0)
+            if api_price > 0:
+                current_price = api_price
+            elif current_price is None or current_price <= 0:
+                current_price = 0
+            api_shares = metrics.get('shares_outstanding', 0)
+            if api_shares > 0:
+                shares_outstanding = api_shares
+            elif shares_outstanding is None or shares_outstanding <= 0:
+                shares_outstanding = 0
             total_debt = metrics.get('total_debt', 0)
             cash = metrics.get('cash_and_equivalents', 0)
 
@@ -560,10 +610,18 @@ DO NOT use historical CAGR - use forward-looking analyst estimates."""
                 if total_debt > 0 and interest_expense > 0:
                     cost_of_debt = interest_expense / total_debt
                     logger.info(f"Calculated cost of debt: {cost_of_debt:.2%}")
+                elif total_debt > 0:
+                    # Debt exists but interest expense not separately reported
+                    # (e.g. some companies net interest income/expense in "Other income").
+                    # Use a conservative investment-grade default.
+                    cost_of_debt = 0.04
+                    logger.info(
+                        f"Cost of debt set to default 4.00% "
+                        f"(debt=${total_debt/1e9:.1f}B present but interest_expense not reported)"
+                    )
                 else:
-                    # No debt or no interest - cost of debt is 0
                     cost_of_debt = 0.0
-                    logger.info(f"Cost of debt set to 0.00% (no debt or interest)")
+                    logger.info(f"Cost of debt set to 0.00% (no debt)")
 
             # 10. Market value of equity (for WACC calculation)
             market_value_equity = current_price * shares_outstanding
@@ -742,7 +800,9 @@ Discounted at WACC ({calculated_wacc:.2%})
         risk_free_rate: Optional[float] = None,
         market_risk_premium: Optional[float] = None,
         cost_of_debt: Optional[float] = None,
-        projection_years: int = 5
+        projection_years: int = 5,
+        current_price: Optional[float] = None,
+        shares_outstanding: Optional[float] = None,
     ) -> str:
         """Async version"""
         return self._run(
@@ -759,14 +819,16 @@ Discounted at WACC ({calculated_wacc:.2%})
             risk_free_rate,
             market_risk_premium,
             cost_of_debt,
-            projection_years
+            projection_years,
+            current_price,
+            shares_outstanding,
         )
 
 
 class GetMarketParametersTool(BaseTool):
-    """Tool to fetch DCF market parameters via focused Perplexity queries"""
+    """Tool to fetch DCF market parameters via FRED API and Tavily search"""
     name: str = "get_market_parameters"
-    description: str = """Fetch current market parameters required for DCF valuation via focused Perplexity queries.
+    description: str = """Fetch current market parameters required for DCF valuation.
 
     Returns validated, numeric values for:
     - Beta coefficient for the stock
@@ -774,61 +836,78 @@ class GetMarketParametersTool(BaseTool):
     - Analyst consensus revenue growth rate (near-term, Years 1-2)
     - Industry average growth rate (long-term fade target, Years 3-5)
 
-    Use this tool INSTEAD of search_web for DCF assumptions. It makes focused queries
-    and validates the responses to ensure reliable numeric values.
+    Use this tool INSTEAD of search_web for DCF assumptions. It uses FRED API for
+    Treasury yields and Tavily search for other parameters, with numeric validation.
 
     After calling this tool, pass the returned values directly to perform_dcf_analysis."""
     args_schema: Type[BaseModel] = MarketParametersInput
 
-    def _query_perplexity(self, client, query: str, data_type: str) -> Optional[float]:
-        """Make a focused query and parse numeric response with validation (uses retry logic)"""
-        import re
-
+    def _query_tavily_for_number(self, query: str, data_type: str) -> Optional[float]:
+        """Make a focused Tavily search query and parse numeric response with validation"""
         try:
-            system_prompt = (
-                f"You are a financial data assistant. Return ONLY the numeric value for {data_type}. "
-                "No explanations, no text, just the number. "
-                "For percentages, return as decimal (e.g., 0.045 for 4.5%). "
-                "For beta, return just the number (e.g., 1.25)."
+            tavily = get_tavily_client()
+            result = tavily.search(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=3,
+                include_answer="advanced",
             )
 
-            # Use retry-wrapped API call
-            response = _perplexity_api_call(client, query, system_prompt)
-
-            if not response.choices or len(response.choices) == 0:
-                logger.warning(f"No response for {data_type} query")
+            answer = result.get("answer", "")
+            if not answer:
+                logger.warning(f"No Tavily answer for {data_type} query")
                 return None
 
-            content = response.choices[0].message.content.strip()
-            logger.info(f"Perplexity response for {data_type}: {content}")
+            logger.info(f"Tavily answer for {data_type}: {answer[:200]}")
 
-            # Extract numeric value from response
-            # Handle percentage formats (e.g., "4.5%", "4.5 percent")
-            if '%' in content or 'percent' in content.lower():
-                # Extract number and convert to decimal
-                numbers = re.findall(r'[-+]?\d*\.?\d+', content)
-                if numbers:
-                    value = float(numbers[0]) / 100  # Convert percentage to decimal
-                    return value
+            # Extract numeric value using context-aware parsing.
+            # IMPORTANT: Don't blindly take numbers[0] — it's often a year
+            # or maturity period (e.g., "10" from "10-year Treasury").
 
-            # Handle decimal format (e.g., "0.045")
-            numbers = re.findall(r'[-+]?\d*\.?\d+', content)
-            if numbers:
-                value = float(numbers[0])
+            # Strategy 1: For percentage data, find numbers directly adjacent to %
+            if '%' in answer or 'percent' in answer.lower():
+                pct_matches = re.findall(r'(\d+\.?\d*)\s*(?:%|percent)', answer, re.IGNORECASE)
+                for pct_str in pct_matches:
+                    value = float(pct_str) / 100
+                    validated = self._validate_value(value, data_type)
+                    if validated is not None:
+                        return validated
+                # If no valid percentage found, fall through to general parsing
 
-                # Auto-convert if value looks like a percentage (> 1 for rates, > 5 for growth)
+            # Strategy 2: For beta, find numbers after the keyword "beta"
+            if data_type == 'beta':
+                beta_match = re.search(r'beta\s*(?:of|is|:|\s)\s*([-+]?\d*\.?\d+)', answer, re.IGNORECASE)
+                if beta_match:
+                    value = float(beta_match.group(1))
+                    validated = self._validate_value(value, data_type)
+                    if validated is not None:
+                        return validated
+
+            # Strategy 3: General fallback — try all numbers, pick first valid one
+            numbers = re.findall(r'[-+]?\d*\.?\d+', answer)
+            for num_str in numbers:
+                value = float(num_str)
+
+                # Skip values that look like years (2020-2030)
+                if 1900 <= value <= 2100:
+                    continue
+
+                # Auto-convert if value looks like a percentage (> 1 for rates)
                 if data_type in ['risk_free_rate', 'growth_rate', 'industry_growth']:
-                    if value > 1:  # Likely a percentage that wasn't converted
+                    if value > 1:
                         value = value / 100
                         logger.info(f"Auto-converted {data_type} from {value*100}% to {value}")
 
-                return value
+                validated = self._validate_value(value, data_type)
+                if validated is not None:
+                    return validated
 
-            logger.warning(f"Could not parse numeric value from: {content}")
+            logger.warning(f"Could not parse numeric value from Tavily answer: {answer[:100]}")
             return None
 
         except Exception as e:
-            logger.error(f"Error querying Perplexity for {data_type}: {e}")
+            logger.error(f"Error querying Tavily for {data_type}: {e}")
             return None
 
     def _validate_value(self, value: Optional[float], data_type: str) -> Optional[float]:
@@ -852,18 +931,9 @@ class GetMarketParametersTool(BaseTool):
         return value
 
     def _run(self, ticker: str, company_name: str = "", industry: str = "") -> str:
-        """Fetch market parameters via focused Perplexity queries"""
+        """Fetch market parameters via FRED API and Tavily search"""
         try:
             ticker_clean = ticker.upper().strip()
-
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return """Error: PERPLEXITY_API_KEY not found in environment variables.
-
-Please add it to your .env file to enable focused market parameter queries.
-Without this, you'll need to manually search for beta, risk-free rate, and growth estimates."""
-
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
 
             # Get company name if not provided
             if not company_name:
@@ -884,113 +954,109 @@ Without this, you'll need to manually search for beta, risk-free rate, and growt
                 'warnings': []
             }
 
-            # 1. Query for Beta
-            beta_query = f"What is the current beta coefficient for {company_name} ({ticker_clean}) stock? Return only the number."
-            beta = self._query_perplexity(client, beta_query, 'beta')
-            beta = self._validate_value(beta, 'beta')
-            if beta is not None:
-                results['beta'] = round(beta, 2)
-                results['sources'].append(f"Beta: Perplexity web search")
+            # 1. Beta: Try Financial Datasets API first, then Tavily search fallback
+            # Note: Financial Datasets API returns beta=1.0 as default (not real data),
+            # so we only trust non-default values from it
+            fetcher = FinancialDataFetcher()
+            metrics = fetcher.get_key_metrics(ticker_clean)
+            api_beta = metrics.get('beta') if metrics else None
+            if api_beta and api_beta != 1.0:
+                results['beta'] = round(api_beta, 2)
+                results['sources'].append(f"Beta: Financial Datasets API")
             else:
-                # Fallback to financial data
-                fetcher = FinancialDataFetcher()
-                metrics = fetcher.get_key_metrics(ticker_clean)
-                if metrics and metrics.get('beta'):
-                    results['beta'] = round(metrics['beta'], 2)
-                    results['sources'].append(f"Beta: Financial Datasets API")
+                beta_query = f"What is the current beta coefficient for {company_name} ({ticker_clean}) stock?"
+                beta = self._query_tavily_for_number(beta_query, 'beta')
+                beta = self._validate_value(beta, 'beta')
+                if beta is not None:
+                    results['beta'] = round(beta, 2)
+                    results['sources'].append(f"Beta: Tavily web search")
                 else:
                     results['warnings'].append("Beta: Could not retrieve. Using market average 1.0 as fallback.")
                     results['beta'] = 1.0
 
-            # 2. Query for Risk-Free Rate (10-year Treasury yield)
-            rfr_query = "What is the current 10-year US Treasury yield? Return only the number as a decimal (e.g., 0.045 for 4.5%)."
-            risk_free_rate = self._query_perplexity(client, rfr_query, 'risk_free_rate')
-            risk_free_rate = self._validate_value(risk_free_rate, 'risk_free_rate')
+            # 2. Risk-Free Rate: FRED API first, then Tavily fallback
+            fred = get_fred_client()
+            risk_free_rate = fred.get_treasury_yield("DGS10")
             if risk_free_rate is not None:
-                results['risk_free_rate'] = round(risk_free_rate, 4)
-                results['sources'].append(f"Risk-free rate: Perplexity web search (10Y Treasury)")
-            else:
-                results['warnings'].append("Risk-free rate: Could not retrieve. Using 4.5% as typical current value.")
-                results['risk_free_rate'] = 0.045
+                risk_free_rate = self._validate_value(risk_free_rate, 'risk_free_rate')
+                if risk_free_rate is not None:
+                    results['risk_free_rate'] = round(risk_free_rate, 4)
+                    results['sources'].append(f"Risk-free rate: FRED API (DGS10 10Y Treasury)")
+            if results['risk_free_rate'] is None:
+                # Tavily fallback
+                rfr_query = "current 10-year US Treasury yield percentage"
+                rfr = self._query_tavily_for_number(rfr_query, 'risk_free_rate')
+                rfr = self._validate_value(rfr, 'risk_free_rate')
+                if rfr is not None:
+                    results['risk_free_rate'] = round(rfr, 4)
+                    results['sources'].append(f"Risk-free rate: Tavily web search (10Y Treasury)")
+                else:
+                    results['warnings'].append("Risk-free rate: Could not retrieve. Using 4.5% as typical current value.")
+                    results['risk_free_rate'] = 0.045
 
-            # 3. Query for Analyst Consensus Growth Rate (Near-term, Years 1-2)
-            growth_query = f"What is the analyst consensus revenue growth rate forecast for {company_name} ({ticker_clean}) for the next 1-2 years (2025-2026)? Return only the number as a decimal (e.g., 0.10 for 10%)."
-            near_term_growth = self._query_perplexity(client, growth_query, 'growth_rate')
+            # 3. Analyst Consensus Growth Rate (Near-term, Years 1-2)
+            growth_query = f"{company_name} ({ticker_clean}) analyst consensus revenue growth rate forecast next 1-2 years"
+            near_term_growth = self._query_tavily_for_number(growth_query, 'growth_rate')
             near_term_growth = self._validate_value(near_term_growth, 'growth_rate')
             if near_term_growth is not None:
                 results['near_term_growth_rate'] = round(near_term_growth, 3)
-                results['sources'].append(f"Near-term growth: Analyst consensus via Perplexity")
+                results['sources'].append(f"Near-term growth: Analyst consensus via Tavily")
             else:
                 results['warnings'].append("Near-term growth: Could not retrieve analyst consensus. You must search manually.")
 
-            # 4. Query for Industry Growth Rate (Long-term fade target, Years 3-5)
+            # 4. Industry Growth Rate (Long-term fade target, Years 3-5)
             industry_name = industry if industry else "the company's industry"
-            industry_query = f"What is the average annual growth rate for the {industry_name} industry? Return only the number as a decimal (e.g., 0.08 for 8%)."
-            industry_growth = self._query_perplexity(client, industry_query, 'industry_growth')
+            industry_query = f"{industry_name} industry average annual growth rate"
+            industry_growth = self._query_tavily_for_number(industry_query, 'industry_growth')
             industry_growth = self._validate_value(industry_growth, 'industry_growth')
             if industry_growth is not None:
                 results['industry_growth_rate'] = round(industry_growth, 3)
-                results['sources'].append(f"Industry growth: Perplexity web search for {industry_name}")
+                results['sources'].append(f"Industry growth: Tavily web search for {industry_name}")
             else:
-                # Default to reasonable industry growth rate
                 if results['near_term_growth_rate'] is not None:
-                    # Use 50% of near-term, minimum 5%
                     results['industry_growth_rate'] = max(results['near_term_growth_rate'] * 0.5, 0.05)
                     results['sources'].append(f"Industry growth: Estimated as 50% of near-term growth (min 5%)")
                 else:
                     results['industry_growth_rate'] = 0.05
                     results['warnings'].append("Industry growth: Using default 5%")
 
-            # Format output
+            # Format output — clean markdown (no ASCII art)
             output = []
-            output.append("=" * 70)
-            output.append(f"MARKET PARAMETERS FOR {ticker_clean}")
-            output.append("=" * 70)
+            output.append(f"### Market Parameters: {company_name} ({ticker_clean})")
+            output.append(f"**Industry:** {industry}")
             output.append("")
-            output.append(f"Company: {company_name}")
-            output.append(f"Industry: {industry}")
+            output.append("#### DCF Assumption Values")
             output.append("")
-            output.append("-" * 70)
-            output.append("DCF ASSUMPTION VALUES (Ready for perform_dcf_analysis):")
-            output.append("-" * 70)
-            output.append("")
-            output.append(f"Beta:                    {results['beta']}")
-            output.append(f"Risk-Free Rate:          {results['risk_free_rate']} ({results['risk_free_rate']*100:.2f}%)")
-            output.append(f"Near-Term Growth Rate:   {results['near_term_growth_rate']} ({results['near_term_growth_rate']*100:.1f}%)" if results['near_term_growth_rate'] else "Near-Term Growth Rate:   NOT FOUND - search manually")
-            output.append(f"Industry Growth Rate:    {results['industry_growth_rate']} ({results['industry_growth_rate']*100:.1f}%)" if results['industry_growth_rate'] else "Industry Growth Rate:    NOT FOUND")
-            output.append("")
-            output.append("-" * 70)
-            output.append("DATA SOURCES:")
-            output.append("-" * 70)
-            for source in results['sources']:
-                output.append(f"  - {source}")
+            output.append("| Parameter | Value | Source |")
+            output.append("|-----------|-------|--------|")
+            output.append(f"| Beta | {results['beta']} | {next((s for s in results['sources'] if 'Beta' in s), 'N/A')} |")
+            rfr = results['risk_free_rate']
+            output.append(f"| Risk-Free Rate | {rfr} ({rfr*100:.2f}%) | {next((s for s in results['sources'] if 'Risk-free' in s), 'N/A')} |")
+            ntg = results['near_term_growth_rate']
+            output.append(f"| Near-Term Growth Rate (Yr 1-2) | {ntg} ({ntg*100:.1f}%) | Analyst consensus |" if ntg else "| Near-Term Growth Rate (Yr 1-2) | NOT FOUND — search manually | — |")
+            ig = results['industry_growth_rate']
+            output.append(f"| Industry Growth Rate (Yr 3-5) | {ig} ({ig*100:.1f}%) | Industry avg |" if ig else "| Industry Growth Rate (Yr 3-5) | NOT FOUND | — |")
+            output.append(f"| Terminal Growth Rate | 0.025 (2.5%) | GDP + inflation assumption |")
+            output.append(f"| Market Risk Premium | 0.055 (5.5%) | Quality mega-cap default |")
             output.append("")
 
             if results['warnings']:
-                output.append("-" * 70)
-                output.append("WARNINGS:")
-                output.append("-" * 70)
+                output.append("**Warnings:**")
                 for warning in results['warnings']:
-                    output.append(f"  ⚠ {warning}")
+                    output.append(f"- ⚠ {warning}")
                 output.append("")
 
-            output.append("-" * 70)
-            output.append("USAGE EXAMPLE:")
-            output.append("-" * 70)
-            output.append("Pass these values to perform_dcf_analysis:")
-            output.append(f"""{{
-    "ticker": "{ticker_clean}",
-    "beta": {results['beta']},
-    "risk_free_rate": {results['risk_free_rate']},
-    "near_term_growth_rate": {results['near_term_growth_rate'] if results['near_term_growth_rate'] else 'REQUIRED'},
-    "long_term_growth_rate": {results['industry_growth_rate']},
-    "terminal_growth_rate": 0.025,
-    "market_risk_premium": 0.055
-}}""")
-            output.append("")
-            output.append("Note: terminal_growth_rate (2.5%) and market_risk_premium (5.5% for quality")
-            output.append("mega-cap, 6-7% for others) should be set based on company quality assessment.")
-            output.append("=" * 70)
+            output.append(f"```json")
+            output.append(f'{{')
+            output.append(f'    "ticker": "{ticker_clean}",')
+            output.append(f'    "beta": {results["beta"]},')
+            output.append(f'    "risk_free_rate": {results["risk_free_rate"]},')
+            output.append(f'    "near_term_growth_rate": {results["near_term_growth_rate"] if results["near_term_growth_rate"] else "REQUIRED"},')
+            output.append(f'    "long_term_growth_rate": {results["industry_growth_rate"]},')
+            output.append(f'    "terminal_growth_rate": 0.025,')
+            output.append(f'    "market_risk_premium": 0.055')
+            output.append(f'}}')
+            output.append(f"```")
 
             return "\n".join(output)
 
@@ -1004,7 +1070,7 @@ Without this, you'll need to manually search for beta, risk-free rate, and growt
 
 
 class SearchWebTool(BaseTool):
-    """Tool to search the web using Perplexity Sonar API for current financial information"""
+    """Tool to search the web using Tavily for current financial information"""
     name: str = "search_web"
     description: str = """Search the web for current financial information, analyst estimates, beta values, industry trends, and market data.
     Use this tool to find:
@@ -1019,19 +1085,21 @@ class SearchWebTool(BaseTool):
     args_schema: Type[BaseModel] = WebSearchInput
 
     def _run(self, query: str) -> str:
-        """Search the web using Perplexity Sonar API with retry logic"""
+        """Search the web using Tavily with retry logic"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found in environment variables. Please add it to your .env file."
-
-            # Call retry-wrapped Perplexity search
-            result = _perplexity_search(api_key, query)
+            tavily = get_tavily_client()
+            result = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=5,
+                include_answer="advanced",
+            )
             return f"Web Search Results:\n\n{result}"
 
         except Exception as e:
             logger.error(f"Error searching web: {e}")
-            return f"Error searching web after retries: {str(e)}"
+            return f"Error searching web: {str(e)}"
 
     async def _arun(self, query: str) -> str:
         """Async version"""
@@ -1148,7 +1216,7 @@ class PerformMultiplesValuationTool(BaseTool):
 
     METHODOLOGY:
     1. Calculates the company's current trading multiples
-    2. Fetches peer/industry average multiples via Perplexity
+    2. Fetches peer/industry average multiples via web search
     3. Calculates implied fair values from each multiple
     4. Returns a weighted average fair value estimate
 
@@ -1165,50 +1233,31 @@ class PerformMultiplesValuationTool(BaseTool):
     Use this tool alongside perform_dcf_analysis for a comprehensive valuation."""
     args_schema: Type[BaseModel] = MultiplesValuationInput
 
-    def _fetch_peer_multiples_via_perplexity(self, ticker: str, industry: str, peer_tickers: List[str]) -> Dict:
-        """Fetch peer/industry multiples using Perplexity"""
-        import re
-
-        api_key = os.getenv("PERPLEXITY_API_KEY")
-        if not api_key:
-            logger.warning("PERPLEXITY_API_KEY not found. Using default industry averages.")
-            return self._get_default_industry_multiples(industry)
-
-        client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+    def _fetch_peer_multiples_via_search(self, ticker: str, industry: str, peer_tickers: List[str]) -> Dict:
+        """Fetch peer/industry multiples using Tavily search"""
 
         try:
+            tavily = get_tavily_client()
+
             if peer_tickers:
                 peer_list = ", ".join(peer_tickers)
-                query = f"""What are the current valuation multiples for these peer companies: {peer_list}?
-                For each company, provide:
-                - P/E ratio (trailing twelve months)
-                - EV/EBITDA ratio
-                - P/S (Price to Sales) ratio
-                - P/B (Price to Book) ratio
-
-                Then calculate the AVERAGE of each multiple across all peers.
-                Return the peer average as: "Peer Average P/E: X.X, EV/EBITDA: X.X, P/S: X.X, P/B: X.X"
-                """
+                query = f"current P/E EV/EBITDA P/S P/B valuation multiples for {peer_list} peer average"
             else:
-                query = f"""What are the typical valuation multiples for the {industry} industry?
-                Provide:
-                - Average P/E ratio
-                - Average EV/EBITDA ratio
-                - Average P/S (Price to Sales) ratio
-                - Average P/B (Price to Book) ratio
+                query = f"average P/E EV/EBITDA P/S P/B valuation multiples for {industry} industry"
 
-                Return as: "Industry Average P/E: X.X, EV/EBITDA: X.X, P/S: X.X, P/B: X.X"
-                """
+            result = tavily.search(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=5,
+                include_answer="advanced",
+            )
 
-            # Use retry-wrapped API call
-            system_prompt = "You are a financial data assistant. Provide accurate valuation multiples. Return numeric values only where requested."
-            response = _perplexity_api_call(client, query, system_prompt)
-
-            if not response.choices:
+            content = result.get("answer", "")
+            if not content:
                 return self._get_default_industry_multiples(industry)
 
-            content = response.choices[0].message.content
-            logger.info(f"Perplexity multiples response: {content[:500]}...")
+            logger.info(f"Tavily multiples response: {content[:500]}...")
 
             # Parse the response to extract multiples
             multiples = {
@@ -1216,7 +1265,7 @@ class PerformMultiplesValuationTool(BaseTool):
                 'peer_ev_ebitda': None,
                 'peer_ps': None,
                 'peer_pb': None,
-                'source': 'Perplexity (peer/industry averages)',
+                'source': 'Tavily (peer/industry averages)',
                 'raw_response': content[:1000]
             }
 
@@ -1331,9 +1380,9 @@ class PerformMultiplesValuationTool(BaseTool):
             total_debt = metrics.get('total_debt', 0)
             cash = metrics.get('cash_and_equivalents', 0)
 
-            # Calculate EBITDA (EBIT + D&A)
+            # Calculate EBITDA (EBIT + D&A) — can be positive even when EBIT is negative
             latest_da = metrics.get('latest_depreciation_amortization', 0)
-            ebitda = latest_ebit + latest_da if latest_ebit > 0 else 0
+            ebitda = latest_ebit + latest_da
 
             # Calculate Enterprise Value
             enterprise_value = market_cap + total_debt - cash
@@ -1346,19 +1395,19 @@ class PerformMultiplesValuationTool(BaseTool):
             eps = latest_net_income / shares_outstanding if shares_outstanding > 0 else 0
             revenue_per_share = latest_revenue / shares_outstanding if shares_outstanding > 0 else 0
 
-            # Estimate book value per share (using rough proxy: market_cap / P/B of ~3)
-            # This is a simplification - ideally we'd fetch actual book value
-            book_value_per_share = current_price / 3  # Rough estimate
+            # Book value per share from actual shareholders equity
+            shareholders_equity = metrics.get('shareholders_equity', 0)
+            book_value_per_share = shareholders_equity / shares_outstanding if shareholders_equity > 0 and shares_outstanding > 0 else 0
 
             current_multiples = {
                 'pe': current_price / eps if eps > 0 else None,
                 'ev_ebitda': enterprise_value / ebitda if ebitda > 0 else None,
                 'ps': current_price / revenue_per_share if revenue_per_share > 0 else None,
-                'pb': 3.0  # Placeholder - would need actual book value
+                'pb': current_price / book_value_per_share if book_value_per_share > 0 else None,
             }
 
             # Fetch peer/industry multiples
-            peer_multiples = self._fetch_peer_multiples_via_perplexity(ticker_clean, industry, peers)
+            peer_multiples = self._fetch_peer_multiples_via_search(ticker_clean, industry, peers)
 
             # Calculate implied fair values
             implied_values = {}
@@ -1444,93 +1493,67 @@ class PerformMultiplesValuationTool(BaseTool):
             else:
                 rating = "HOLD (Fairly Valued)"
 
-            # Format output
+            # Format output — clean markdown (no ASCII art)
             output = []
-            output.append("=" * 80)
-            output.append(f"{'MULTIPLES VALUATION REPORT':^80}")
-            output.append("=" * 80)
+            output.append(f"### Multiples Valuation: {company_name} ({ticker_clean})")
             output.append("")
-            output.append(f"Company:          {company_name} ({ticker_clean})")
-            output.append(f"Sector:           {sector}")
-            output.append(f"Industry:         {industry}")
-            output.append(f"Current Price:    ${current_price:.2f}")
-            output.append(f"Market Cap:       ${market_cap/1e9:.2f}B")
-            output.append(f"Enterprise Value: ${enterprise_value/1e9:.2f}B")
+            output.append(f"**Sector:** {sector} | **Industry:** {industry} | "
+                          f"**Current Price:** ${current_price:.2f} | "
+                          f"**Market Cap:** ${market_cap/1e9:.2f}B | "
+                          f"**EV:** ${enterprise_value/1e9:.2f}B")
             output.append("")
 
-            # Investment Summary
-            output.append("-" * 80)
-            output.append("INVESTMENT SUMMARY (Multiples-Based)")
-            output.append("-" * 80)
+            # Investment summary
+            output.append("#### Summary")
             output.append("")
-            output.append(f"  Implied Fair Value:    ${weighted_avg_value:.2f}")
-            output.append(f"  Current Price:         ${current_price:.2f}")
-            output.append(f"  Upside/Downside:       {overall_upside:+.1f}%")
-            output.append(f"  Rating:                {rating}")
+            output.append(f"| Metric | Value |")
+            output.append(f"|--------|-------|")
+            output.append(f"| Implied Fair Value (Weighted Avg) | **${weighted_avg_value:.2f}** |")
+            output.append(f"| Current Price | ${current_price:.2f} |")
+            output.append(f"| Upside / Downside | **{overall_upside:+.1f}%** |")
+            output.append(f"| Multiples-Based Rating | {rating} |")
             output.append("")
 
-            # Multiples Comparison Table
-            output.append("-" * 80)
-            output.append("MULTIPLES ANALYSIS")
-            output.append("-" * 80)
+            # Multiples comparison table (markdown)
+            output.append("#### Multiples Analysis")
             output.append("")
-            output.append(f"{'Multiple':<12} {'Company':>12} {'Peer Avg':>12} {'Implied Val':>14} {'Upside':>10} {'Weight':>8}")
-            output.append("-" * 80)
+            output.append("| Multiple | Company | Peer Avg | Implied Value | Upside | Weight |")
+            output.append("|---------|---------|----------|--------------|--------|--------|")
 
             for multiple_name, data in implied_values.items():
                 if 'error' in data:
-                    output.append(f"{multiple_name:<12} {'N/A':>12} {'N/A':>12} {'N/A':>14} {'N/A':>10} {'0%':>8}")
+                    output.append(f"| {multiple_name} | N/A | N/A | N/A | N/A | 0% |")
                 else:
                     company_mult = f"{data['company_multiple']:.1f}x" if data['company_multiple'] else 'N/A'
                     peer_mult = f"{data['peer_multiple']:.1f}x"
                     implied = f"${data['implied_value']:.2f}"
                     upside = f"{data['upside']:+.1f}%"
                     weight = f"{data['weight']*100:.0f}%"
-                    output.append(f"{multiple_name:<12} {company_mult:>12} {peer_mult:>12} {implied:>14} {upside:>10} {weight:>8}")
+                    output.append(f"| {multiple_name} | {company_mult} | {peer_mult} | {implied} | {upside} | {weight} |")
 
-            output.append("-" * 80)
-            output.append(f"{'WEIGHTED AVG':<12} {'':>12} {'':>12} ${weighted_avg_value:>13.2f} {overall_upside:>+9.1f}% {'100%':>8}")
-            output.append("")
-
-            # Key Financials Used
-            output.append("-" * 80)
-            output.append("KEY FINANCIALS USED")
-            output.append("-" * 80)
-            output.append("")
-            output.append(f"  EPS (TTM):              ${eps:.2f}")
-            output.append(f"  Revenue (TTM):          ${latest_revenue/1e9:.2f}B")
-            output.append(f"  EBITDA (TTM):           ${ebitda/1e9:.2f}B")
-            output.append(f"  Total Debt:             ${total_debt/1e9:.2f}B")
-            output.append(f"  Cash:                   ${cash/1e9:.2f}B")
-            output.append(f"  Shares Outstanding:     {shares_outstanding/1e9:.2f}B")
+            output.append(f"| **Weighted Average** | | | **${weighted_avg_value:.2f}** | **{overall_upside:+.1f}%** | 100% |")
             output.append("")
 
-            # Peer Data Source
-            output.append("-" * 80)
-            output.append("DATA SOURCES")
-            output.append("-" * 80)
+            # Key financials
+            output.append("#### Key Financials Used")
             output.append("")
+            output.append("| Metric | Value |")
+            output.append("|--------|-------|")
+            output.append(f"| EPS (TTM) | ${eps:.2f} |")
+            output.append(f"| Revenue (TTM) | ${latest_revenue/1e9:.2f}B |")
+            output.append(f"| EBITDA (TTM) | ${ebitda/1e9:.2f}B |")
+            output.append(f"| Total Debt | ${total_debt/1e9:.2f}B |")
+            output.append(f"| Cash | ${cash/1e9:.2f}B |")
+            output.append(f"| Shares Outstanding | {shares_outstanding/1e9:.2f}B |")
+            output.append("")
+
+            # Data source
             if peers:
-                output.append(f"  Peer Companies:         {', '.join(peers)}")
-            output.append(f"  Multiples Source:       {peer_multiples.get('source', 'Unknown')}")
+                output.append(f"**Peer Companies:** {', '.join(peers)}")
+            output.append(f"**Multiples Source:** {peer_multiples.get('source', 'Unknown')}")
             output.append("")
-
-            # Methodology Note
-            output.append("-" * 80)
-            output.append("METHODOLOGY NOTE")
-            output.append("-" * 80)
-            output.append("")
-            output.append("  Multiples valuation compares the company's trading metrics to peers/industry.")
-            output.append("  Weights: P/E (30%), EV/EBITDA (35%), P/S (25%), P/B (10%)")
-            output.append("  For best results, combine with DCF analysis (triangulation approach).")
-            output.append("")
-            output.append("  When to prefer MULTIPLES over DCF:")
-            output.append("  - Banks and financials (complex capital structures)")
-            output.append("  - REITs (use P/FFO instead)")
-            output.append("  - Mature, stable businesses with comparable peers")
-            output.append("  - Quick sanity checks on DCF results")
-            output.append("")
-            output.append("=" * 80)
+            output.append("**Methodology:** Weights — P/E (30%), EV/EBITDA (35%), P/S (25%), P/B (10%). "
+                          "Implied values derived by applying peer-median multiples to company financials.")
 
             return "\n".join(output)
 
@@ -1856,7 +1879,7 @@ class FormatDCFReportTool(BaseTool):
         lines.append("  - Past performance does not guarantee future results")
         lines.append("  - This is not investment advice; consult a financial professional")
         lines.append("  ")
-        lines.append("  Data sources: Financial Datasets API, Perplexity Sonar API, FMP API")
+        lines.append("  Data sources: Financial Datasets API, FRED API, Tavily, FMP API")
         lines.append("")
         lines.append("=" * 80)
         lines.append(f"Generated by Finance DCF Agent | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1876,8 +1899,7 @@ def get_dcf_tools():
         GetCompanyContextTool(),           # Rich context first - business model, news, catalysts
         GetStockInfoTool(),
         GetFinancialMetricsTool(),
-        GetMarketParametersTool(),         # Focused Perplexity queries for DCF assumptions
-        CompetitorAnalysisTool(),          # Competitive analysis for market positioning
+        GetMarketParametersTool(),         # FRED + Tavily queries for DCF assumptions
         SearchWebTool(),                   # Keep for qualitative research (industry, news, etc.)
         PerformDCFAnalysisTool(),          # DCF valuation
         PerformMultiplesValuationTool(),   # NEW: Multiples-based valuation (P/E, EV/EBITDA, P/S, P/B)
