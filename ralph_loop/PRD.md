@@ -295,11 +295,11 @@ async def on_tool_end(self, output: str, **kwargs: Any) -> None:
 ```
 
 **Acceptance Criteria:**
-- [ ] `on_tool_end()` uses regex `r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---'` with `re.DOTALL`
-- [ ] Each matched JSON blob is parsed and emitted to queue with `type: "chart_data"` field added
-- [ ] Parse errors are caught silently (logged as warning, not raised)
-- [ ] Existing source extraction and `tool_result` event emission unchanged
-- [ ] Typecheck passes
+- [x] `on_tool_end()` uses regex `r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---'` with `re.DOTALL`
+- [x] Each matched JSON blob is parsed and emitted to queue with `type: "chart_data"` field added
+- [x] Parse errors are caught silently (logged as warning, not raised)
+- [x] Existing source extraction and `tool_result` event emission unchanged
+- [x] Typecheck passes
 
 ---
 
