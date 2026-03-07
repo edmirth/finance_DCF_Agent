@@ -382,11 +382,11 @@ Note: since the node's `prompt` is already an f-string, `{state['ticker']}` is a
 **Do NOT modify** `generate_report` node (it's a template string, not an LLM call).
 
 **Acceptance Criteria:**
-- [ ] `comprehensive_analysis` prompt includes 3 chart placeholder instructions: `quarterly_earnings_`, `earnings_surprises_`, `analyst_estimates_`
-- [ ] `develop_thesis` node is NOT modified (no chart data source exists for peer comparison)
-- [ ] All placeholders use `{{CHART:..._{state['ticker']}}}` pattern (double-brace for f-string literal)
-- [ ] `generate_report` node is NOT modified
-- [ ] Typecheck passes
+- [x] `comprehensive_analysis` prompt includes 3 chart placeholder instructions: `quarterly_earnings_`, `earnings_surprises_`, `analyst_estimates_`
+- [x] `develop_thesis` node is NOT modified (no chart data source exists for peer comparison)
+- [x] All placeholders use `{{CHART:..._{state['ticker']}}}` pattern (double-brace for f-string literal)
+- [x] `generate_report` node is NOT modified
+- [x] Typecheck passes
 
 ---
 
@@ -424,13 +424,13 @@ chart_specs=json.dumps(chart_specs) if chart_specs else None,
 ```
 
 **Acceptance Criteria:**
-- [ ] `collected_charts: dict = {}` initialized in `stream_agent_response()`
-- [ ] `chart_data` events are captured into `collected_charts[event["id"]] = event` AND streamed to frontend via SSE
-- [ ] `chart_data` events are NOT added to `collected_thinking`
-- [ ] `_persist_conversation()` receives `chart_specs` parameter
-- [ ] Assistant `DBMessage` is saved with `chart_specs=json.dumps(chart_specs) if chart_specs else None`
-- [ ] `GET /sessions/{id}` returns `"chart_specs": m.chart_specs` for each message
-- [ ] Typecheck passes
+- [x] `collected_charts: dict = {}` initialized in `stream_agent_response()`
+- [x] `chart_data` events are captured into `collected_charts[event["id"]] = event` AND streamed to frontend via SSE
+- [x] `chart_data` events are NOT added to `collected_thinking`
+- [x] `_persist_conversation()` receives `chart_specs` parameter
+- [x] Assistant `DBMessage` is saved with `chart_specs=json.dumps(chart_specs) if chart_specs else None`
+- [x] `GET /sessions/{id}` returns `"chart_specs": m.chart_specs` for each message
+- [x] Typecheck passes
 
 ---
 

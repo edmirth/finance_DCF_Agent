@@ -55,3 +55,12 @@
   - Best practice: use a regular (non-f-string) for chart instructions and append it to the evaluated f-string. Avoids double-escaping confusion.
   - Verified with `str.format(input='x', agent_scratchpad='', ...)` — confirmed `{{CHART:id}}` appears in output
 ---
+
+## Iteration 6 - US-006: Update earnings_agent.py with hardcoded chart placeholders
+- What was implemented: Added 3 chart placeholder instructions to the `comprehensive_analysis` prompt f-string; `develop_thesis` and `generate_report` nodes left unchanged
+- Files changed: `agents/earnings_agent.py`
+- Learnings for future iterations:
+  - In the earnings LangGraph agent, LLM nodes receive aggregated state, not raw tool outputs — chart placeholders must be hardcoded using `{state['ticker']}` in the f-string
+  - `{{CHART:quarterly_earnings_{state['ticker']}}}` in an f-string renders to `{CHART:quarterly_earnings_AAPL}` (single braces) — this is what the LLM sees as the placeholder pattern to output
+  - Only `comprehensive_analysis` node needed modification (the one covering trends/surprises/estimates data); `develop_thesis` has no chart source
+---

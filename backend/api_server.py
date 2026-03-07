@@ -2,6 +2,7 @@
 FastAPI Backend Server for Financial Analysis Agents
 Provides REST API and Server-Sent Events (SSE) for streaming responses
 """
+from __future__ import annotations
 import os
 import json
 import asyncio
@@ -17,7 +18,6 @@ from dotenv import load_dotenv
 import sys
 import requests
 import re
-from __future__ import annotations
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -389,6 +389,7 @@ async def stream_agent_response(
         # Accumulate response text for follow-up generation
         collected_response = ""
         collected_thinking: list = []
+        collected_charts: dict = {}
 
         # Stream events from queue
         while True:
@@ -407,6 +408,11 @@ async def stream_agent_response(
                     chunk = response[i:i + SSE_CHUNK_SIZE]
                     yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                     await asyncio.sleep(SSE_STREAM_DELAY_SECONDS)
+            elif event["type"] == "chart_data":
+                chart_id = event.get("id")
+                if chart_id:
+                    collected_charts[chart_id] = event
+                yield f"data: {json.dumps(event)}\n\n"
             else:
                 # Collect thinking steps for persistence
                 if event["type"] in ("thought", "tool", "tool_result"):
@@ -439,6 +445,7 @@ async def stream_agent_response(
                         ticker=ticker,
                         thinking_steps=collected_thinking,
                         follow_ups=follow_ups,
+                        chart_specs=collected_charts,
                     )
                 )
             except Exception as e:
@@ -464,6 +471,7 @@ async def _persist_conversation(
     ticker: Optional[str],
     thinking_steps: list,
     follow_ups: list[str],
+    chart_specs: Optional[dict] = None,
 ) -> None:
     """Persist session, messages, and optional analysis to the database."""
     from backend.database import AsyncSessionLocal
@@ -508,6 +516,7 @@ async def _persist_conversation(
                 ticker=ticker,
                 thinking_steps=json.dumps(thinking_steps) if thinking_steps else None,
                 follow_ups=json.dumps(follow_ups) if follow_ups else None,
+                chart_specs=json.dumps(chart_specs) if chart_specs else None,
             )
             db.add(assistant_msg)
             await db.flush()
@@ -864,8 +873,7 @@ async def health_check():
         "financial_datasets": bool(os.getenv("FINANCIAL_DATASETS_API_KEY")),
         "tavily": bool(os.getenv("TAVILY_API_KEY")),
         "fred": bool(os.getenv("FRED_API_KEY")),
-        "massive": bool(os.getenv("MASSIVE_API_KEY")),
-        "alpha_vantage": bool(os.getenv("ALPHA_VANTAGE_API_KEY"))
+        "massive": bool(os.getenv("MASSIVE_API_KEY"))
     }
 
     return {
@@ -1007,6 +1015,7 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
                 "ticker": m.ticker,
                 "thinking_steps": json.loads(m.thinking_steps) if m.thinking_steps else [],
                 "follow_ups": json.loads(m.follow_ups) if m.follow_ups else [],
+                "chart_specs": m.chart_specs,
                 "created_at": m.created_at.isoformat(),
             }
             for m in messages
