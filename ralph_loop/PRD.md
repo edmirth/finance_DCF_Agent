@@ -653,11 +653,11 @@ useEffect(() => {
 ```
 
 **Acceptance Criteria:**
-- [ ] `chart_data` events are handled in the stream callback and update `chartsById` on the assistant message
-- [ ] Session reload useEffect parses `chart_specs` JSON string into `chartsById` on each message
-- [ ] `ChartDataEvent` type imported from `../types`
-- [ ] Existing event handling (thought, tool, content, etc.) unchanged
-- [ ] Typecheck passes
+- [x] `chart_data` events are handled in the stream callback and update `chartsById` on the assistant message
+- [x] Session reload useEffect parses `chart_specs` JSON string into `chartsById` on each message
+- [x] `ChartDataEvent` type imported from `../types`
+- [x] Existing event handling (thought, tool, content, etc.) unchanged
+- [x] Typecheck passes
 
 ---
 
