@@ -284,7 +284,7 @@ TOOL USAGE GUIDELINES
 
 **get_market_parameters** (CRITICAL FOR DCF ASSUMPTIONS):
 - Input: {{"ticker": "AAPL", "company_name": "Apple Inc", "industry": "Consumer Electronics"}}
-- Purpose: Fetch validated DCF assumptions via focused Perplexity queries
+- Purpose: Fetch validated DCF assumptions via FRED API and Tavily search
 - Returns: beta, risk_free_rate, near_term_growth_rate, industry_growth_rate
 - USE THIS instead of search_web for DCF numeric parameters!
 - All values are validated and ready to pass to perform_dcf_analysis
@@ -304,6 +304,7 @@ TOOL USAGE GUIDELINES
 - Recommended: long_term_growth_rate (from get_market_parameters industry_growth_rate)
 - Auto-calculated: ebit_margin, tax_rate, capex_to_revenue, depreciation_to_revenue, nwc_to_revenue, cost_of_debt
 - AUTO-METHODOLOGY: Automatically selects Levered DCF (FCFE) when D/E > 1.0
+- PASS EXPLICITLY to ensure correct WACC: current_price (from get_stock_info), shares_outstanding (from get_financial_metrics, in millions)
 
 **perform_multiples_valuation** (ALTERNATIVE/COMPLEMENT TO DCF):
 - Input: {{"ticker": "AAPL", "peer_tickers": "MSFT,GOOGL,META"}} (peer_tickers optional)
@@ -313,7 +314,7 @@ TOOL USAGE GUIDELINES
   * Multiples BETTER for: Banks/financials, REITs, mature stable companies, cyclical businesses
   * DCF BETTER for: High-growth companies, predictable cash flow companies
   * USE BOTH for triangulation (cross-validation approach)
-- AUTOMATICALLY fetches peer multiples via Perplexity
+- AUTOMATICALLY fetches peer multiples via Tavily search
 - Weighted methodology: P/E (30%), EV/EBITDA (35%), P/S (25%), P/B (10%)
 
 **get_dcf_comparison** (USE AFTER perform_dcf_analysis):
@@ -355,33 +356,40 @@ DO NOT use historical CAGR! The get_market_parameters tool fetches analyst conse
 5. Call get_dcf_comparison for cross-validation
 6. Call format_dcf_report with all results
 
-Example for mega-cap quality stock (values from get_market_parameters):
-```json
-{{"ticker": "AAPL", "near_term_growth_rate": 0.05, "long_term_growth_rate": 0.04, "terminal_growth_rate": 0.025, "beta": 1.10, "risk_free_rate": 0.045, "market_risk_premium": 0.055}}
-```
+Example for mega-cap quality stock (values from get_market_parameters + stock info):
+Action Input: {{"ticker": "AAPL", "near_term_growth_rate": 0.05, "long_term_growth_rate": 0.04, "terminal_growth_rate": 0.025, "beta": 1.10, "risk_free_rate": 0.045, "market_risk_premium": 0.055, "current_price": 227.52, "shares_outstanding": 15441.0}}
 
-Example for high-growth stock (values from get_market_parameters):
-```json
-{{"ticker": "PLTR", "near_term_growth_rate": 0.25, "long_term_growth_rate": 0.12, "terminal_growth_rate": 0.025, "beta": 1.55, "risk_free_rate": 0.045, "market_risk_premium": 0.07}}
-```
+Example for high-growth stock (values from get_market_parameters + stock info):
+Action Input: {{"ticker": "PLTR", "near_term_growth_rate": 0.25, "long_term_growth_rate": 0.12, "terminal_growth_rate": 0.025, "beta": 1.55, "risk_free_rate": 0.045, "market_risk_premium": 0.07, "current_price": 85.40, "shares_outstanding": 2100.0}}
+
+================================================================================
+CHART PLACEHOLDERS
+================================================================================
+
+When a tool output includes [CHART_INSTRUCTION: Place {{{{CHART:id}}}} ...], follow the instruction.
+Place {{{{CHART:chart_id}}}} on its own line at the relevant point in your response.
+Do NOT reproduce ---CHART_DATA--- blocks in your response.
 
 ================================================================================
 OUTPUT FORMAT
 ================================================================================
 
-Use the following format:
+Use the following format EXACTLY. Never deviate from it:
 
 Question: the input question you must answer
 
-Plan: [Create execution plan following 3-phase CoT framework]
-1. DATA-COT: [Data gathering steps]
-2. CONCEPT-COT: [Analysis steps]
-3. THESIS-COT: [Valuation and recommendation steps]
-
 Thought: you should always think about what to do
 Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
+Action Input: the input to the action (JSON inline — NEVER wrap in code fences)
 Observation: the result of the action
+
+CRITICAL FORMAT RULES (violations cause tool calls to fail):
+- Write "Action:" and "Action Input:" exactly as shown — no bold (**), no markdown
+- For tools that take only a ticker: write the ticker directly, e.g.:  Action Input: AAPL
+- For tools that take multiple fields: write inline JSON without code fences, e.g.:
+    Action Input: {{"ticker": "AAPL", "company_name": "Apple Inc", "industry": "Technology"}}
+  NEVER wrap Action Input in ```json ... ``` code fences
+- Call one tool at a time, wait for the real Observation, then decide the next step
 
 Data Reflection: [After each data tool, reflect on data quality and insights]
 
@@ -416,15 +424,16 @@ Thought: {agent_scratchpad}"""
         )
 
         # Create agent executor
-        # max_iterations increased to 15 for Financial CoT with additional tools
+        # max_iterations increased to 20 for Financial CoT with 10 required tool calls
         agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,
             verbose=self.verbose,  # Bug #1 Fix: Use configurable verbose
             handle_parsing_errors=True,
-            max_iterations=15,
+            max_iterations=20,
             max_execution_time=self.max_execution_time,  # Bug #6 Fix: Add timeout
-            callbacks=self.callbacks  # Bug #1 Fix: Pass callbacks to executor
+            callbacks=self.callbacks,  # Bug #1 Fix: Pass callbacks to executor
+            return_intermediate_steps=True,  # Required for recovery fallback in analyze()
         )
 
         return agent_executor
@@ -449,7 +458,7 @@ Thought: {agent_scratchpad}"""
             result = self.agent_executor.invoke(invoke_config)
 
             # Ensure output is a string — Anthropic returns list of content blocks
-            output = result.get("output", "No output generated")
+            output = result.get("output", "")
             if isinstance(output, list):
                 output = "".join(
                     block.get("text", "") if isinstance(block, dict) else str(block)
@@ -457,7 +466,31 @@ Thought: {agent_scratchpad}"""
                 )
             elif not isinstance(output, str):
                 output = str(output)
-            return output
+
+            # ReAct agents return result["output"] = Final Answer text only.
+            # When the agent delegates presentation to format_dcf_report, it writes
+            # a short Final Answer ("The report has been formatted above") while the
+            # full report sits in intermediate_steps as the tool observation.
+            # Recover it here when the output is suspiciously short.
+            if len(output.strip()) < 200:
+                steps = result.get("intermediate_steps", [])
+                # First preference: format_dcf_report observation
+                for action, observation in reversed(steps):
+                    if (
+                        getattr(action, "tool", "") == "format_dcf_report"
+                        and len(str(observation)) > 200
+                    ):
+                        output = str(observation)
+                        logger.debug("Recovered full report from format_dcf_report observation")
+                        break
+                # Fallback: use the longest observation overall (likely the report)
+                if len(output.strip()) < 200 and steps:
+                    longest = max(steps, key=lambda s: len(str(s[1])))
+                    if len(str(longest[1])) > 1000:
+                        output = str(longest[1])
+                        logger.debug("Recovered report from longest intermediate observation")
+
+            return output if output.strip() else "No output generated"
 
         except AuthenticationError as e:
             error_msg = f"Authentication failed. Please check your Anthropic API key. Details: {e}"

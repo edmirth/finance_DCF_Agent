@@ -23,3 +23,35 @@
   - EPS null-safe: `eps = round(net_income / shares, 2) if shares else 0`
   - Arrays from API are newest-first; reverse with `list(reversed(...))` for chronological chart display
 ---
+
+## Iteration 3 - US-003: Add chart blocks to dcf_tools.py and research_assistant_tools.py
+- What was implemented: `GetFinancialMetricsTool._run()` appends `bar_line` chart block; `QuickFinancialDataTool._run()` appends `bar` chart block; added `import json` at top of research_assistant_tools.py
+- Files changed: `tools/dcf_tools.py`, `tools/research_assistant_tools.py`
+- Learnings for future iterations:
+  - `import json` was already at top of dcf_tools.py; research_assistant_tools.py needed it added
+  - f-string escaping: `{{{{CHART:{chart_id}}}}}` → `{{CHART:financial_metrics_AAPL}}` in output (correct for LLM consumption)
+  - Both files tested with `ast.parse()` for syntax + isolated chart logic test to verify output
+---
+
+## Iteration 4 - US-004: Update streaming.py to extract chart_data SSE events
+- What was implemented: Added regex extraction of `---CHART_DATA:id---` blocks in `on_tool_end()`, emitting parsed JSON as `chart_data` SSE events with `type` field added. Parse errors logged as warning, not raised.
+- Files changed: `backend/callbacks/streaming.py`
+- Learnings for future iterations:
+  - Import `json` and `re` inside the method (as `_json`, `_re`) to avoid polluting module namespace
+  - `re.DOTALL` flag required for multi-line JSON block matching
+  - Existing source extraction and `tool_result` emission left completely unchanged — insertion before source extraction block
+---
+
+## Iteration 5 - US-005: Add chart placeholder instructions to agent prompts
+- What was implemented: Added CHART PLACEHOLDERS instructions to 3 agent prompts so LLMs know to output `{{CHART:id}}` placeholders inline
+- Files changed: `agents/finance_qa_agent.py`, `agents/dcf_agent.py`, `agents/equity_analyst_agent.py`
+- Approach for each:
+  - `finance_qa_agent.py`: Appended `_chart_instructions` regular string to `intro` (f-string) before assigning to `system_message`
+  - `dcf_agent.py`: Inserted new CHART PLACEHOLDERS section in the plain template string (before OUTPUT FORMAT)
+  - `equity_analyst_agent.py`: Concatenated a regular string to the f-string using `+ (...)` after the closing `"""`
+- Learnings for future iterations:
+  - Double-brace escaping applies at TWO levels: (1) Python f-string: `{{` → `{`, (2) LangChain PromptTemplate/ChatPromptTemplate `.format()`: `{{` → `{`
+  - To get `{{CHART:id}}` in the LLM's rendered prompt: need `{{{{CHART:id}}}}` in the raw string that goes through ONE level of format (plain string + PromptTemplate, or regular string appended to already-evaluated f-string + ChatPromptTemplate)
+  - Best practice: use a regular (non-f-string) for chart instructions and append it to the evaluated f-string. Avoids double-escaping confusion.
+  - Verified with `str.format(input='x', agent_scratchpad='', ...)` — confirmed `{{CHART:id}}` appears in output
+---

@@ -347,11 +347,11 @@ Do NOT reproduce ---CHART_DATA--- blocks or [CHART_INSTRUCTION] text in your out
 Again, watch for f-string brace escaping if the system_message uses an f-string.
 
 **Acceptance Criteria:**
-- [ ] `finance_qa_agent.py` system prompt includes chart placeholder instructions
-- [ ] `dcf_agent.py` template includes chart placeholder instructions with correct brace escaping
-- [ ] `equity_analyst_agent.py` system_message includes chart placeholder instructions with correct brace escaping
-- [ ] No existing prompt content removed or broken
-- [ ] Typecheck passes
+- [x] `finance_qa_agent.py` system prompt includes chart placeholder instructions
+- [x] `dcf_agent.py` template includes chart placeholder instructions with correct brace escaping
+- [x] `equity_analyst_agent.py` system_message includes chart placeholder instructions with correct brace escaping
+- [x] No existing prompt content removed or broken
+- [x] Typecheck passes
 
 ---
 

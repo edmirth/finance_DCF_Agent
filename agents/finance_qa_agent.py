@@ -1,7 +1,7 @@
 """
-Financial Research Assistant Agent
+Finance Q&A Agent
 
-An interactive, conversational agent for financial research that:
+An interactive, conversational agent for quick financial Q&A that:
 - Answers questions about specific financial data
 - Performs quick calculations
 - Explains recent news and reports
@@ -18,7 +18,7 @@ from typing import Optional, Dict
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.memory import ConversationSummaryBufferMemory
+from langchain.memory import ConversationBufferWindowMemory
 
 from tools.research_assistant_tools import get_research_assistant_tools
 from agents.reasoning_callback import StreamingReasoningCallback
@@ -46,16 +46,23 @@ COMMON_WORDS = {
     'CASH', 'DEBT', 'BETA', 'EBIT', 'CALL', 'PUTS', 'LONG', 'DOWN', 'RISK',
     'HIGH', 'LOSS', 'GAIN', 'SELL', 'HOLD', 'RATE', 'BOND', 'FUND', 'LOAN',
     'COST', 'FEES', 'SAFE', 'GROW', 'FALL', 'RISE', 'DROP', 'MOVE', 'BULL',
-    'BEAR', 'TERM', 'FREE', 'FLOW', 'MARGIN', 'RATIO', 'GROWTH', 'INCOME'
+    'BEAR', 'TERM', 'FREE', 'FLOW', 'MARGIN', 'RATIO', 'GROWTH', 'INCOME',
+    # Fiscal / reporting period abbreviations (common false positives)
+    'FY', 'FQ', 'YTD', 'HTD', 'QTD', 'TTM', 'LTM',
+    # SEC / document references
+    'MD', 'MDA', 'QA', 'ITEM',
+    # Common 2-letter words (Strategy 4 lowercases then uppercases, so these must be here)
+    'IS', 'AN', 'OR', 'IT', 'AT', 'IN', 'ON', 'OF', 'BY', 'AS', 'BE', 'SO',
+    'DO', 'UP', 'TO', 'IF', 'MY', 'NO', 'GO', 'HE', 'ME', 'WE',
 }
 
 
-class FinancialResearchAssistant:
-    """Interactive financial research assistant with memory and proactive suggestions"""
+class FinanceQAAgent:
+    """Interactive Finance Q&A agent with memory and proactive suggestions"""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True):
         """
-        Initialize the Financial Research Assistant
+        Initialize the Finance Q&A Agent
 
         Args:
             api_key: Anthropic API key (or uses ANTHROPIC_API_KEY env var)
@@ -87,15 +94,17 @@ class FinancialResearchAssistant:
         # Removed DCF and Equity Analyst tools to reduce tool overload from 13 → 5 tools
         self.tools = get_research_assistant_tools()
 
-        # Set up memory for conversation context with automatic summarization
-        # This prevents unbounded memory growth and reduces token costs in long conversations
-        # Note: Memory uses base LLM (not bound version)
-        self.memory = ConversationSummaryBufferMemory(
-            llm=self.llm_base,
+        # Set up memory for conversation context.
+        # ConversationBufferWindowMemory keeps the last k turns without any LLM
+        # summarization calls — the only safe option with Anthropic chat models.
+        # ConversationSummaryBufferMemory was removed because its prune() step
+        # calls the Anthropic API with a completion-style PromptTemplate, which
+        # results in messages=[] and a 400 "at least one message is required" error.
+        self.memory = ConversationBufferWindowMemory(
+            k=10,  # Keep last 10 conversation turns
             memory_key="chat_history",
             return_messages=True,
             output_key="output",
-            max_token_limit=2000  # Keep last 2000 tokens + summary of older messages
         )
 
         # Initialize reasoning callback
@@ -107,7 +116,7 @@ class FinancialResearchAssistant:
         except Exception as e:
             logger.error(f"Failed to create agent executor: {e}")
             raise RuntimeError(
-                f"Failed to initialize Research Assistant agent: {str(e)}. "
+                f"Failed to initialize Finance Q&A agent: {str(e)}. "
                 "Please check your Anthropic API key and model availability."
             ) from e
 
@@ -115,7 +124,7 @@ class FinancialResearchAssistant:
         self.current_ticker = None
         self.conversation_count = 0
 
-        logger.info(f"Financial Research Assistant initialized with model: {model}")
+        logger.info(f"Finance Q&A Agent initialized with model: {model}")
         logger.info(f"Available tools: {[tool.name for tool in self.tools]}")
         logger.info(f"Reasoning display: {'enabled' if show_reasoning else 'disabled'}")
 
@@ -128,7 +137,7 @@ class FinancialResearchAssistant:
         current_year = datetime.now().year
 
         # Build the system message in parts to avoid f-string conflicts with template variables
-        intro = f"""You are an expert financial research assistant helping investors with quick data lookups, calculations, and company comparisons.
+        intro = f"""You are a Finance Q&A assistant helping investors with quick data lookups, calculations, and company comparisons.
 
 **YOUR CAPABILITIES:**
 You specialize in:
@@ -137,6 +146,7 @@ You specialize in:
 - Recent news and developments
 - Company-to-company comparisons
 - Date/time period interpretation
+- **SEC EDGAR filings** — you can fetch and analyze 10-K (annual) and 10-Q (quarterly) filings directly from SEC EDGAR using `get_sec_filings` and `analyze_sec_filing`. Use these when users ask about MD&A, risk factors, business overview, forward guidance, or anything from an official SEC filing.
 
 **IMPORTANT SCOPE LIMITATIONS:**
 - You do NOT perform DCF (intrinsic value) analysis - suggest users run the DCF Agent for that
@@ -204,6 +214,22 @@ I have the data needed to answer the user's question.
 
 This externalized thinking helps users understand your reasoning process.
 
+**SEC FILING WORKFLOW:**
+
+When users ask about 10-K, 10-Q, MD&A, risk factors, guidance, or anything from an SEC filing:
+
+<thinking>
+The user wants SEC filing content. I should:
+1. Call analyze_sec_filing with the ticker, filing_type ("10-K" or "10-Q"), and sections ("mda", "risk_factors", "business", "guidance", or "all")
+I have this tool available and should use it immediately.
+</thinking>
+
+[Call analyze_sec_filing tool]
+
+**AVAILABLE SEC TOOLS:**
+- `get_sec_filings` — list recent 10-K/10-Q/8-K filings with dates and links
+- `analyze_sec_filing` — fetch and analyze filing content (MD&A, risk factors, guidance, business overview)
+
 **FINAL ANSWER FORMAT:**
 
 When you have all the data needed, provide a clear, well-structured response:
@@ -222,7 +248,13 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
 
         # Tool calling agent doesn't need explicit JSON format instructions
         # OpenAI handles function calling natively
-        system_message = intro
+        _chart_instructions = (
+            "\n\n**CHART PLACEHOLDERS:**\n"
+            "Some tool outputs include [CHART_INSTRUCTION: Place {{{{CHART:id}}}} ...].\n"
+            "Follow the instruction exactly: place {{{{CHART:chart_id}}}} on its own line at the exact point where the chart is relevant.\n"
+            "Do NOT reproduce ---CHART_DATA--- blocks or [CHART_INSTRUCTION] text in your response. Only use the placeholder."
+        )
+        system_message = intro + _chart_instructions
 
         # Create tool calling prompt template
         # This uses OpenAI's native function calling for reliable tool execution
@@ -374,9 +406,9 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
         }
 
 
-def create_research_assistant(api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> FinancialResearchAssistant:
+def create_finance_qa_agent(api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> FinanceQAAgent:
     """
-    Factory function to create a Financial Research Assistant
+    Factory function to create a Finance Q&A Agent
 
     Args:
         api_key: Anthropic API key (optional, uses env var if not provided)
@@ -384,9 +416,9 @@ def create_research_assistant(api_key: Optional[str] = None, model: str = "claud
         show_reasoning: Whether to display agent reasoning steps (default: True)
 
     Returns:
-        FinancialResearchAssistant instance
+        FinanceQAAgent instance
     """
-    return FinancialResearchAssistant(api_key=api_key, model=model, show_reasoning=show_reasoning)
+    return FinanceQAAgent(api_key=api_key, model=model, show_reasoning=show_reasoning)
 
 
 def interactive_session(model: str = "claude-sonnet-4-5-20250929"):
@@ -397,10 +429,10 @@ def interactive_session(model: str = "claude-sonnet-4-5-20250929"):
         model: LLM model to use
     """
     print("=" * 80)
-    print("FINANCIAL RESEARCH ASSISTANT")
+    print("FINANCE Q&A")
     print("=" * 80)
-    print("\nAn AI-powered research assistant for exploring companies and making")
-    print("informed investment decisions.")
+    print("\nAn AI-powered Q&A assistant for quick financial data, calculations,")
+    print("company comparisons, and news.")
     print("\nFeatures:")
     print("  • Answer questions about financial data")
     print("  • Perform quick calculations (P/E, ROE, CAGR, etc.)")
@@ -417,7 +449,7 @@ def interactive_session(model: str = "claude-sonnet-4-5-20250929"):
     print()
 
     try:
-        assistant = create_research_assistant(model=model)
+        assistant = create_finance_qa_agent(model=model)
 
         while True:
             # Get user input
