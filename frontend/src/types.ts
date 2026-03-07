@@ -50,6 +50,7 @@ export interface Message {
   followUps?: string[]; // Follow-up questions generated after response
   routedAgent?: string; // Which agent auto-routing selected (e.g. 'analyst')
   isAutoRouted?: boolean; // Whether this message was handled via auto-routing
+  chartsById?: Record<string, ChartDataEvent>;
 }
 
 export interface Agent {
@@ -69,6 +70,29 @@ export interface ChatRequest {
   is_followup?: boolean;
 }
 
+export interface ChartSeriesConfig {
+  key: string;
+  label: string;
+  type: 'bar' | 'line';
+  color: string;
+  yAxis?: 'left' | 'right';
+  colorByField?: string;
+  colorIfTrue?: string;
+  colorIfFalse?: string;
+}
+
+export interface ChartDataEvent {
+  type: 'chart_data';
+  id: string;
+  chart_type: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar';
+  ticker?: string;
+  title: string;
+  data: Array<Record<string, string | number | boolean>>;
+  series: ChartSeriesConfig[];
+  y_format?: 'number' | 'currency' | 'currency_b' | 'currency_t' | 'percent';
+  y_right_format?: string;
+}
+
 export interface StreamEvent {
   type:
     | 'start' | 'content' | 'token_delta' | 'end' | 'error' | 'thinking' | 'thought' | 'tool' | 'tool_result'
@@ -82,13 +106,24 @@ export interface StreamEvent {
     // Follow-up questions
     | 'follow_ups'
     // Auto-routing decision
-    | 'routing_decision';
+    | 'routing_decision'
+    // Chart data events
+    | 'chart_data';
   content?: string;
   agent?: string;
   error?: string;
   tool?: string;
   input?: string;
   ticker?: string; // Ticker detected from user query
+
+  // Chart data event fields
+  id?: string;
+  chart_type?: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar';
+  title?: string;
+  data?: Array<Record<string, string | number | boolean>>;
+  series?: ChartSeriesConfig[];
+  y_format?: 'number' | 'currency' | 'currency_b' | 'currency_t' | 'percent';
+  y_right_format?: string;
 
   // Fields for enhanced events
   phase?: string;
@@ -160,6 +195,7 @@ export interface SessionMessage {
   thinking_steps: any[];
   follow_ups: string[];
   created_at: string;
+  chart_specs?: string | null;
 }
 
 export interface SessionDetail extends SessionSummary {

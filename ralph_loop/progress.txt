@@ -65,6 +65,24 @@
   - `_persist_conversation()` uses `Optional[dict] = None` default to stay backwards-compatible
 ---
 
+## Iteration 8 - US-008: Create AgentChart.tsx
+- What was implemented: Created `frontend/src/components/AgentChart.tsx` — ComposedChart with Bar/Line/Cell for beat_miss_bar conditional coloring, FORMAT map for y-axis tick formatting, html2canvas PNG download, dual Y-axis support
+- Files changed: `frontend/src/components/AgentChart.tsx`
+- Learnings for future iterations:
+  - `recharts` and `html2canvas` were already in `package.json` — no npm install needed
+  - `tsc --noEmit` from the `frontend/` directory passes cleanly
+  - `Cell` children inside `<Bar>` handle per-bar conditional coloring for `beat_miss_bar` chart type
+  - Default `yAxisId="left"` must be set on all Bar/Line components when a right axis exists, otherwise Recharts throws a warning
+---
+
+## Iteration 9 - US-009: Update frontend/src/types.ts with chart types
+- What was implemented: Added `ChartSeriesConfig` and `ChartDataEvent` interfaces; added `"chart_data"` to `StreamEvent` type union; added `chartsById?: Record<string, ChartDataEvent>` to `Message`; added `chart_specs?: string | null` to `SessionMessage`; added chart fields (`id`, `chart_type`, `title`, `data`, `series`, `y_format`, `y_right_format`) to `StreamEvent`
+- Files changed: `frontend/src/types.ts`
+- Learnings for future iterations:
+  - `ChartSeriesConfig` must be defined BEFORE `StreamEvent` since `StreamEvent.series` references it
+  - TypeScript typecheck: run `cd frontend && npx tsc --noEmit` — exit 0 means clean
+---
+
 ## Iteration 6 - US-006: Update earnings_agent.py with hardcoded chart placeholders
 - What was implemented: Added 3 chart placeholder instructions to the `comprehensive_analysis` prompt f-string; `develop_thesis` and `generate_report` nodes left unchanged
 - Files changed: `agents/earnings_agent.py`

@@ -592,12 +592,12 @@ chart_specs?: string | null;  // raw JSON string from DB
 ```
 
 **Acceptance Criteria:**
-- [ ] `"chart_data"` added to `StreamEvent` type union
-- [ ] `ChartSeriesConfig` interface exported
-- [ ] `ChartDataEvent` interface exported with all fields
-- [ ] `Message` interface has `chartsById?: Record<string, ChartDataEvent>`
-- [ ] `SessionMessage` interface has `chart_specs?: string | null`
-- [ ] Typecheck passes
+- [x] `"chart_data"` added to `StreamEvent` type union
+- [x] `ChartSeriesConfig` interface exported
+- [x] `ChartDataEvent` interface exported with all fields
+- [x] `Message` interface has `chartsById?: Record<string, ChartDataEvent>`
+- [x] `SessionMessage` interface has `chart_specs?: string | null`
+- [x] Typecheck passes
 
 ---
 
