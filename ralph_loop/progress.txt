@@ -1,0 +1,15 @@
+# Progress Log
+
+## Learnings
+(Patterns discovered during implementation)
+
+---
+
+## Iteration 1 - US-001: Add chart_specs column to DB (schema + migration)
+- What was implemented: Added idempotent `ALTER TABLE messages ADD COLUMN chart_specs TEXT` migration in `init_db()` inside a `try/except Exception: pass` block
+- Files changed: `backend/database.py`
+- Note: `models.py` already had `chart_specs` column and `database.py` already imported `from sqlalchemy import text` — only the migration statement was missing
+- Learnings for future iterations:
+  - Models and imports were already in place from previous work; check both before assuming anything is missing
+  - SQLite `ALTER TABLE ADD COLUMN` raises if column exists; `try/except Exception: pass` makes it idempotent
+---

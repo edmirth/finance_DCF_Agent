@@ -3,6 +3,7 @@ Async SQLAlchemy database engine and session factory.
 Supports SQLite (default) and PostgreSQL (set DATABASE_URL env var).
 """
 import os
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -34,6 +35,11 @@ async def init_db() -> None:
     import backend.models  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent migration: add chart_specs column if it doesn't exist yet
+        try:
+            await conn.execute(text("ALTER TABLE messages ADD COLUMN chart_specs TEXT"))
+        except Exception:
+            pass
 
 
 async def get_db() -> AsyncSession:
