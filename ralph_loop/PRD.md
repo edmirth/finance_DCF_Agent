@@ -717,15 +717,15 @@ components={{
 }}
 
 **Acceptance Criteria:**
-- [ ] `AgentChart` imported from `./AgentChart`
-- [ ] `cleanContent()` strips `[CHART_INSTRUCTION:...]` patterns
-- [ ] `cleanContent()` strips `---CHART_DATA:...---END_CHART_DATA:...---` blocks
-- [ ] `preprocessChartPlaceholders()` converts `{{CHART:id}}` → ` ```chart:id\n``` `
-- [ ] `processedContent` is passed to `ReactMarkdown` instead of raw `displayContent`
-- [ ] ReactMarkdown `code` component renders `<AgentChart />` for `language-chart:*` code blocks
-- [ ] Unknown chart IDs (chartsById missing) return `null` (not an error)
-- [ ] Existing code/inline code rendering still works for non-chart code blocks
-- [ ] Typecheck passes
+- [x] `AgentChart` imported from `./AgentChart`
+- [x] `cleanContent()` strips `[CHART_INSTRUCTION:...]` patterns
+- [x] `cleanContent()` strips `---CHART_DATA:...---END_CHART_DATA:...---` blocks
+- [x] `preprocessChartPlaceholders()` converts `{{CHART:id}}` → ` ```chart:id\n``` `
+- [x] `processedContent` is passed to `ReactMarkdown` instead of raw `displayContent`
+- [x] ReactMarkdown `code` component renders `<AgentChart />` for `language-chart:*` code blocks
+- [x] Unknown chart IDs (chartsById missing) return `null` (not an error)
+- [x] Existing code/inline code rendering still works for non-chart code blocks
+- [x] Typecheck passes
 - [ ] Verify changes work in browser
 
 ---
