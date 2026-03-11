@@ -29,6 +29,20 @@
   - Import test + logic assertions are sufficient for typecheck when mypy not installed
 ---
 
+## Iteration 4 - US-004: Context assembly middleware
+- Created `backend/context_assembly.py` with `assemble_project_context()` async function
+- Returns empty string for non-project sessions (project_id=None)
+- Loads project from SQLite via async select, parses config JSON for tickers
+- Calls chroma_client.async_query() for top-K relevant chunks with try/except guard
+- Builds XML block: <project_context> with nested <thesis>, <memory_doc>, <document_excerpts>, <project_tickers>
+- Token budget enforced: memory_doc ≤3200 chars (~800 tokens), each chunk ≤1600 chars (~400 tokens)
+- Files changed: backend/context_assembly.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - Chroma async_query already has try/except in chroma_client.py but still guard here for resilience
+  - Use `scalar_one_or_none()` for safe single-row fetch with async SQLAlchemy
+  - XML tags chosen over markdown to avoid conflicts with memory_doc markdown content
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`

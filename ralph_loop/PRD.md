@@ -158,15 +158,15 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need a function that assembles project context from memory + ChromaDB + thesis on every query so agents always receive grounded context.
 
 **Acceptance Criteria:**
-- [ ] Create `backend/context_assembly.py`
-- [ ] `assemble_project_context(project_id, query, db, chroma_client, top_k=5) -> str` function
-- [ ] Returns empty string if `project_id` is None (non-project sessions unaffected)
-- [ ] Loads `project.thesis`, `project.memory_doc`, `project.config` from SQLite
-- [ ] Queries ChromaDB for top-K chunks relevant to `query`
-- [ ] Assembles and returns XML-wrapped context block: `<project_context>...</project_context>`
-- [ ] Context block sections: thesis, memory_doc, relevant document excerpts (if any), project tickers
-- [ ] Total context cap: ≤3500 tokens (memory_doc ≤800, chunks ≤5×400 tokens each)
-- [ ] Typecheck passes
+- [x] Create `backend/context_assembly.py`
+- [x] `assemble_project_context(project_id, query, db, chroma_client, top_k=5) -> str` function
+- [x] Returns empty string if `project_id` is None (non-project sessions unaffected)
+- [x] Loads `project.thesis`, `project.memory_doc`, `project.config` from SQLite
+- [x] Queries ChromaDB for top-K chunks relevant to `query`
+- [x] Assembles and returns XML-wrapped context block: `<project_context>...</project_context>`
+- [x] Context block sections: thesis, memory_doc, relevant document excerpts (if any), project tickers
+- [x] Total context cap: ≤3500 tokens (memory_doc ≤800, chunks ≤5×400 tokens each)
+- [x] Typecheck passes
 
 ---
 
