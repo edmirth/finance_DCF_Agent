@@ -408,12 +408,12 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a user, I want to see the current thesis health status prominently in the workspace so I immediately know if the thesis is holding.
 
 **Acceptance Criteria:**
-- [ ] Parse `Thesis Health` section from `memory_doc` and display as a colored badge in the workspace header: STRONG (green), WEAKENING (yellow), CHALLENGED (orange), INVALIDATED (red)
-- [ ] Badge shows status text + rationale on hover/tooltip
-- [ ] Updates whenever memory panel refreshes (every 10s during active session)
-- [ ] If memory_doc is empty or Thesis Health section not yet populated, show neutral "Not assessed" badge
-- [ ] Typecheck passes
-- [ ] Verify changes work in browser
+- [x] Parse `Thesis Health` section from `memory_doc` and display as a colored badge in the workspace header: STRONG (green), WEAKENING (yellow), CHALLENGED (orange), INVALIDATED (red)
+- [x] Badge shows status text + rationale on hover/tooltip
+- [x] Updates whenever memory panel refreshes (every 10s during active session)
+- [x] If memory_doc is empty or Thesis Health section not yet populated, show neutral "Not assessed" badge
+- [x] Typecheck passes
+- [x] Verify changes work in browser
 
 ---
 

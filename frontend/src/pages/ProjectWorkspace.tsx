@@ -25,6 +25,37 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 type PanelTab = 'memory' | 'documents' | 'sessions';
 
+type ThesisStatus = 'STRONG' | 'WEAKENING' | 'CHALLENGED' | 'INVALIDATED' | 'Not assessed';
+
+interface ThesisHealth {
+  status: ThesisStatus;
+  rationale: string;
+}
+
+const THESIS_STATUS_STYLES: Record<ThesisStatus, { bg: string; color: string; border: string }> = {
+  STRONG: { bg: '#D1FAE5', color: '#065F46', border: '#6EE7B7' },
+  WEAKENING: { bg: '#FEF9C3', color: '#854D0E', border: '#FDE047' },
+  CHALLENGED: { bg: '#FFEDD5', color: '#9A3412', border: '#FED7AA' },
+  INVALIDATED: { bg: '#FEE2E2', color: '#991B1B', border: '#FECACA' },
+  'Not assessed': { bg: '#F3F4F6', color: '#6B7280', border: '#E5E7EB' },
+};
+
+function parseThesisHealth(memoryDoc: string): ThesisHealth {
+  const sectionMatch = memoryDoc.match(/## Thesis Health\s*([\s\S]*?)(?=\n## |\n# |$)/);
+  if (!sectionMatch) return { status: 'Not assessed', rationale: '' };
+
+  const section = sectionMatch[1];
+  const statusMatch = section.match(/\*\*Status\*\*:\s*(STRONG|WEAKENING|CHALLENGED|INVALIDATED)/);
+  const rationaleMatch = section.match(/\*\*Rationale\*\*:\s*(.+)/);
+
+  if (!statusMatch) return { status: 'Not assessed', rationale: '' };
+
+  return {
+    status: statusMatch[1] as ThesisStatus,
+    rationale: rationaleMatch ? rationaleMatch[1].trim() : '',
+  };
+}
+
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
@@ -55,6 +86,7 @@ function ProjectWorkspace() {
   // Memory tab state
   const [memoryDoc, setMemoryDoc] = useState<string>('');
   const [memoryUpdatedAt, setMemoryUpdatedAt] = useState<string>('');
+  const [thesisHealth, setThesisHealth] = useState<ThesisHealth>({ status: 'Not assessed', rationale: '' });
   const [editingMemory, setEditingMemory] = useState(false);
   const [editedMemoryDoc, setEditedMemoryDoc] = useState('');
   const [savingMemory, setSavingMemory] = useState(false);
@@ -104,6 +136,11 @@ function ProjectWorkspace() {
     window.addEventListener('sessionSaved', handler);
     return () => window.removeEventListener('sessionSaved', handler);
   }, [projectId]);
+
+  // Update thesis health badge whenever memory doc changes
+  useEffect(() => {
+    setThesisHealth(parseThesisHealth(memoryDoc));
+  }, [memoryDoc]);
 
   // Memory auto-refresh every 10s
   useEffect(() => {
@@ -338,9 +375,33 @@ function ProjectWorkspace() {
                 {project.title}
               </span>
             </div>
-            <h1 style={{ fontFamily: 'Inter, sans-serif', fontSize: '1.125rem', fontWeight: 600, color: '#1A1A1A', margin: 0 }}>
-              {project.title}
-            </h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', flexWrap: 'wrap' }}>
+              <h1 style={{ fontFamily: 'Inter, sans-serif', fontSize: '1.125rem', fontWeight: 600, color: '#1A1A1A', margin: 0 }}>
+                {project.title}
+              </h1>
+              {/* Thesis health badge */}
+              <div
+                title={thesisHealth.rationale || thesisHealth.status}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '0.1875rem 0.625rem',
+                  borderRadius: '999px',
+                  fontSize: '0.6875rem',
+                  fontFamily: 'Inter, sans-serif',
+                  fontWeight: 600,
+                  letterSpacing: '0.03em',
+                  background: THESIS_STATUS_STYLES[thesisHealth.status].bg,
+                  color: THESIS_STATUS_STYLES[thesisHealth.status].color,
+                  border: `1px solid ${THESIS_STATUS_STYLES[thesisHealth.status].border}`,
+                  cursor: thesisHealth.rationale ? 'help' : 'default',
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {thesisHealth.status}
+              </div>
+            </div>
             <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.875rem', color: '#6B7280', marginTop: '0.25rem', maxWidth: '600px' }}>
               {project.thesis.length > 160 ? project.thesis.slice(0, 160) + '…' : project.thesis}
             </p>
