@@ -73,6 +73,23 @@
 
 ---
 
+## Iteration 7 - US-006b: Agent runner nodes
+- Replaced 5 stub run_agent_* nodes in agents/project_agent.py with real implementations
+- Added imports: create_dcf_agent, create_equity_analyst_agent, create_earnings_agent, create_market_agent, create_finance_qa_agent
+- Added helpers: _get_agent_task(), _grounded_task(), _extract_ticker(), _ensure_str()
+- Each node: extracts task from routing_decision, prepends context_block, calls agent, appends to agent_results
+- Earnings node uses _extract_ticker() to pull ticker from task/query (needed since EarningsAgent.analyze(ticker))
+- Research node calls agent.chat() (not analyze()) — matches api_server.py AGENT_FALLBACK_METHODS pattern
+- All nodes handle exceptions: append to errors + append error entry to agent_results, never re-raise
+- _emit_progress() called at start + end of each node (same pattern as earnings_agent.py)
+- Files changed: agents/project_agent.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - EarningsAgent.analyze() takes ticker (str), not query — must extract ticker from task
+  - FinanceQAAgent uses chat() not analyze() — check api_server AGENT_FALLBACK_METHODS for ground truth
+  - Agents are created fresh per node call (no persistent state needed in graph runners)
+  - _ensure_str() needed because ChatAnthropic returns list of content blocks, not plain string
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`

@@ -9,10 +9,17 @@ from __future__ import annotations
 
 import operator
 import logging
+import re
 import time
 from typing import Annotated, Any, Dict, List, TypedDict
 
 from langgraph.graph import StateGraph, START, END
+
+from agents.dcf_agent import create_dcf_agent
+from agents.equity_analyst_agent import create_equity_analyst_agent
+from agents.earnings_agent import create_earnings_agent
+from agents.market_agent import create_market_agent
+from agents.finance_qa_agent import create_finance_qa_agent
 
 logger = logging.getLogger(__name__)
 
@@ -108,33 +115,162 @@ class ProjectAnalysisGraph:
         return node_names
 
     # -----------------------------------------------------------------------
-    # Node 2–6: Agent runner stubs (pass state through unchanged)
+    # Internal helpers
+    # -----------------------------------------------------------------------
+
+    def _get_agent_task(self, state: ProjectAnalysisState, agent_type: str) -> str:
+        """Extract task string for the given agent_type from routing_decision."""
+        routing = state.get("routing_decision") or {}
+        agents = routing.get("agents", [])
+        for agent in agents:
+            at = agent.get("agent_type") if isinstance(agent, dict) else getattr(agent, "agent_type", None)
+            if at == agent_type:
+                task = agent.get("task") if isinstance(agent, dict) else getattr(agent, "task", "")
+                return task or state.get("query", "")
+        return state.get("query", "")
+
+    def _grounded_task(self, state: ProjectAnalysisState, agent_type: str) -> str:
+        """Return context_block + task so agent is grounded in project thesis."""
+        task = self._get_agent_task(state, agent_type)
+        context_block = state.get("context_block", "")
+        if context_block:
+            return f"{context_block}\n\n{task}"
+        return task
+
+    @staticmethod
+    def _extract_ticker(text: str) -> str:
+        """Extract first plausible ticker symbol from a text string."""
+        # $TICKER format
+        m = re.search(r'\$([A-Z]{2,5})\b', text)
+        if m:
+            return m.group(1)
+        # Standalone all-caps 2-5 char word
+        for m in re.finditer(r'\b([A-Z]{2,5})\b', text):
+            t = m.group(1)
+            if t not in {"THE", "AND", "FOR", "ARE", "BUY", "SELL", "HOLD", "DCF", "CEO", "CFO", "IPO", "ETF"}:
+                return t
+        return ""
+
+    @staticmethod
+    def _ensure_str(value: Any) -> str:
+        """Normalize Anthropic content blocks (list) to a plain string."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in value
+            )
+        return str(value) if value else ""
+
+    # -----------------------------------------------------------------------
+    # Node 2–6: Agent runner nodes
     # -----------------------------------------------------------------------
 
     def run_agent_dcf(self, state: ProjectAnalysisState) -> dict:
-        """Stub: DCF agent runner (to be implemented in US-006b)."""
-        logger.info("[project_graph] run_agent_dcf stub — pass-through")
-        return {}
+        """Run DCF agent and append result to agent_results."""
+        agent_type = "dcf"
+        self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running DCF analysis"})
+        task = self._grounded_task(state, agent_type)
+        try:
+            agent = create_dcf_agent()
+            output = self._ensure_str(agent.analyze(task))
+            logger.info(f"[project_graph] run_agent_dcf complete ({len(output)} chars)")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
+            return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}
+        except Exception as exc:
+            msg = f"DCF agent error: {exc}"
+            logger.error(f"[project_graph] {msg}")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "error", "detail": msg})
+            return {
+                "errors": [msg],
+                "agent_results": [{"agent_type": agent_type, "task": task, "output": f"Error: {exc}"}],
+            }
 
     def run_agent_analyst(self, state: ProjectAnalysisState) -> dict:
-        """Stub: Equity analyst agent runner (to be implemented in US-006b)."""
-        logger.info("[project_graph] run_agent_analyst stub — pass-through")
-        return {}
+        """Run equity analyst agent and append result to agent_results."""
+        agent_type = "analyst"
+        self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running equity analyst"})
+        task = self._grounded_task(state, agent_type)
+        try:
+            agent = create_equity_analyst_agent()
+            output = self._ensure_str(agent.analyze(task))
+            logger.info(f"[project_graph] run_agent_analyst complete ({len(output)} chars)")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
+            return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}
+        except Exception as exc:
+            msg = f"Analyst agent error: {exc}"
+            logger.error(f"[project_graph] {msg}")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "error", "detail": msg})
+            return {
+                "errors": [msg],
+                "agent_results": [{"agent_type": agent_type, "task": task, "output": f"Error: {exc}"}],
+            }
 
     def run_agent_earnings(self, state: ProjectAnalysisState) -> dict:
-        """Stub: Earnings agent runner (to be implemented in US-006b)."""
-        logger.info("[project_graph] run_agent_earnings stub — pass-through")
-        return {}
+        """Run earnings agent and append result to agent_results."""
+        agent_type = "earnings"
+        self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running earnings analysis"})
+        task = self._grounded_task(state, agent_type)
+        ticker = self._extract_ticker(task)
+        if not ticker:
+            ticker = self._extract_ticker(state.get("query", ""))
+        try:
+            if not ticker:
+                raise ValueError("No ticker symbol found in task for earnings agent")
+            agent = create_earnings_agent()
+            output = self._ensure_str(agent.analyze(ticker))
+            logger.info(f"[project_graph] run_agent_earnings complete ({len(output)} chars)")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
+            return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}
+        except Exception as exc:
+            msg = f"Earnings agent error: {exc}"
+            logger.error(f"[project_graph] {msg}")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "error", "detail": msg})
+            return {
+                "errors": [msg],
+                "agent_results": [{"agent_type": agent_type, "task": task, "output": f"Error: {exc}"}],
+            }
 
     def run_agent_market(self, state: ProjectAnalysisState) -> dict:
-        """Stub: Market agent runner (to be implemented in US-006b)."""
-        logger.info("[project_graph] run_agent_market stub — pass-through")
-        return {}
+        """Run market agent and append result to agent_results."""
+        agent_type = "market"
+        self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running market analysis"})
+        task = self._grounded_task(state, agent_type)
+        try:
+            agent = create_market_agent()
+            output = self._ensure_str(agent.analyze(task))
+            logger.info(f"[project_graph] run_agent_market complete ({len(output)} chars)")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
+            return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}
+        except Exception as exc:
+            msg = f"Market agent error: {exc}"
+            logger.error(f"[project_graph] {msg}")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "error", "detail": msg})
+            return {
+                "errors": [msg],
+                "agent_results": [{"agent_type": agent_type, "task": task, "output": f"Error: {exc}"}],
+            }
 
     def run_agent_research(self, state: ProjectAnalysisState) -> dict:
-        """Stub: Research agent runner (to be implemented in US-006b)."""
-        logger.info("[project_graph] run_agent_research stub — pass-through")
-        return {}
+        """Run research/Q&A agent and append result to agent_results."""
+        agent_type = "research"
+        self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running research assistant"})
+        task = self._grounded_task(state, agent_type)
+        try:
+            agent = create_finance_qa_agent()
+            output = self._ensure_str(agent.chat(task))
+            logger.info(f"[project_graph] run_agent_research complete ({len(output)} chars)")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
+            return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}
+        except Exception as exc:
+            msg = f"Research agent error: {exc}"
+            logger.error(f"[project_graph] {msg}")
+            self._emit_progress("project_progress", {"node": agent_type, "status": "error", "detail": msg})
+            return {
+                "errors": [msg],
+                "agent_results": [{"agent_type": agent_type, "task": task, "output": f"Error: {exc}"}],
+            }
 
     # -----------------------------------------------------------------------
     # Node 7: sync_point — no-op aggregator, waits for all parallel nodes

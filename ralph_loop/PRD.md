@@ -205,11 +205,11 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need the 5 agent runner nodes implemented in the project graph so parallel agent execution actually runs and returns results.
 
 **Acceptance Criteria:**
-- [ ] In `agents/project_agent.py`, replace the 5 stub `run_agent_*` nodes with real implementations: `run_agent_dcf`, `run_agent_analyst`, `run_agent_earnings`, `run_agent_market`, `run_agent_research`
-- [ ] Each node: finds its `AgentTask` from `state["routing_decision"].agents` by matching `agent_type`, prepends `state["context_block"]` to the task string, invokes the corresponding existing agent (DCFAnalysisAgent, EquityAnalystAgent, EarningsAgent, MarketAnalysisAgent, or research agent), appends `{"agent_type": str, "task": str, "output": str}` to `agent_results`
-- [ ] If the agent raises an exception, the node appends to `errors` and appends a `{"agent_type": ..., "output": "Error: ..."}` entry to `agent_results` — it never re-raises
-- [ ] `_emit_progress(event_type, data)` SSE helper emits a progress event at the start of each node (same pattern as `earnings_agent.py`)
-- [ ] Typecheck passes
+- [x] In `agents/project_agent.py`, replace the 5 stub `run_agent_*` nodes with real implementations: `run_agent_dcf`, `run_agent_analyst`, `run_agent_earnings`, `run_agent_market`, `run_agent_research`
+- [x] Each node: finds its `AgentTask` from `state["routing_decision"].agents` by matching `agent_type`, prepends `state["context_block"]` to the task string, invokes the corresponding existing agent (DCFAnalysisAgent, EquityAnalystAgent, EarningsAgent, MarketAnalysisAgent, or research agent), appends `{"agent_type": str, "task": str, "output": str}` to `agent_results`
+- [x] If the agent raises an exception, the node appends to `errors` and appends a `{"agent_type": ..., "output": "Error: ..."}` entry to `agent_results` — it never re-raises
+- [x] `_emit_progress(event_type, data)` SSE helper emits a progress event at the start of each node (same pattern as `earnings_agent.py`)
+- [x] Typecheck passes
 
 ---
 
