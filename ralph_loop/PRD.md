@@ -126,16 +126,16 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need a ChromaDB client singleton that manages per-project collections so documents can be embedded and queried semantically.
 
 **Acceptance Criteria:**
-- [ ] Add `chromadb>=0.4.0,<0.6.0` to `requirements.txt`
-- [ ] Create `data/chroma_client.py` with `ProjectChromaClient` singleton class
-- [ ] `get_or_create_collection(project_id)` returns named collection `project_{project_id}`
-- [ ] `add_document_chunks(project_id, document_id, filename, raw_text, chunk_size=800, chunk_overlap=100)` splits text, embeds with `DefaultEmbeddingFunction`, upserts, returns list of chroma IDs
-- [ ] `query(project_id, query_text, n_results=5)` returns `List[{"text": str, "source": str, "score": float}]`
-- [ ] `delete_chunks(project_id, chroma_ids)` deletes specific chunk IDs
-- [ ] `delete_collection(project_id)` drops entire collection
-- [ ] All sync Chroma operations wrapped for async compatibility (usable from async FastAPI handlers)
-- [ ] Chroma persists to `./chroma_db/` directory alongside `finance_agent.db`
-- [ ] Typecheck passes
+- [x] Add `chromadb>=0.4.0,<0.6.0` to `requirements.txt`
+- [x] Create `data/chroma_client.py` with `ProjectChromaClient` singleton class
+- [x] `get_or_create_collection(project_id)` returns named collection `project_{project_id}`
+- [x] `add_document_chunks(project_id, document_id, filename, raw_text, chunk_size=800, chunk_overlap=100)` splits text, embeds with `DefaultEmbeddingFunction`, upserts, returns list of chroma IDs
+- [x] `query(project_id, query_text, n_results=5)` returns `List[{"text": str, "source": str, "score": float}]`
+- [x] `delete_chunks(project_id, chroma_ids)` deletes specific chunk IDs
+- [x] `delete_collection(project_id)` drops entire collection
+- [x] All sync Chroma operations wrapped for async compatibility (usable from async FastAPI handlers)
+- [x] Chroma persists to `./chroma_db/` directory alongside `finance_agent.db`
+- [x] Typecheck passes
 
 ---
 

@@ -4,3 +4,15 @@
 (Patterns discovered during implementation — updated by Ralph after each iteration)
 
 ---
+
+## Iteration 1 - US-001: SQLite schema — 3 new ORM tables
+- Both backend/models.py and backend/database.py were already fully implemented
+- All 3 ORM classes (Project, ProjectSession, ProjectDocument) present with correct columns
+- All CREATE TABLE IF NOT EXISTS migrations present in init_db()
+- All indexes present (ix_projects_status, ix_project_sessions_project_id, ix_project_documents_project_id)
+- Files changed: backend/models.py, backend/database.py, ralph_loop/PRD.md
+- Learnings for future iterations:
+  - Models and DB were pre-populated; always read files before implementing
+  - Import test (`python -c "from backend.models import ..."`) is fast typecheck substitute when mypy not installed
+  - Column inspection via `__mapper__.columns` confirms ORM field completeness
+---
