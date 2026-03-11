@@ -56,6 +56,23 @@
   - Validate agent_types against whitelist after JSON parse to prevent invalid routing
 ---
 
+## Iteration 6 - US-006: ProjectAnalysisState TypedDict + graph skeleton
+- Created `agents/project_agent.py` with ProjectAnalysisState TypedDict and compiled LangGraph graph
+- ProjectAnalysisState: 10 fields — query, project_id, context_block, routing_decision, agent_results (operator.add), errors (operator.add), synthesis, memory_patch, final_response, start_time
+- Graph topology: START → route → [5 agent nodes] → sync_point → synthesize → extract_memory_patch → END
+- Conditional edge uses _select_agent_nodes() returning list of node names from routing_decision.agents dict
+- Falls back to ["run_agent_research"] if routing_decision empty or contains no valid agent_types
+- All 5 agent runner nodes + synthesize + extract_memory_patch are stubs (pass-through) per US-006 spec
+- ProjectAnalysisGraph class wraps graph, ProjectAnalysisGraphAdapter provides invoke() interface
+- Files changed: agents/project_agent.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - LangGraph add_conditional_edges with list return works: pass {node: node for node in all_nodes} as path_map
+  - `from __future__ import annotations` needed for `dict | None` union type in Python 3.9
+  - routing_decision agents can be dicts (JSON-serialised) or dataclass objects — check both with isinstance + getattr
+  - Import test + assertion checks sufficient for typecheck without mypy
+
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`

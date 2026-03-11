@@ -191,13 +191,13 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need the LangGraph state definition and a compilable graph skeleton so the project graph has a verified foundation before agent nodes are added.
 
 **Acceptance Criteria:**
-- [ ] Create `agents/project_agent.py`
-- [ ] `ProjectAnalysisState` TypedDict with fields: `query` (str), `project_id` (str), `context_block` (str, pre-populated by API handler), `routing_decision` (dict), `agent_results` (Annotated[List, operator.add]), `synthesis` (str), `memory_patch` (dict), `final_response` (str), `errors` (Annotated[List, operator.add]), `start_time` (float)
-- [ ] Build compiled LangGraph graph with: `route` node (Node 1 — reads `routing_decision.agents`, uses `add_conditional_edges` to return list of selected `run_agent_*` node names), `sync_point` node (no-op aggregator — waits for all parallel agent nodes before proceeding), and stub no-op implementations for all 7 remaining nodes (`run_agent_dcf`, `run_agent_analyst`, `run_agent_earnings`, `run_agent_market`, `run_agent_research`, `synthesize`, `extract_memory_patch`) that pass state through unchanged
-- [ ] Edges: `START → route`, `route --conditional--> {run_agent_*}`, all `run_agent_*` → `sync_point`, `sync_point → synthesize`, `synthesize → extract_memory_patch`, `extract_memory_patch → END`
-- [ ] `graph.compile()` succeeds without error
-- [ ] If `routing_decision` is empty or missing agents list, `route` falls back to `["run_agent_research"]`
-- [ ] Typecheck passes
+- [x] Create `agents/project_agent.py`
+- [x] `ProjectAnalysisState` TypedDict with fields: `query` (str), `project_id` (str), `context_block` (str, pre-populated by API handler), `routing_decision` (dict), `agent_results` (Annotated[List, operator.add]), `synthesis` (str), `memory_patch` (dict), `final_response` (str), `errors` (Annotated[List, operator.add]), `start_time` (float)
+- [x] Build compiled LangGraph graph with: `route` node (Node 1 — reads `routing_decision.agents`, uses `add_conditional_edges` to return list of selected `run_agent_*` node names), `sync_point` node (no-op aggregator — waits for all parallel agent nodes before proceeding), and stub no-op implementations for all 7 remaining nodes (`run_agent_dcf`, `run_agent_analyst`, `run_agent_earnings`, `run_agent_market`, `run_agent_research`, `synthesize`, `extract_memory_patch`) that pass state through unchanged
+- [x] Edges: `START → route`, `route --conditional--> {run_agent_*}`, all `run_agent_*` → `sync_point`, `sync_point → synthesize`, `synthesize → extract_memory_patch`, `extract_memory_patch → END`
+- [x] `graph.compile()` succeeds without error
+- [x] If `routing_decision` is empty or missing agents list, `route` falls back to `["run_agent_research"]`
+- [x] Typecheck passes
 
 ---
 
