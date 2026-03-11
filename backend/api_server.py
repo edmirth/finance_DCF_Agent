@@ -474,6 +474,15 @@ async def stream_agent_response(
 
             await task
 
+            # 5a. Non-blocking memory update background task
+            final_state = state_container.get("state", {})
+            memory_patch = final_state.get("memory_patch") or {}
+            if memory_patch:
+                try:
+                    asyncio.create_task(_run_memory_update(project_id, memory_patch))
+                except Exception as _me:
+                    logger.warning("Failed to schedule memory update for project %s: %s", project_id, _me)
+
             # 5. Persist with project_id linkage
             ticker = extract_ticker_from_query(message)
             if persist and collected_response:
@@ -596,6 +605,22 @@ async def stream_agent_response(
 
 # Agent types that should auto-save to the analyses library
 _ANALYSIS_AGENT_TYPES = {"dcf", "analyst", "earnings", "graph"}
+
+
+async def _run_memory_update(project_id: str, memory_patch: dict) -> None:
+    """Background wrapper: open own DB session and apply memory patch.
+
+    Errors are logged but never raised — memory update failure must not affect
+    the user-visible response.
+    """
+    try:
+        from backend.database import AsyncSessionLocal
+        from data.project_memory import update_project_memory
+        async with AsyncSessionLocal() as db:
+            await update_project_memory(project_id, memory_patch, db)
+        logger.info("Memory update completed for project %s", project_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("_run_memory_update failed for project %s: %s", project_id, exc, exc_info=True)
 
 
 async def _persist_conversation(

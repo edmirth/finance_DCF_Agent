@@ -138,6 +138,35 @@
   - patch_memory_section with mode="append" is the right call for document summaries (each upload adds to section)
 ---
 
+## Iteration 11 - US-009: Inject project context into /chat/stream
+- Added `project_id: Optional[str] = None` to `ChatMessage` model in api_server.py
+- Added `project_id: Optional[str] = None` to `stream_agent_response` signature
+- Added `run_project_graph_with_callbacks` helper: sets _progress_queue/_progress_loop on graph, runs invoke() in executor, puts response+done in queue, captures _state in state_container
+- Project path in stream_agent_response: assembles context (AsyncSessionLocal), routes via route_for_project, runs ProjectAnalysisGraph, drains queue, persists with project_id
+- Modified `_persist_conversation` to accept `project_id`, creates ProjectSession link via sqlite INSERT OR IGNORE (on_conflict_do_nothing)
+- Pre-load ProjectChromaClient in on_startup for warm embedding model
+- Non-project sessions (project_id=None) completely unaffected — project path returns early
+- Files changed: backend/api_server.py, ralph_loop/PRD.md
+- Learnings for future iterations:
+  - sqlite INSERT OR IGNORE via `sqlalchemy.dialects.sqlite.insert(...).on_conflict_do_nothing()` — cleaner than SELECT+INSERT
+  - state_container dict pattern captures sync result from executor without polluting queue protocol
+  - Project path opens its own AsyncSessionLocal for context assembly (not passed from handler)
+  - Import `Project` from backend.models already present in api_server.py — no new import needed
+---
+
+## Iteration 12 - US-010: Memory update background job
+- Added `_run_memory_update(project_id, memory_patch)` async helper to api_server.py
+- Helper opens its own AsyncSessionLocal and calls update_project_memory() from data/project_memory.py
+- Errors logged at ERROR level, never raised — memory failure is transparent to user
+- Added create_task call after `await task` in project path: extracts memory_patch from state_container["state"], guards on non-empty patch, schedules _run_memory_update as background task
+- update_project_memory() was already fully implemented (optimistic locking, trim, all 4 patch keys)
+- Files changed: backend/api_server.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - state_container["state"] holds final LangGraph state including memory_patch — populated by run_project_graph_with_callbacks
+  - Background tasks that need DB access must open their own AsyncSessionLocal (can't reuse the handler's session)
+  - Use `or {}` guard on memory_patch to handle None (graph may not always populate it)
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`

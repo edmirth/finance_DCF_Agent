@@ -276,12 +276,12 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need a non-blocking background task that patches the project memory document after each project response so memory compounds automatically across sessions.
 
 **Acceptance Criteria:**
-- [ ] After `ProjectAnalysisGraph` completes and `memory_patch` is populated, call `asyncio.create_task(update_project_memory(project_id, memory_patch, db))`
-- [ ] `update_project_memory()` applies patch: prepend to `Accumulated Conclusions`, append to `Violated or Revised Assumptions`, replace `Thesis Health`, append to `Open Questions`
-- [ ] After applying the patch, call `trim_memory_doc(memory_doc, max_conclusions=20, max_questions=10)` before writing back to SQLite, so the memory doc never grows unbounded
-- [ ] Optimistic locking: load project row inside the task, apply patch + trim, write back with `updated_at` timestamp check; if the write affects 0 rows (concurrent update detected), re-read the latest memory_doc, re-apply the same patch + trim, and retry once before logging and dropping
-- [ ] Task errors are logged (not raised) so a memory update failure never breaks the user response
-- [ ] Typecheck passes
+- [x] After `ProjectAnalysisGraph` completes and `memory_patch` is populated, call `asyncio.create_task(update_project_memory(project_id, memory_patch, db))`
+- [x] `update_project_memory()` applies patch: prepend to `Accumulated Conclusions`, append to `Violated or Revised Assumptions`, replace `Thesis Health`, append to `Open Questions`
+- [x] After applying the patch, call `trim_memory_doc(memory_doc, max_conclusions=20, max_questions=10)` before writing back to SQLite, so the memory doc never grows unbounded
+- [x] Optimistic locking: load project row inside the task, apply patch + trim, write back with `updated_at` timestamp check; if the write affects 0 rows (concurrent update detected), re-read the latest memory_doc, re-apply the same patch + trim, and retry once before logging and dropping
+- [x] Task errors are logged (not raised) so a memory update failure never breaks the user response
+- [x] Typecheck passes
 
 ---
 
