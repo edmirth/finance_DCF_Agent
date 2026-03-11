@@ -248,14 +248,14 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need a document upload endpoint that extracts text, chunks it, embeds it in ChromaDB, and saves the record so uploaded files are semantically searchable within a project.
 
 **Acceptance Criteria:**
-- [ ] Add `POST /projects/{project_id}/documents` to `api_server.py`
-- [ ] Reuse existing `extract_text_from_file()` function for PDF/DOCX/XLSX/CSV/PPTX extraction
-- [ ] Call `chroma_client.add_document_chunks()` to embed and store chunks
-- [ ] Call `generate_document_summary()` (Haiku LLM call) and append summary to memory_doc `Uploaded Document Summaries` section
-- [ ] Save `ProjectDocument` record to SQLite with chunk_count and chroma_ids
-- [ ] `GET /projects/{project_id}/documents` — list documents (no raw_text in response)
-- [ ] `DELETE /projects/{project_id}/documents/{doc_id}` — delete record + delete chroma chunks
-- [ ] Typecheck passes
+- [x] Add `POST /projects/{project_id}/documents` to `api_server.py`
+- [x] Reuse existing `extract_text_from_file()` function for PDF/DOCX/XLSX/CSV/PPTX extraction
+- [x] Call `chroma_client.add_document_chunks()` to embed and store chunks
+- [x] Call `generate_document_summary()` (Haiku LLM call) and append summary to memory_doc `Uploaded Document Summaries` section
+- [x] Save `ProjectDocument` record to SQLite with chunk_count and chroma_ids
+- [x] `GET /projects/{project_id}/documents` — list documents (no raw_text in response)
+- [x] `DELETE /projects/{project_id}/documents/{doc_id}` — delete record + delete chroma chunks
+- [x] Typecheck passes
 
 ---
 

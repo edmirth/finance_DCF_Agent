@@ -1449,6 +1449,151 @@ async def list_project_sessions(project_id: str, db: AsyncSession = Depends(get_
     return out
 
 
+# =============================================================================
+# REST Endpoints — Project Documents
+# =============================================================================
+
+@app.post("/projects/{project_id}/documents", status_code=201)
+async def upload_project_document(
+    project_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a document to a project: extract text, embed in Chroma, save record."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Allowed: {', '.join(ALLOWED_UPLOAD_EXTENSIONS)}"
+        )
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
+
+    try:
+        raw_text = extract_text_from_file(file.filename, content)
+    except Exception as e:
+        logger.error(f"Failed to extract text from {file.filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to extract text: {str(e)}")
+
+    # Create document record to get an ID
+    import uuid as _uuid_mod
+    doc_id = str(_uuid_mod.uuid4())
+    doc = ProjectDocument(
+        id=doc_id,
+        project_id=project_id,
+        filename=file.filename,
+        file_type=ext,
+        raw_text=raw_text,
+        chunk_count=0,
+        chroma_ids="[]",
+    )
+    db.add(doc)
+    await db.flush()
+
+    # Embed chunks in Chroma
+    chroma_ids: List[str] = []
+    try:
+        from data.chroma_client import ProjectChromaClient
+        chroma = ProjectChromaClient()
+        chroma_ids = await chroma.async_add_document_chunks(project_id, doc_id, file.filename, raw_text)
+        doc.chunk_count = len(chroma_ids)
+        doc.chroma_ids = json.dumps(chroma_ids)
+    except Exception as e:
+        logger.warning(f"Chroma embedding failed for {file.filename}: {e}")
+
+    # Generate summary and patch memory_doc
+    try:
+        from langchain_anthropic import ChatAnthropic
+        from data.project_memory import generate_document_summary, patch_memory_section
+        llm = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=400)
+        summary = generate_document_summary(file.filename, raw_text, llm)
+        p.memory_doc = patch_memory_section(
+            p.memory_doc or "",
+            "Uploaded Document Summaries",
+            f"### {file.filename}\n{summary}",
+            mode="append",
+        )
+        p.updated_at = datetime.utcnow()
+    except Exception as e:
+        logger.warning(f"Document summary generation failed for {file.filename}: {e}")
+
+    await db.commit()
+    await db.refresh(doc)
+
+    return {
+        "id": doc.id,
+        "project_id": doc.project_id,
+        "filename": doc.filename,
+        "file_type": doc.file_type,
+        "chunk_count": doc.chunk_count,
+        "uploaded_at": doc.uploaded_at.isoformat(),
+    }
+
+
+@app.get("/projects/{project_id}/documents")
+async def list_project_documents(project_id: str, db: AsyncSession = Depends(get_db)):
+    """List documents for a project (no raw_text in response)."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    docs_result = await db.execute(
+        select(ProjectDocument).where(ProjectDocument.project_id == project_id)
+        .order_by(ProjectDocument.uploaded_at.desc())
+    )
+    docs = docs_result.scalars().all()
+    return [
+        {
+            "id": d.id,
+            "project_id": d.project_id,
+            "filename": d.filename,
+            "file_type": d.file_type,
+            "chunk_count": d.chunk_count,
+            "uploaded_at": d.uploaded_at.isoformat(),
+        }
+        for d in docs
+    ]
+
+
+@app.delete("/projects/{project_id}/documents/{doc_id}")
+async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a project document and its Chroma chunks."""
+    result = await db.execute(
+        select(ProjectDocument).where(
+            ProjectDocument.id == doc_id,
+            ProjectDocument.project_id == project_id,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete Chroma chunks
+    if doc.chroma_ids:
+        try:
+            from data.chroma_client import ProjectChromaClient
+            chroma = ProjectChromaClient()
+            ids = json.loads(doc.chroma_ids)
+            if ids:
+                await chroma.async_delete_chunks(project_id, ids)
+        except Exception as e:
+            logger.warning(f"Chroma chunk deletion failed for doc {doc_id}: {e}")
+
+    await db.delete(doc)
+    await db.commit()
+    return Response(status_code=204)
+
+
 if __name__ == "__main__":
     import uvicorn
 

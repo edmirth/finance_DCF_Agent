@@ -125,6 +125,19 @@
   - `_project_summary` strips memory_doc to keep list responses lean
 ---
 
+## Iteration 10 - US-008: Document upload endpoint for projects
+- Added 3 endpoints to backend/api_server.py: POST/GET /projects/{project_id}/documents, DELETE /projects/{project_id}/documents/{doc_id}
+- POST: reads file, validates ext/size, calls extract_text_from_file(), creates ProjectDocument with flush to get ID, calls async_add_document_chunks(), generates summary with ChatAnthropic Haiku via generate_document_summary(), patches memory_doc Uploaded Document Summaries section via patch_memory_section(mode="append")
+- GET: returns doc list without raw_text field
+- DELETE: deletes Chroma chunks via async_delete_chunks(), then deletes SQLite record
+- Files changed: backend/api_server.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - Use db.flush() (not commit) after db.add() to get auto-generated ID while still in transaction
+  - ChatAnthropic must be imported locally inside the try block (not at top-level) to avoid startup cost
+  - async_add_document_chunks / async_delete_chunks / async_delete_collection already exist in chroma_client.py
+  - patch_memory_section with mode="append" is the right call for document summaries (each upload adds to section)
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`
