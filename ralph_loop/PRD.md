@@ -393,14 +393,14 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a user, I want to upload research documents (PDFs, 10-Ks, news articles) to a project so they inform all future analyses.
 
 **Acceptance Criteria:**
-- [ ] In Documents tab: drag-drop upload zone accepts PDF, DOCX, XLSX, PPTX, CSV
-- [ ] Reuse existing `FileUploadModal.tsx` patterns or replicate inline (whichever is simpler)
-- [ ] On file drop/select: calls `uploadProjectDocument(projectId, file)` with loading state
-- [ ] On success: document appears in list with chunk_count > 0
-- [ ] On failure: error toast with message
-- [ ] Max file size client-side check: 10MB
-- [ ] Typecheck passes
-- [ ] Verify changes work in browser
+- [x] In Documents tab: drag-drop upload zone accepts PDF, DOCX, XLSX, PPTX, CSV
+- [x] Reuse existing `FileUploadModal.tsx` patterns or replicate inline (whichever is simpler)
+- [x] On file drop/select: calls `uploadProjectDocument(projectId, file)` with loading state
+- [x] On success: document appears in list with chunk_count > 0
+- [x] On failure: error toast with message
+- [x] Max file size client-side check: 10MB
+- [x] Typecheck passes
+- [x] Verify changes work in browser
 
 ---
 
