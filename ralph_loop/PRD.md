@@ -349,13 +349,13 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a user, I want to see all my investment projects and create new ones so I can manage my thesis workspaces.
 
 **Acceptance Criteria:**
-- [ ] Create `frontend/src/pages/ProjectsListPage.tsx`
-- [ ] Fetches and displays active projects as cards: title, thesis excerpt (first 120 chars), session count, document count, last updated date
-- [ ] "New Project" button opens an inline form with: title input, thesis textarea, optional tickers input (comma-separated)
-- [ ] Submit calls `createProject()` and navigates to `/projects/{id}`
-- [ ] Archive button on each card calls `deleteProject()` (soft archive) and removes from list
-- [ ] Empty state: "No projects yet — create your first investment thesis" with New Project CTA
-- [ ] Typecheck passes
+- [x] Create `frontend/src/pages/ProjectsListPage.tsx`
+- [x] Fetches and displays active projects as cards: title, thesis excerpt (first 120 chars), session count, document count, last updated date
+- [x] "New Project" button opens an inline form with: title input, thesis textarea, optional tickers input (comma-separated)
+- [x] Submit calls `createProject()` and navigates to `/projects/{id}`
+- [x] Archive button on each card calls `deleteProject()` (soft archive) and removes from list
+- [x] Empty state: "No projects yet — create your first investment thesis" with New Project CTA
+- [x] Typecheck passes
 - [ ] Verify changes work in browser
 
 ---
