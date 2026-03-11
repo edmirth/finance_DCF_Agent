@@ -5,12 +5,11 @@ Tools for analyzing market conditions, sentiment, and regime
 """
 
 import os
-import requests
 from typing import Optional, List, Dict, Any
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 from data.market_data import MarketDataFetcher
-from shared.retry_utils import retry_with_backoff, RetryConfig
+from shared.tavily_client import get_tavily_client
 
 
 class MarketOverviewInput(BaseModel):
@@ -48,12 +47,20 @@ class GetMarketOverviewTool(BaseTool):
             vix_data = fetcher.get_volatility_index()
             regime = fetcher.calculate_market_regime()
 
+            # Check if any data is placeholder (no real API key)
+            is_placeholder = indices.get("_placeholder", False) or vix_data.get("_placeholder", False)
+
             # Build comprehensive overview
-            result = "📊 **MARKET OVERVIEW**\n\n"
+            result = ""
+            if is_placeholder:
+                result += "**WARNING: FMP_API_KEY not configured. All market data below is STATIC PLACEHOLDER data and does NOT reflect current market conditions. Do not use for investment decisions.**\n\n"
+            result += "📊 **MARKET OVERVIEW**\n\n"
 
             # Indices
             result += "**Major Indices:**\n"
             for symbol, data in indices.items():
+                if symbol.startswith("_"):
+                    continue
                 direction = "🟢" if data["change_pct"] > 0 else "🔴"
                 result += f"  {direction} **{data['name']}**: {data['price']:.2f} ({data['change_pct']:+.2f}%)\n"
 
@@ -72,7 +79,8 @@ class GetMarketOverviewTool(BaseTool):
 
             # Breadth
             nyse_ad = breadth["nyse_advance_decline"]
-            result += f"\n**Market Breadth:**\n"
+            breadth_label = " (estimated)" if breadth.get("_estimated") else ""
+            result += f"\n**Market Breadth{breadth_label}:**\n"
             result += f"  NYSE: {nyse_ad['advancing']} advancing vs {nyse_ad['declining']} declining (ratio: {nyse_ad['ratio']:.2f})\n"
 
             highs_lows = breadth["new_highs_lows"]
@@ -82,7 +90,16 @@ class GetMarketOverviewTool(BaseTool):
             vix = vix_data["VIX"]
             result += f"\n**Volatility:**\n"
             result += f"  VIX: {vix['value']:.2f} ({vix['level']}) - {vix['change_pct']:+.2f}%\n"
-            result += f"  Put/Call Ratio: {vix_data['put_call_ratio']['ratio']:.2f} ({vix_data['put_call_ratio']['interpretation']})\n"
+
+            vvix = vix_data.get("VVIX", {})
+            if vvix.get("value") is not None and not vvix.get("_unavailable"):
+                result += f"  VVIX: {vvix['value']:.2f} (volatility of VIX)\n"
+
+            pcr = vix_data.get("put_call_ratio", {})
+            if pcr.get("_unavailable"):
+                result += "  Put/Call Ratio: Not available\n"
+            else:
+                result += f"  Put/Call Ratio: {pcr['ratio']:.2f} ({pcr['interpretation']})\n"
 
             return result.strip()
 
@@ -128,23 +145,51 @@ class GetSectorRotationTool(BaseTool):
             if timeframe not in valid_timeframes:
                 timeframe = "1M"
 
-            result = f"📈 **SECTOR ROTATION ANALYSIS** ({timeframe})\n\n"
+            is_placeholder = sectors.get("_placeholder", False)
 
-            # Sort sectors by performance
-            sector_list = [(symbol, data["name"], data[timeframe])
-                          for symbol, data in sectors.items()]
+            result = ""
+            if is_placeholder:
+                result += "**WARNING: FMP_API_KEY not configured. Sector data below is STATIC PLACEHOLDER data and does NOT reflect current market conditions.**\n\n"
+            result += f"📈 **SECTOR ROTATION ANALYSIS** ({timeframe})\n\n"
+
+            # Sort sectors by performance (skip metadata keys)
+            # Filter out sectors with None for the requested timeframe
+            sector_list = []
+            unavailable = []
+            for symbol, data in sectors.items():
+                if symbol.startswith("_"):
+                    continue
+                perf = data.get(timeframe)
+                if perf is not None:
+                    sector_list.append((symbol, data["name"], perf))
+                else:
+                    unavailable.append((symbol, data["name"]))
+
+            # If no data for this timeframe, fall back to 1D
+            if not sector_list and unavailable:
+                result += f"**No real data available for {timeframe} timeframe. Showing 1D data instead.**\n\n"
+                timeframe = "1D"
+                unavailable = []
+                for s, d in sectors.items():
+                    if s.startswith("_") or not isinstance(d, dict):
+                        continue
+                    perf_1d = d.get("1D")
+                    if perf_1d is not None:
+                        sector_list.append((s, d.get("name", s), perf_1d))
+                    else:
+                        unavailable.append((s, d.get("name", s)))
+
             sector_list.sort(key=lambda x: x[2], reverse=True)
 
             # Top performers
-            result += "**🔥 Top Performing Sectors:**\n"
+            result += "**Top Performing Sectors:**\n"
             for i, (symbol, name, perf) in enumerate(sector_list[:3], 1):
-                result += f"  {i}. **{name}** ({symbol}): +{perf:.1f}%\n"
+                result += f"  {i}. **{name}** ({symbol}): {perf:+.1f}%\n"
 
             # Bottom performers
-            result += "\n**❄️  Lagging Sectors:**\n"
+            result += "\n**Lagging Sectors:**\n"
             for i, (symbol, name, perf) in enumerate(sector_list[-3:], 1):
-                direction = "+" if perf >= 0 else ""
-                result += f"  {i}. **{name}** ({symbol}): {direction}{perf:.1f}%\n"
+                result += f"  {i}. **{name}** ({symbol}): {perf:+.1f}%\n"
 
             # All sectors
             result += "\n**All Sectors:**\n"
@@ -152,8 +197,12 @@ class GetSectorRotationTool(BaseTool):
                 direction = "🟢" if perf > 0 else "🔴" if perf < 0 else "⚪"
                 result += f"  {direction} {name:20s} {perf:+6.1f}%\n"
 
-            # Rotation analysis
-            result += self._analyze_rotation(sectors, timeframe)
+            if unavailable:
+                result += f"\n_Note: {len(unavailable)} sectors had no data for {timeframe} (aggregate bars unavailable)._\n"
+
+            # Rotation analysis (skip for placeholder data — conclusions would be meaningless)
+            if not is_placeholder:
+                result += self._analyze_rotation(sectors, timeframe)
 
             return result.strip()
 
@@ -164,31 +213,33 @@ class GetSectorRotationTool(BaseTool):
         """Analyze rotation patterns"""
         analysis = "\n**Rotation Analysis:**\n"
 
+        def _safe_avg(tickers: List[str]) -> Optional[float]:
+            vals = [sectors[s][timeframe] for s in tickers if s in sectors and sectors[s].get(timeframe) is not None]
+            return sum(vals) / len(vals) if vals else None
+
         # Defensive vs Cyclical
-        defensive = ["XLP", "XLU", "XLV"]  # Staples, Utilities, Healthcare
-        cyclical = ["XLY", "XLF", "XLE"]    # Discretionary, Financials, Energy
+        defensive_avg = _safe_avg(["XLP", "XLU", "XLV"])
+        cyclical_avg = _safe_avg(["XLY", "XLF", "XLE"])
 
-        defensive_avg = sum(sectors[s][timeframe] for s in defensive) / len(defensive)
-        cyclical_avg = sum(sectors[s][timeframe] for s in cyclical) / len(cyclical)
+        if defensive_avg is not None and cyclical_avg is not None:
+            if cyclical_avg > defensive_avg + 2:
+                analysis += "  - **Risk-On** rotation: Cyclicals outperforming defensives\n"
+            elif defensive_avg > cyclical_avg + 2:
+                analysis += "  - **Risk-Off** rotation: Defensives outperforming cyclicals\n"
+            else:
+                analysis += "  - **Balanced** market: No clear defensive/cyclical preference\n"
 
-        if cyclical_avg > defensive_avg + 2:
-            analysis += "  • **Risk-On** rotation: Cyclicals outperforming defensives\n"
-        elif defensive_avg > cyclical_avg + 2:
-            analysis += "  • **Risk-Off** rotation: Defensives outperforming cyclicals\n"
+            # Growth vs Value
+            growth_avg = _safe_avg(["XLK", "XLC"])
+            value_avg = _safe_avg(["XLF", "XLE"])
+
+            if growth_avg is not None and value_avg is not None:
+                if growth_avg > value_avg + 2:
+                    analysis += "  - **Growth** leadership: Tech and growth sectors leading\n"
+                elif value_avg > growth_avg + 2:
+                    analysis += "  - **Value** rotation: Value sectors outperforming\n"
         else:
-            analysis += "  • **Balanced** market: No clear defensive/cyclical preference\n"
-
-        # Growth vs Value
-        growth = ["XLK", "XLC"]  # Tech, Communication
-        value = ["XLF", "XLE"]    # Financials, Energy
-
-        growth_avg = sum(sectors[s][timeframe] for s in growth) / len(growth)
-        value_avg = sum(sectors[s][timeframe] for s in value) / len(value)
-
-        if growth_avg > value_avg + 2:
-            analysis += "  • **Growth** leadership: Tech and growth sectors leading\n"
-        elif value_avg > growth_avg + 2:
-            analysis += "  • **Value** rotation: Value sectors outperforming\n"
+            analysis += "  _Insufficient data for rotation analysis at this timeframe._\n"
 
         return analysis
 
@@ -208,7 +259,7 @@ class GetMarketNewsTool(BaseTool):
     """Tool for fetching market news"""
 
     name: str = "get_market_news"
-    description: str = """Fetch latest market news and developments using Perplexity AI.
+    description: str = """Fetch latest market news and developments.
 
     Get up-to-date market news, economic developments, and market-moving events.
 
@@ -219,66 +270,26 @@ class GetMarketNewsTool(BaseTool):
     """
     args_schema: type[BaseModel] = MarketNewsInput
 
-    @retry_with_backoff(RetryConfig(
-        max_attempts=3,
-        base_delay=1.5,
-        max_delay=45.0
-    ))
-    def _make_perplexity_request(self, headers: Dict, payload: Dict) -> requests.Response:
-        """Make Perplexity API request with retry logic"""
-        response = requests.post(
-            "https://api.perplexity.ai/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
-        response.raise_for_status()
-        return response
-
     def _run(self, query: Optional[str] = None) -> str:
         """Fetch market news"""
         try:
-            # Use Perplexity API
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found in environment"
+            tavily = get_tavily_client()
 
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-
-            # Build query
             if query:
                 search_query = f"Latest stock market news about {query}"
             else:
-                search_query = "What are the most important stock market and economic news developments today? Include market performance, Fed news, economic data, and major market-moving events."
+                search_query = "Most important stock market and economic news today: market performance, Fed news, economic data, major market-moving events"
 
-            payload = {
-                "model": "sonar",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a financial markets analyst. Provide concise, actionable summaries of market news focusing on what matters for investors."
-                    },
-                    {
-                        "role": "user",
-                        "content": search_query
-                    }
-                ],
-                "max_tokens": 1000,
-                "temperature": 0.2
-            }
+            result = tavily.search_text(
+                query=search_query,
+                topic="news",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+                time_range="day",
+            )
 
-            # Use retry-wrapped request
-            response = self._make_perplexity_request(headers, payload)
-
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                return f"📰 **MARKET NEWS**\n\n{content}"
-            else:
-                return f"Error fetching news: Status {response.status_code}"
+            return f"📰 **MARKET NEWS**\n\n{result}"
 
         except Exception as e:
             return f"Error getting market news: {str(e)}"
@@ -523,7 +534,7 @@ class ScreenStocksTool(BaseTool):
 
                 output += f"| **{ticker}** | {stock_industry} | ${revenue/1e9:.1f}B | ${net_income/1e9:.1f}B | {pe_ratio:.1f} | ${debt/1e9:.1f}B |\n"
 
-            output += f"\n**Next Steps:** Use Research Assistant or Equity Analyst to deep-dive on promising candidates."
+            output += f"\n**Next Steps:** Use Finance Q&A or Equity Analyst to deep-dive on promising candidates."
 
             return output
 

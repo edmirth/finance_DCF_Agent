@@ -69,6 +69,9 @@ class FinancialDataFetcher:
         # Use class-level shared cache instead of instance cache
         self.cache = self._shared_cache
         self.cache_ttl = 900  # 15 minutes TTL for financial data
+        # Track last API error for better diagnostics in tools
+        # Values: None, "not_found", "auth_failure", "api_failure"
+        self.last_error_type: Optional[str] = None
         self._initialized = True
 
     def _get_from_cache(self, cache_key: str) -> Optional[Dict]:
@@ -109,21 +112,34 @@ class FinancialDataFetcher:
 
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """Make API GET request with error handling and retry logic"""
+        self.last_error_type = None  # Reset before each request
         try:
             return self._make_request_with_retry(endpoint, params)
         except requests.exceptions.HTTPError as e:
             if hasattr(e, 'response') and e.response is not None:
-                if e.response.status_code == 401:
+                status = e.response.status_code
+                if status == 401:
                     logger.error(f"Invalid API key for Financial Datasets")
-                elif e.response.status_code == 404:
+                    self.last_error_type = "auth_failure"
+                elif status == 404:
                     logger.error(f"Ticker not found: {params.get('ticker', 'unknown')}")
-                elif e.response.status_code == 402:
+                    self.last_error_type = "not_found"
+                elif status == 402:
                     logger.error(f"This endpoint requires a paid subscription")
+                    self.last_error_type = "auth_failure"
                 else:
-                    logger.error(f"HTTP error {e.response.status_code}: {e}")
+                    logger.error(f"HTTP error {status}: {e}")
+                    self.last_error_type = "api_failure"
+            else:
+                self.last_error_type = "api_failure"
+            return None
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.error(f"Network error making request to {endpoint}: {e}")
+            self.last_error_type = "api_failure"
             return None
         except Exception as e:
             logger.error(f"Error making request to {endpoint}: {e}")
+            self.last_error_type = "api_failure"
             return None
 
     @retry_with_backoff(RetryConfig(
@@ -187,6 +203,30 @@ class FinancialDataFetcher:
                 current_price = market_cap / shares
 
             logger.info(f"Stock info for {ticker}: market_cap={market_cap}, shares={shares}, price={current_price}")
+
+            # Fallback: Financial Datasets often omits real-time market_cap/price.
+            # Use FMP batch-quote (free tier) to fill any zeros.
+            if (not market_cap or not current_price) and self.fmp_api_key:
+                try:
+                    resp = requests.get(
+                        f"{FMP_BASE_URL}/batch-quote",
+                        params={"symbols": ticker, "apikey": self.fmp_api_key},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        quote_list = resp.json()
+                        if isinstance(quote_list, list) and quote_list:
+                            quote = quote_list[0]
+                            if not market_cap:
+                                market_cap = quote.get("marketCap", 0) or 0
+                            if not current_price:
+                                current_price = quote.get("price", 0) or 0
+                            logger.info(
+                                f"FMP batch-quote fallback for {ticker}: "
+                                f"price={current_price}, mktcap={market_cap}"
+                            )
+                except Exception as _e:
+                    logger.warning(f"FMP batch-quote fallback failed for {ticker}: {_e}")
 
             result = {
                 "symbol": ticker,
@@ -315,6 +355,43 @@ class FinancialDataFetcher:
             logger.error(f"Error fetching quarterly financial statements for {ticker}: {e}")
             return {}
 
+    def get_financial_metrics_api(self, ticker: str, period: str = "annual", limit: int = 1) -> List[Dict]:
+        """
+        Fetch pre-computed financial metrics from the /financial-metrics endpoint.
+
+        Returns ratios like margins, growth rates, returns, valuation multiples,
+        and leverage / liquidity metrics — so callers don't have to compute them
+        manually from raw statements.
+
+        Args:
+            ticker: Stock ticker symbol
+            period: "annual", "quarterly", or "ttm"
+            limit: Number of periods to fetch (default 1 = most recent)
+
+        Returns:
+            List of metric dicts (most recent first), empty list on failure
+        """
+        cache_key = f"financial_metrics_api_{ticker.upper()}_{period}_{limit}"
+        cached = self._get_from_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        params = {"ticker": ticker, "period": period, "limit": limit}
+        data = self._make_request("/financial-metrics", params=params)
+
+        if not data:
+            logger.warning(f"No /financial-metrics data for {ticker}")
+            return []
+
+        metrics_list = data.get("financial_metrics", [])
+        if not metrics_list:
+            logger.warning(f"Empty financial_metrics list for {ticker}")
+            return []
+
+        logger.info(f"Fetched {len(metrics_list)} period(s) of /financial-metrics for {ticker}")
+        self._save_to_cache(cache_key, metrics_list)
+        return metrics_list
+
     def get_key_metrics(self, ticker: str) -> Dict:
         """Extract key metrics needed for DCF analysis"""
         # Check cache first
@@ -351,6 +428,7 @@ class FinancialDataFetcher:
                 revenues = []
                 net_incomes = []
                 ebits = []
+                gross_profits = []
                 interest_expenses = []
                 income_taxes = []
                 pretax_incomes = []
@@ -360,6 +438,10 @@ class FinancialDataFetcher:
                     revenue = stmt.get("revenue", 0) or stmt.get("revenues", 0) or 0
                     net_income = stmt.get("net_income", 0) or 0
                     ebit = stmt.get("operating_income", 0) or stmt.get("ebit", 0) or 0
+                    gross_profit = (
+                        stmt.get("gross_profit", 0) or stmt.get("gross_income", 0)
+                        or stmt.get("grossProfit", 0) or 0
+                    )
                     interest = stmt.get("interest_expense", 0) or 0
                     tax = stmt.get("income_tax_expense", 0) or 0
                     pretax = stmt.get("pretax_income", 0) or stmt.get("income_before_tax", 0) or 0
@@ -373,6 +455,7 @@ class FinancialDataFetcher:
                     revenues.append(float(revenue))
                     net_incomes.append(float(net_income))
                     ebits.append(float(ebit))
+                    gross_profits.append(float(gross_profit))
                     interest_expenses.append(float(interest))
                     income_taxes.append(float(tax))
                     pretax_incomes.append(float(pretax))
@@ -384,6 +467,8 @@ class FinancialDataFetcher:
                 metrics["latest_net_income"] = net_incomes[0] if net_incomes else 0
                 metrics["historical_ebit"] = ebits
                 metrics["latest_ebit"] = ebits[0] if ebits else 0
+                metrics["historical_gross_profit"] = gross_profits
+                metrics["latest_gross_profit"] = gross_profits[0] if gross_profits else 0
                 metrics["latest_interest_expense"] = interest_expenses[0] if interest_expenses else 0
                 metrics["historical_years"] = fiscal_years
 
@@ -434,6 +519,8 @@ class FinancialDataFetcher:
                 logger.warning(f"No cash flow statements found for {ticker}")
                 metrics["historical_fcf"] = []
                 metrics["latest_fcf"] = 0
+                metrics["latest_depreciation_amortization"] = 0
+                metrics["latest_capex"] = 0
 
             # Extract debt, cash, and working capital from balance sheet
             if balance_sheets:
@@ -447,6 +534,16 @@ class FinancialDataFetcher:
                 cash = latest_bs.get("cash_and_equivalents", 0) or latest_bs.get("cash_and_cash_equivalents", 0) or 0
                 metrics["cash_and_equivalents"] = float(cash)
 
+                # Shareholders equity (for book value)
+                shareholders_equity = (
+                    latest_bs.get("shareholders_equity", 0)
+                    or latest_bs.get("total_equity", 0)
+                    or latest_bs.get("stockholders_equity", 0)
+                    or latest_bs.get("total_shareholders_equity", 0)
+                    or 0
+                )
+                metrics["shareholders_equity"] = float(shareholders_equity)
+
                 # Current assets and liabilities for working capital
                 current_assets = latest_bs.get("current_assets", 0) or latest_bs.get("total_current_assets", 0) or 0
                 current_liabilities = latest_bs.get("current_liabilities", 0) or latest_bs.get("total_current_liabilities", 0) or 0
@@ -459,6 +556,88 @@ class FinancialDataFetcher:
                 logger.warning(f"No balance sheets found for {ticker}")
                 metrics["total_debt"] = 0
                 metrics["cash_and_equivalents"] = 0
+
+            # ----------------------------------------------------------------
+            # Enrich with pre-computed ratios from /financial-metrics API
+            # ----------------------------------------------------------------
+            api_metrics = self.get_financial_metrics_api(ticker, period="annual", limit=1)
+            if api_metrics:
+                latest = api_metrics[0]
+
+                # Growth rates — prefer API over manual CAGR calculation
+                metrics["revenue_growth_rate"] = latest.get("revenue_growth")
+                metrics["fcf_growth_rate"] = latest.get("free_cash_flow_growth")
+                metrics["earnings_growth_rate"] = latest.get("earnings_growth")
+                metrics["ebitda_growth_rate"] = latest.get("ebitda_growth")
+                metrics["operating_income_growth_rate"] = latest.get("operating_income_growth")
+
+                # Profitability margins
+                metrics["gross_margin"] = latest.get("gross_margin")
+                metrics["operating_margin"] = latest.get("operating_margin")
+                metrics["net_margin"] = latest.get("net_margin")
+                metrics["fcf_margin_api"] = None  # not a standard field on this endpoint
+
+                # Return metrics
+                metrics["return_on_equity"] = latest.get("return_on_equity")
+                metrics["return_on_assets"] = latest.get("return_on_assets")
+                metrics["return_on_invested_capital"] = latest.get("return_on_invested_capital")
+
+                # Valuation multiples
+                metrics["enterprise_value_api"] = latest.get("enterprise_value")
+                metrics["price_to_earnings"] = latest.get("price_to_earnings_ratio")
+                metrics["price_to_book"] = latest.get("price_to_book_ratio")
+                metrics["price_to_sales"] = latest.get("price_to_sales_ratio")
+                metrics["ev_to_ebitda"] = latest.get("enterprise_value_to_ebitda_ratio")
+                metrics["ev_to_revenue"] = latest.get("enterprise_value_to_revenue_ratio")
+                metrics["peg_ratio"] = latest.get("peg_ratio")
+                metrics["fcf_yield"] = latest.get("free_cash_flow_yield")
+
+                # Leverage & liquidity
+                metrics["debt_to_equity_ratio"] = latest.get("debt_to_equity")
+                metrics["debt_to_assets_ratio"] = latest.get("debt_to_assets")
+                metrics["interest_coverage_ratio"] = latest.get("interest_coverage")
+                metrics["current_ratio"] = latest.get("current_ratio")
+                metrics["quick_ratio"] = latest.get("quick_ratio")
+                metrics["cash_ratio"] = latest.get("cash_ratio")
+
+                # Per-share metrics
+                metrics["earnings_per_share"] = latest.get("earnings_per_share")
+                metrics["book_value_per_share"] = latest.get("book_value_per_share")
+                metrics["fcf_per_share"] = latest.get("free_cash_flow_per_share")
+
+                # Efficiency
+                metrics["asset_turnover"] = latest.get("asset_turnover")
+                metrics["working_capital_turnover"] = latest.get("working_capital_turnover")
+
+                logger.info(f"Merged /financial-metrics API ratios for {ticker}")
+            else:
+                logger.warning(f"Could not enrich key metrics with /financial-metrics API for {ticker}")
+
+            # ----------------------------------------------------------------
+            # Standardise margins against our own income-statement EBIT.
+            # The /financial-metrics API may compute operating_margin from a
+            # broader "EBIT" figure that includes other income/expense items
+            # (e.g. NVDA: operating_income=$130B vs ebit=$141B → 60.4% vs 65.6%).
+            # We always prefer operating_income for DCF and force consistency.
+            # ----------------------------------------------------------------
+            rev = metrics.get("latest_revenue", 0) or 0
+            if rev > 0:
+                raw_op_margin = (metrics.get("latest_ebit", 0) or 0) / rev
+                api_op_margin = metrics.get("operating_margin")
+                if api_op_margin is not None and abs(raw_op_margin - api_op_margin) > 0.02:
+                    logger.info(
+                        f"{ticker}: /financial-metrics operating_margin ({api_op_margin:.2%}) "
+                        f"differs from operating_income/revenue ({raw_op_margin:.2%}) by "
+                        f"{abs(raw_op_margin - api_op_margin)*100:.1f} pp — "
+                        f"using income-statement value for DCF consistency"
+                    )
+                metrics["operating_margin"] = raw_op_margin
+
+                raw_net_margin = (metrics.get("latest_net_income", 0) or 0) / rev
+                metrics.setdefault("net_margin", raw_net_margin)
+
+                raw_gross_margin = (metrics.get("latest_gross_profit", 0) or 0) / rev
+                metrics.setdefault("gross_margin", raw_gross_margin)
 
             # Cache the result before returning
             self._save_to_cache(cache_key, metrics)
@@ -612,8 +791,10 @@ class FinancialDataFetcher:
         elif isinstance(data, dict):
             return data
         else:
-            logger.warning(f"Empty response from FMP for {endpoint}")
-            return None
+            # Raise so the retry decorator can retry on transient empty responses
+            raise requests.exceptions.HTTPError(
+                f"Empty response from FMP for {endpoint}"
+            )
 
     def _make_fmp_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """Make FMP API request with error handling and retry logic"""
@@ -635,6 +816,8 @@ class FinancialDataFetcher:
                     logger.error("FMP API endpoint requires higher subscription tier")
                 else:
                     logger.error(f"FMP HTTP error {e.response.status_code}: {e}")
+            else:
+                logger.warning(f"FMP request failed for {endpoint}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error making FMP request to {endpoint}: {e}")

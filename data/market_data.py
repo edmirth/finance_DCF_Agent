@@ -2,7 +2,7 @@
 Market Data Provider
 
 Abstraction layer for market data sources. Designed to be extensible
-for different data providers (massive.com, yfinance, etc.)
+for different data providers (FMP, massive.com, yfinance, etc.)
 """
 
 import os
@@ -11,6 +11,7 @@ import requests
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
+from shared.retry_utils import retry_with_backoff, RetryConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ class MassiveMarketData(MarketDataProvider):
         """Placeholder data for indices when API is unavailable"""
         logger.info("Using placeholder indices data")
         return {
+            "_placeholder": True,
             "SPX": {
                 "name": "S&P 500",
                 "price": 4783.45,
@@ -230,15 +232,15 @@ class MassiveMarketData(MarketDataProvider):
                 # Get 1D performance from todaysChangePerc
                 day_1d = ticker_data.get("todaysChangePerc", 0)
 
-                # For longer timeframes, we'd need aggregate bars - for now use estimates
-                # based on 1D performance (simplified approach)
+                # Only 1D is real from the snapshot; longer timeframes
+                # will be filled by _enhance_with_aggregate_bars if possible
                 sectors[ticker] = {
                     "name": sector_names.get(ticker, ticker),
                     "1D": round(day_1d, 1),
-                    "5D": round(day_1d * 3.5, 1),   # Rough estimate
-                    "1M": round(day_1d * 15, 1),    # Rough estimate
-                    "3M": round(day_1d * 45, 1),    # Rough estimate
-                    "YTD": round(day_1d * 180, 1)   # Rough estimate
+                    "5D": None,
+                    "1M": None,
+                    "3M": None,
+                    "YTD": None,
                 }
 
             # If we got real 1D data, try to enhance with aggregate bars for longer periods
@@ -273,25 +275,25 @@ class MassiveMarketData(MarketDataProvider):
 
             headers = {"Authorization": f"Bearer {self.api_key}"}
 
-            # Fetch aggregate bars for each sector (limit to avoid rate limits)
-            for ticker in list(sectors.keys())[:5]:  # Limit to 5 sectors to avoid too many calls
-                try:
-                    for timeframe, from_date in dates.items():
+            # Fetch aggregate bars for each sector
+            for ticker in sectors.keys():
+                for timeframe, from_date in dates.items():
+                    try:
                         url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}"
                         response = requests.get(url, headers=headers, params={"adjusted": "true"}, timeout=5)
 
                         if response.status_code == 200:
                             agg_data = response.json()
                             if agg_data.get("results") and len(agg_data["results"]) >= 2:
-                                results = agg_data["results"]
-                                first_close = results[0]["c"]
-                                last_close = results[-1]["c"]
+                                agg_results = agg_data["results"]
+                                first_close = agg_results[0]["c"]
+                                last_close = agg_results[-1]["c"]
                                 pct_change = ((last_close - first_close) / first_close) * 100
                                 sectors[ticker][timeframe] = round(pct_change, 1)
 
-                except Exception as e:
-                    logger.debug(f"Could not fetch aggregate bars for {ticker} {timeframe}: {e}")
-                    continue
+                    except Exception as e:
+                        logger.debug(f"Could not fetch aggregate bars for {ticker} {timeframe}: {e}")
+                        continue
 
             return sectors
 
@@ -303,6 +305,7 @@ class MassiveMarketData(MarketDataProvider):
         """Placeholder data for sector performance when API is unavailable"""
         logger.info("Using placeholder sector performance data")
         return {
+            "_placeholder": True,
             "XLK": {"name": "Technology", "1D": 1.5, "5D": 3.2, "1M": 8.5, "3M": 15.2, "YTD": 42.3},
             "XLF": {"name": "Financials", "1D": 0.8, "5D": 2.1, "1M": 5.3, "3M": 10.8, "YTD": 18.5},
             "XLE": {"name": "Energy", "1D": -0.5, "5D": -1.2, "1M": 2.1, "3M": 8.5, "YTD": 15.2},
@@ -336,8 +339,10 @@ class MassiveMarketData(MarketDataProvider):
         indices = self.get_indices()
 
         # Estimate breadth based on how many major indices are positive
-        positive_indices = sum(1 for idx in indices.values() if idx.get("change_pct", 0) > 0)
-        total_indices = len(indices)
+        # Filter out metadata keys (e.g. _placeholder) which are not index dicts
+        index_dicts = {k: v for k, v in indices.items() if isinstance(v, dict)}
+        positive_indices = sum(1 for idx in index_dicts.values() if idx.get("change_pct", 0) > 0)
+        total_indices = len(index_dicts)
 
         # Generate estimated breadth (better correlation with actual market)
         if positive_indices >= 3:  # Strong breadth
@@ -375,7 +380,8 @@ class MassiveMarketData(MarketDataProvider):
                 "nasdaq": round(50 + (adv_ratio - 1) * 18, 1),
                 "russell2000": round(50 + (adv_ratio - 1) * 15, 1)
             },
-            "note": "Breadth metrics are estimated based on index performance. For exact values, use a dedicated market breadth data provider."
+            "_estimated": True,
+            "note": "WARNING: Breadth metrics are ESTIMATED from index performance (not real advance/decline data). Do not rely on these for trading decisions."
         }
 
     def get_volatility_index(self) -> Dict[str, Any]:
@@ -429,12 +435,14 @@ class MassiveMarketData(MarketDataProvider):
                     "percentile_1y": 50  # Would need historical data to calculate
                 },
                 "VVIX": {
-                    "value": 85.34,  # Not available in massive.com - placeholder
-                    "description": "Volatility of VIX"
+                    "value": None,
+                    "description": "Volatility of VIX (not available from this data source)",
+                    "_unavailable": True,
                 },
                 "put_call_ratio": {
-                    "ratio": 0.75,  # Not directly available - estimated
-                    "interpretation": "NEUTRAL"  # < 0.7 bullish, 0.7-1.0 neutral, > 1.0 bearish
+                    "ratio": None,
+                    "interpretation": "UNKNOWN",
+                    "_unavailable": True,
                 }
             }
 
@@ -450,6 +458,7 @@ class MassiveMarketData(MarketDataProvider):
         """Placeholder data for volatility when API is unavailable"""
         logger.info("Using placeholder volatility data")
         return {
+            "_placeholder": True,
             "VIX": {
                 "value": 14.25,
                 "change": -0.85,
@@ -468,6 +477,302 @@ class MassiveMarketData(MarketDataProvider):
         }
 
 
+class FMPMarketData(MarketDataProvider):
+    """
+    Market data provider using FMP (Financial Modeling Prep) API
+
+    Uses batch-quote endpoints for indices and sector ETFs, and
+    historical-price-eod for multi-timeframe sector returns.
+    """
+
+    FMP_BASE = "https://financialmodelingprep.com/stable"
+
+    INDEX_SYMBOLS = {
+        "^GSPC": {"name": "S&P 500", "key": "SPX"},
+        "^IXIC": {"name": "Nasdaq Composite", "key": "CCMP"},
+        "^DJI":  {"name": "Dow Jones", "key": "INDU"},
+        "^RUT":  {"name": "Russell 2000", "key": "RUT"},
+    }
+
+    SECTOR_ETFS = {
+        "XLK": "Technology", "XLF": "Financials", "XLE": "Energy",
+        "XLV": "Healthcare", "XLY": "Consumer Disc.", "XLP": "Consumer Staples",
+        "XLI": "Industrials", "XLB": "Materials", "XLRE": "Real Estate",
+        "XLC": "Communication", "XLU": "Utilities",
+    }
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("FMP_API_KEY")
+        self.use_placeholder = not self.api_key
+
+        if not self.api_key:
+            logger.warning("FMP_API_KEY not found - using placeholder market data")
+        else:
+            logger.info("FMP Market Data provider initialized")
+
+    @retry_with_backoff(RetryConfig(max_attempts=3, base_delay=2.0, max_delay=60.0))
+    def _fmp_get(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Any]:
+        """Shared request helper for FMP API calls"""
+        url = f"{self.FMP_BASE}/{endpoint}"
+        request_params = {"apikey": self.api_key}
+        if params:
+            request_params.update(params)
+
+        response = requests.get(url, params=request_params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    def get_indices(self) -> Dict[str, Any]:
+        """Get major market indices via FMP batch-quote"""
+        if self.use_placeholder:
+            return MassiveMarketData()._get_indices_placeholder()
+
+        try:
+            symbols = ",".join(self.INDEX_SYMBOLS.keys())
+            data = self._fmp_get("batch-quote", {"symbols": symbols})
+
+            if not data:
+                logger.warning("No index data from FMP, falling back to placeholder")
+                return MassiveMarketData()._get_indices_placeholder()
+
+            indices = {}
+            for quote in data:
+                symbol = quote.get("symbol", "")
+                meta = self.INDEX_SYMBOLS.get(symbol)
+                if not meta:
+                    continue
+
+                price = quote.get("price", 0) or 0
+                change = quote.get("change", 0) or 0
+                change_pct = quote.get("changePercentage", 0) or 0
+
+                indices[meta["key"]] = {
+                    "name": meta["name"],
+                    "price": round(price, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "52w_high": quote.get("yearHigh", price) or price,
+                    "52w_low": quote.get("yearLow", price) or price,
+                    "volume": quote.get("volume", 0) or 0,
+                }
+
+            if not indices:
+                logger.warning("Could not parse any index data, falling back to placeholder")
+                return MassiveMarketData()._get_indices_placeholder()
+
+            logger.info(f"Successfully fetched {len(indices)} indices from FMP")
+            return indices
+
+        except Exception as e:
+            logger.error(f"Error fetching indices from FMP: {e}")
+            return MassiveMarketData()._get_indices_placeholder()
+
+    def get_sector_performance(self) -> Dict[str, Any]:
+        """Get sector ETF performance (1D + historical multi-timeframe) from FMP"""
+        if self.use_placeholder:
+            return MassiveMarketData()._get_sector_performance_placeholder()
+
+        try:
+            # Batch quote for all sector ETFs (1D data)
+            symbols = ",".join(self.SECTOR_ETFS.keys())
+            data = self._fmp_get("batch-quote", {"symbols": symbols})
+
+            if not data:
+                logger.warning("No sector data from FMP, falling back to placeholder")
+                return MassiveMarketData()._get_sector_performance_placeholder()
+
+            sectors = {}
+            for quote in data:
+                ticker = quote.get("symbol", "")
+                if ticker not in self.SECTOR_ETFS:
+                    continue
+
+                day_change = quote.get("changePercentage", 0) or 0
+                sectors[ticker] = {
+                    "name": self.SECTOR_ETFS[ticker],
+                    "1D": round(day_change, 1),
+                    "5D": None,
+                    "1M": None,
+                    "3M": None,
+                    "YTD": None,
+                }
+
+            if not sectors:
+                logger.warning("Could not parse sector ETF data, falling back to placeholder")
+                return MassiveMarketData()._get_sector_performance_placeholder()
+
+            # Enhance with historical returns for 5D, 1M, 3M, YTD
+            for ticker in list(sectors.keys()):
+                hist_returns = self._get_historical_returns(ticker)
+                if hist_returns:
+                    for tf, val in hist_returns.items():
+                        if val is not None:
+                            sectors[ticker][tf] = round(val, 1)
+
+            logger.info(f"Successfully fetched {len(sectors)} sector ETFs from FMP")
+            return sectors
+
+        except Exception as e:
+            logger.error(f"Error fetching sector performance from FMP: {e}")
+            return MassiveMarketData()._get_sector_performance_placeholder()
+
+    def _get_historical_returns(self, ticker: str) -> Optional[Dict[str, Optional[float]]]:
+        """
+        Fetch historical EOD data for one ETF and calculate returns
+        for 5D, 1M, 3M, and YTD timeframes.
+        """
+        try:
+            data = self._fmp_get("historical-price-eod/full", {"symbol": ticker})
+
+            if not data or not isinstance(data, list) or len(data) < 2:
+                return None
+
+            # FMP returns newest first; build a date->close lookup
+            # Limit to ~260 trading days (1 year) to avoid processing huge lists
+            prices = data[:260]
+            latest_close = prices[0].get("close")
+            if not latest_close:
+                return None
+
+            today = datetime.now()
+            targets = {
+                "5D": today - timedelta(days=7),
+                "1M": today - timedelta(days=35),
+                "3M": today - timedelta(days=95),
+                "YTD": datetime(today.year, 1, 1),
+            }
+
+            results = {}
+            for tf, target_date in targets.items():
+                target_str = target_date.strftime("%Y-%m-%d")
+                # Find the closest date on or before the target
+                best_close = None
+                for row in prices:
+                    row_date = row.get("date", "")
+                    if row_date <= target_str:
+                        best_close = row.get("close")
+                        break
+
+                if best_close and best_close > 0:
+                    results[tf] = ((latest_close - best_close) / best_close) * 100
+                else:
+                    results[tf] = None
+
+            return results
+
+        except Exception as e:
+            logger.debug(f"Could not fetch historical returns for {ticker}: {e}")
+            return None
+
+    def get_volatility_index(self) -> Dict[str, Any]:
+        """Get VIX data from FMP"""
+        if self.use_placeholder:
+            return MassiveMarketData()._get_volatility_placeholder()
+
+        try:
+            data = self._fmp_get("quote", {"symbol": "^VIX"})
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                logger.warning("No VIX data from FMP, falling back to placeholder")
+                return MassiveMarketData()._get_volatility_placeholder()
+
+            vix_quote = data[0]
+            vix_value = vix_quote.get("price", 0) or 0
+            change = vix_quote.get("change", 0) or 0
+            prev_close = vix_quote.get("previousClose", vix_value) or vix_value
+            change_pct = (change / prev_close * 100) if prev_close else 0
+
+            # Classify VIX level
+            if vix_value < 15:
+                level = "LOW"
+            elif vix_value < 20:
+                level = "NORMAL"
+            elif vix_value < 30:
+                level = "ELEVATED"
+            else:
+                level = "HIGH"
+
+            result = {
+                "VIX": {
+                    "value": round(vix_value, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "level": level,
+                    "percentile_1y": 50,  # Would need historical data to calculate
+                },
+                "VVIX": {
+                    "value": None,
+                    "description": "Volatility of VIX (not available from this data source)",
+                    "_unavailable": True,
+                },
+                "put_call_ratio": {
+                    "ratio": None,
+                    "interpretation": "UNKNOWN",
+                    "_unavailable": True,
+                },
+            }
+
+            logger.info(f"Successfully fetched VIX: {vix_value} ({level})")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching VIX from FMP: {e}")
+            return MassiveMarketData()._get_volatility_placeholder()
+
+    def get_market_breadth(self) -> Dict[str, Any]:
+        """
+        Estimate market breadth based on index performance.
+
+        True breadth data (advance/decline) requires fetching thousands of stocks.
+        We estimate from index data, same approach as MassiveMarketData.
+        """
+        indices = self.get_indices()
+
+        # Estimate breadth based on how many major indices are positive
+        index_dicts = {k: v for k, v in indices.items() if isinstance(v, dict)}
+        positive_indices = sum(1 for idx in index_dicts.values() if idx.get("change_pct", 0) > 0)
+        total_indices = len(index_dicts)
+
+        if positive_indices >= 3:
+            adv_ratio = 2.5
+            hl_ratio = 4.0
+        elif positive_indices >= 2:
+            adv_ratio = 1.8
+            hl_ratio = 2.5
+        else:
+            adv_ratio = 0.9
+            hl_ratio = 0.8
+
+        logger.info(f"Estimating market breadth based on {positive_indices}/{total_indices} positive indices")
+
+        return {
+            "nyse_advance_decline": {
+                "advancing": int(2000 * (adv_ratio / (adv_ratio + 1))),
+                "declining": int(2000 * (1 / (adv_ratio + 1))),
+                "unchanged": 100,
+                "ratio": round(adv_ratio, 2)
+            },
+            "nasdaq_advance_decline": {
+                "advancing": int(3000 * (adv_ratio / (adv_ratio + 1))),
+                "declining": int(3000 * (1 / (adv_ratio + 1))),
+                "unchanged": 150,
+                "ratio": round(adv_ratio * 0.95, 2)
+            },
+            "new_highs_lows": {
+                "new_52w_highs": int(200 * (hl_ratio / (hl_ratio + 1))),
+                "new_52w_lows": int(200 * (1 / (hl_ratio + 1))),
+                "ratio": round(hl_ratio, 2)
+            },
+            "percentage_above_200ma": {
+                "sp500": round(50 + (adv_ratio - 1) * 20, 1),
+                "nasdaq": round(50 + (adv_ratio - 1) * 18, 1),
+                "russell2000": round(50 + (adv_ratio - 1) * 15, 1)
+            },
+            "_estimated": True,
+            "note": "WARNING: Breadth metrics are ESTIMATED from index performance (not real advance/decline data). Do not rely on these for trading decisions."
+        }
+
+
 class MarketDataFetcher:
     """
     Main interface for fetching market data
@@ -479,8 +784,8 @@ class MarketDataFetcher:
         if provider:
             self.provider = provider
         else:
-            # Default to massive.com provider
-            self.provider = MassiveMarketData()
+            # Default to FMP provider (replaces Massive.com which returns 403)
+            self.provider = FMPMarketData()
 
     def get_indices(self) -> Dict[str, Any]:
         """Get market indices"""
@@ -540,8 +845,11 @@ class MarketDataFetcher:
             regime = "NEUTRAL"
             confidence = 50
 
-        # Determine risk mode
-        risk_on = vix["VIX"]["value"] < 20 and vix["put_call_ratio"]["ratio"] < 0.85
+        # Determine risk mode (put/call may be unavailable)
+        pcr = vix.get("put_call_ratio", {})
+        pcr_ratio = pcr.get("ratio")
+        vix_value = vix.get("VIX", {}).get("value", 20)
+        risk_on = vix_value < 20 and (pcr_ratio is None or pcr_ratio < 0.85)
 
         return {
             "regime": regime,

@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, Text, DateTime, ForeignKey
+from sqlalchemy import String, Text, DateTime, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.database import Base
 
@@ -50,6 +50,7 @@ class DBMessage(Base):
     ticker: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     thinking_steps: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
     follow_ups: Mapped[Optional[str]] = mapped_column(Text, nullable=True)       # JSON
+    chart_specs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     session: Mapped["Session"] = relationship("Session", back_populates="messages")

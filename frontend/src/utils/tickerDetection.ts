@@ -10,9 +10,17 @@
 export function extractTicker(content: string): string | null {
   if (!content) return null;
 
+  // Pattern 0 (highest priority): "Company Name (TICK)" — parenthesized tickers
+  // This catches tickers that are also common words like HAS, ALL, LOW, etc.
+  const parenPattern = /\b[A-Z][a-zA-Z&\s.'-]+\(([A-Z]{1,5})\)/;
+  let match = content.match(parenPattern);
+  if (match && match[1].length >= 2) {
+    return match[1].toUpperCase();
+  }
+
   // Pattern 1: Explicit ticker mentions with context
   const contextPattern = /\b([A-Z]{2,5})\b(?:'s)?\s+(?:stock|shares|earnings|analysis|price|chart|valuation|report)/i;
-  let match = content.match(contextPattern);
+  match = content.match(contextPattern);
   if (match && isValidTicker(match[1])) {
     return match[1].toUpperCase();
   }
@@ -62,12 +70,22 @@ function isValidTicker(ticker: string): boolean {
 
   // Common false positives to filter out
   const blacklist = [
-    // Common words
+    // Common words (some are real tickers like HAS, ALL, LOW — but Pattern 0
+    // catches them via parenthesized format "Hasbro (HAS)" before this check)
     'THE', 'AND', 'FOR', 'ARE', 'WAS', 'NOT', 'BUT', 'HAD', 'HAS', 'CAN',
     'ALL', 'NEW', 'OLD', 'TOP', 'BIG', 'KEY', 'LOW', 'HIGH', 'GET', 'SET',
     'PUT', 'OUT', 'OFF', 'ONE', 'TWO', 'OUR', 'ITS', 'MAY', 'NOW', 'WAY',
     'TO', 'AT', 'IN', 'ON', 'OF', 'BY', 'AS', 'IS', 'AN', 'OR', 'IF', 'IT',
     'BE', 'SO', 'DO', 'UP', 'NO', 'WE', 'MY', 'HE', 'GO',
+    'BOTH', 'ALSO', 'WELL', 'VERY', 'MUCH', 'MOST', 'SOME', 'SUCH',
+    'EACH', 'BEEN', 'HAVE', 'FROM', 'WERE', 'THEY', 'WILL', 'WHEN',
+    'WHAT', 'THAT', 'THIS', 'WITH', 'THAN', 'THEM', 'THEN', 'ONLY',
+    'OVER', 'INTO', 'JUST', 'MORE', 'ALSO', 'BACK', 'LONG', 'LAST',
+    'MADE', 'CAME', 'COME', 'TAKE', 'MAKE', 'LIKE', 'EVEN', 'GOOD',
+    'NEXT', 'NEAR', 'SAME', 'SEEN', 'SAID', 'SAYS', 'HERE', 'YEAR',
+    'HALF', 'FULL', 'PLAN', 'PART', 'SHOW', 'SIDE', 'LOOK', 'CALL',
+    'SELL', 'HOLD', 'BEAT', 'MISS', 'RISE', 'FELL', 'GREW', 'LOST',
+    'RATE', 'COST', 'CASH', 'DEBT', 'GAIN', 'LOSS', 'DEAL',
     // Finance terms & metrics (NOT stock tickers)
     'USD', 'EUR', 'GBP', 'JPY', 'CNY', 'CAD', 'AUD',
     'FCF', 'EBITDA', 'EBIT', 'EPS', 'ROE', 'ROI', 'ROIC', 'CAGR',

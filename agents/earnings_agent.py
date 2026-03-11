@@ -350,6 +350,33 @@ class EarningsAgent:
             event = {"type": "earnings_progress", "node": node, "status": status, "detail": detail}
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
+    def _emit_chart_data(self, tool_output: str):
+        """Extract ---CHART_DATA--- blocks from tool output and emit as chart_data SSE events.
+
+        The earnings agent calls tools directly (no LangChain callback chain), so
+        chart_data events must be extracted and emitted here rather than relying on
+        StreamingCallbackHandler.on_tool_end.
+        """
+        import re as _re
+        import json as _json
+
+        queue = self._progress_queue
+        loop = self._progress_loop
+        if queue is None or loop is None or not isinstance(tool_output, str):
+            return
+
+        _CHART_RE = _re.compile(
+            r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---',
+            _re.DOTALL,
+        )
+        for match in _CHART_RE.finditer(tool_output):
+            try:
+                chart_event = _json.loads(match.group(2).strip())
+                chart_event["type"] = "chart_data"
+                loop.call_soon_threadsafe(queue.put_nowait, chart_event)
+            except Exception as e:
+                logger.warning(f"chart_data parse error in earnings agent: {e}")
+
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(EarningsAnalysisState)
 
@@ -436,6 +463,7 @@ class EarningsAgent:
                 ticker=state["ticker"],
                 quarters=state["quarters_back"],
             )
+            self._emit_chart_data(earnings_history)
             logger.info(f"  → Earnings history fetched")
             self._emit_progress("fetch_earnings_history", "completed", "Earnings history loaded")
             return {"earnings_history": earnings_history}
@@ -455,6 +483,7 @@ class EarningsAgent:
             from tools.earnings_tools import GetAnalystEstimatesTool
             tool = GetAnalystEstimatesTool()
             analyst_estimates = tool._run(ticker=state["ticker"])
+            self._emit_chart_data(analyst_estimates)
             logger.info(f"  → Analyst estimates fetched")
             self._emit_progress("fetch_analyst_estimates", "completed", "Analyst estimates loaded")
             return {"analyst_estimates": analyst_estimates}
@@ -484,6 +513,7 @@ class EarningsAgent:
                 ticker=state["ticker"],
                 quarters=state["quarters_back"],
             )
+            self._emit_chart_data(result["earnings_surprises"])
             logger.info(f"  → Earnings surprises fetched")
 
             self._emit_progress("fetch_guidance_and_news", "sub_progress", "Reading earnings call transcripts")

@@ -244,6 +244,9 @@ class QuickFinancialDataTool(BaseTool):
             try:
                 _hist_years = list(reversed(key_metrics.get('historical_years', [])))
                 _hist_rev = list(reversed(key_metrics.get('historical_revenue', [])))
+                _hist_gp = list(reversed(key_metrics.get('historical_gross_profit', [])))
+
+                # Chart 1: Revenue history (bar)
                 _chart_data = [
                     {"period": str(_hist_years[i]), "revenue_b": round(_hist_rev[i] / 1e9, 2)}
                     for i in range(min(len(_hist_years), len(_hist_rev)))
@@ -262,6 +265,34 @@ class QuickFinancialDataTool(BaseTool):
                         "y_format": "currency_b"
                     })
                     result += f"\n---CHART_DATA:{chart_id}---\n{chart_json}\n---END_CHART_DATA:{chart_id}---\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss revenue history. Do NOT reproduce the CHART_DATA block.]"
+
+                # Chart 2: Revenue vs Cost of Revenue (grouped bar + gross profit line)
+                _cost_data = [
+                    {
+                        "period": str(_hist_years[i]),
+                        "revenue_b": round(_hist_rev[i] / 1e9, 2),
+                        "cost_b": round((_hist_rev[i] - _hist_gp[i]) / 1e9, 2),
+                        "gross_profit_b": round(_hist_gp[i] / 1e9, 2),
+                    }
+                    for i in range(min(len(_hist_years), len(_hist_rev), len(_hist_gp)))
+                    if _hist_rev[i] and _hist_gp[i]
+                ]
+                if _cost_data:
+                    cost_chart_id = f"revenue_vs_cost_{ticker}"
+                    cost_chart_json = json.dumps({
+                        "id": cost_chart_id,
+                        "chart_type": "bar_line",
+                        "title": f"{ticker} Revenue vs Cost of Revenue ($B)",
+                        "data": _cost_data,
+                        "series": [
+                            {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB", "yAxis": "left"},
+                            {"key": "cost_b", "label": "Cost of Revenue ($B)", "type": "bar", "color": "#EF4444", "yAxis": "left"},
+                            {"key": "gross_profit_b", "label": "Gross Profit ($B)", "type": "line", "color": "#10B981", "yAxis": "right"},
+                        ],
+                        "y_format": "currency_b",
+                        "y_right_format": "currency_b"
+                    })
+                    result += f"\n---CHART_DATA:{cost_chart_id}---\n{cost_chart_json}\n---END_CHART_DATA:{cost_chart_id}---\n[CHART_INSTRUCTION: Place {{{{CHART:{cost_chart_id}}}}} on its own line where you compare revenue vs cost or discuss gross profit. Do NOT reproduce the CHART_DATA block.]"
             except Exception:
                 pass
 
@@ -609,7 +640,8 @@ class CompanyComparisonTool(BaseTool):
 
     name: str = "compare_companies"
     description: str = """Compares key metrics between two companies side by side.
-    Use this when the user wants to compare companies or asks "vs" questions.
+    Use this when the user wants to compare two companies or asks "vs" questions.
+    Always generates a multi-line revenue history chart automatically.
 
     Comparison categories:
     - valuation: P/E, P/S, market cap
@@ -821,6 +853,40 @@ class CompanyComparisonTool(BaseTool):
 
                 result += "\n"
 
+            # Emit historical revenue comparison chart
+            try:
+                _hr1 = metrics1.get('historical_revenue', [])
+                _hr2 = metrics2.get('historical_revenue', [])
+                _hy1 = metrics1.get('historical_years', [])
+                _hy2 = metrics2.get('historical_years', [])
+                _rev_map1 = {y: r for y, r in zip(_hy1, _hr1) if r}
+                _rev_map2 = {y: r for y, r in zip(_hy2, _hr2) if r}
+                _common_years = sorted(y for y in (set(_rev_map1) & set(_rev_map2)))
+                _k1 = ticker1.lower()
+                _k2 = ticker2.lower()
+                _chart_rows = [
+                    {"period": y, _k1: round(_rev_map1[y] / 1e9, 2), _k2: round(_rev_map2[y] / 1e9, 2)}
+                    for y in _common_years
+                ]
+                if len(_chart_rows) >= 2:
+                    _cid = f"revenue_compare_{ticker1}_{ticker2}"
+                    _chart = {
+                        "id": _cid,
+                        "chart_type": "multi_line",
+                        "title": f"{name1} vs {name2} — Revenue History ($B)",
+                        "data": _chart_rows,
+                        "series": [
+                            {"key": _k1, "label": f"{name1} ($B)", "type": "line", "color": "#2563EB", "yAxis": "left"},
+                            {"key": _k2, "label": f"{name2} ($B)", "type": "line", "color": "#10B981", "yAxis": "left"},
+                        ],
+                        "x_key": "period",
+                        "y_format": "currency_b",
+                    }
+                    result += f"\n---CHART_DATA:{_cid}---\n{json.dumps(_chart)}\n---END_CHART_DATA:{_cid}---"
+                    result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{_cid}}}}} on its own line where you discuss revenue history or the overall comparison. Do NOT reproduce the CHART_DATA block.]"
+            except Exception:
+                pass
+
             return result.strip()
 
         except Exception as e:
@@ -1004,6 +1070,278 @@ class DateContextTool(BaseTool):
         return await asyncio.to_thread(self._run, query)
 
 
+class RevenueSegmentInput(BaseModel):
+    ticker: str = Field(description="Stock ticker symbol (e.g., 'AAPL')")
+
+
+class GetRevenueSegmentsTool(BaseTool):
+    """Fetches revenue breakdown by product/geographic segment and emits a pie chart."""
+    name: str = "get_revenue_segments"
+    description: str = """Get a company's revenue breakdown by product or geographic segment.
+    Use this when the user asks about revenue mix, segment breakdown, product revenue, geographic revenue, or wants a pie chart of revenue.
+    Returns a pie chart showing each segment's contribution to total revenue.
+    Examples: 'Show me Apple revenue by product', 'What is Amazon's revenue breakdown?', 'pie chart of MSFT segments'
+    """
+    args_schema: type[BaseModel] = RevenueSegmentInput
+
+    def _run(self, ticker: str) -> str:
+        import re
+        ticker = ticker.strip().upper()
+
+        fetcher = FinancialDataFetcher()
+        stock_info = fetcher.get_stock_info(ticker)
+        company_name = stock_info.get('company_name', ticker) if stock_info else ticker
+
+        tavily = get_tavily_client()
+        search_query = f"{company_name} {ticker} revenue breakdown by segment product line fiscal year billions"
+        raw = tavily.search_text(
+            query=search_query,
+            topic="finance",
+            search_depth="advanced",
+            max_results=5,
+            include_answer="advanced",
+        )
+
+        result = f"**{company_name} ({ticker}) Revenue by Segment**\n\n{raw}\n"
+
+        # Parse dollar amounts: "Services $96.2B", "iPhone: $200.6 billion", "Services revenue of $85B"
+        dollar_pattern = re.compile(
+            r'([A-Za-z][A-Za-z &/\-]{1,30}?)\s*(?:revenue|sales|segment)?\s*[:\-–]?\s*\$\s*([\d,]+(?:\.\d+)?)\s*(billion|million|B|M|bn|m)\b',
+            re.IGNORECASE,
+        )
+        segments: list[dict] = []
+        seen: set[str] = set()
+        for m in dollar_pattern.finditer(raw):
+            label = m.group(1).strip().rstrip(':–-').strip()
+            value = float(m.group(2).replace(',', ''))
+            unit = m.group(3).lower()
+            if unit in ('million', 'm'):
+                value /= 1000  # convert to billions
+            key = label.lower()
+            if key not in seen and value > 0:
+                seen.add(key)
+                segments.append({"label": label, "value": round(value, 1)})
+
+        # Fallback: parse percentages if no dollar amounts found
+        if len(segments) < 2:
+            pct_pattern = re.compile(
+                r'([A-Za-z][A-Za-z &/\-]{1,30}?)\s*[:\-–]\s*([\d]+(?:\.\d+)?)\s*%',
+                re.IGNORECASE,
+            )
+            seen.clear()
+            segments = []
+            for m in pct_pattern.finditer(raw):
+                label = m.group(1).strip().rstrip(':–-').strip()
+                value = float(m.group(2))
+                key = label.lower()
+                if key not in seen and 0 < value < 100:
+                    seen.add(key)
+                    segments.append({"label": label, "value": round(value, 1)})
+
+        # Only emit a pie chart if we have at least 2 meaningful segments
+        if len(segments) >= 2:
+            # Sort largest first, cap at 8 segments for readability
+            segments.sort(key=lambda x: x["value"], reverse=True)
+            segments = segments[:8]
+            chart_id = f"revenue_segments_{ticker}"
+            unit_label = "% of revenue" if sum(s["value"] for s in segments) <= 101 else "$B revenue"
+            chart_spec = json.dumps({
+                "id": chart_id,
+                "chart_type": "pie",
+                "title": f"{ticker} Revenue by Segment",
+                "subtitle": unit_label,
+                "data": segments,
+            })
+            result += f"\n---CHART_DATA:{chart_id}---\n{chart_spec}\n---END_CHART_DATA:{chart_id}---"
+            result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss the revenue breakdown. Do NOT reproduce the CHART_DATA block.]"
+
+        return result
+
+    async def _arun(self, ticker: str) -> str:
+        return await asyncio.to_thread(self._run, ticker)
+
+
+class MultiCompanyInput(BaseModel):
+    tickers: str = Field(description="Comma-separated list of 2–8 ticker symbols, e.g. 'AAPL,MSFT,GOOGL,AMZN'")
+    metric: Optional[str] = Field(
+        default="revenue",
+        description="Metric to compare: 'revenue' (default), 'market_cap', 'fcf_margin', or 'growth'"
+    )
+
+
+class CompareMultipleCompaniesTool(BaseTool):
+    """Compare 2-8 companies on a single visual bar chart"""
+
+    name: str = "compare_multiple_companies"
+    description: str = """Compare 2–8 companies side-by-side with a visual chart. Generates charts automatically.
+
+    Use this when the user asks to compare multiple companies, wants any kind of comparison chart,
+    or asks for a line graph / bar chart comparing companies.
+
+    Chart types generated:
+    - metric='revenue' (default) → bar chart comparing latest revenue
+    - metric='market_cap'        → bar chart comparing market capitalizations
+    - metric='fcf_margin'        → bar chart comparing FCF margins
+    - metric='growth'            → bar chart comparing revenue CAGR
+    - metric='revenue_history'   → multi-line chart showing revenue over time for all companies
+
+    Examples:
+    - 'Compare revenue of Amazon, Microsoft, Google' → use metric='revenue'
+    - 'Line graph of AAPL vs MSFT revenue over time' → use metric='revenue_history'
+    - 'Show FAANG market caps' → use metric='market_cap'
+
+    Input: comma-separated tickers like 'AAPL,MSFT,GOOGL,AMZN'
+    """
+    args_schema: type[BaseModel] = MultiCompanyInput
+
+    def _run(self, tickers: str, metric: str = "revenue") -> str:
+        try:
+            ticker_list = [t.strip().upper() for t in tickers.split(',') if t.strip()]
+            if len(ticker_list) < 2:
+                return "Error: Please provide at least 2 tickers separated by commas."
+            ticker_list = ticker_list[:8]
+
+            fetcher = FinancialDataFetcher()
+            COLORS = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#14B8A6", "#F97316"]
+
+            # Fetch data for all tickers up front
+            company_data = []
+            failed = []
+            for tick in ticker_list:
+                try:
+                    info = fetcher.get_stock_info(tick)
+                    m = fetcher.get_key_metrics(tick)
+                    if not info or not m:
+                        failed.append(tick)
+                        continue
+                    company_data.append((tick, info, m))
+                except Exception:
+                    failed.append(tick)
+
+            if len(company_data) < 2:
+                return f"Error: Could not retrieve enough data. Failed tickers: {', '.join(failed) or 'none'}"
+
+            # ── revenue_history: multi-line chart over time ──────────────────
+            if metric == "revenue_history":
+                hist_map = {}
+                all_years = set()
+                text_lines = []
+                for tick, info, m in company_data:
+                    name = info.get('company_name', tick)
+                    hist_rev   = m.get('historical_revenue', [])
+                    hist_years = m.get('historical_years', [])
+                    rev_map = {y: r for y, r in zip(hist_years, hist_rev) if r}
+                    hist_map[tick] = {"name": name, "rev_map": rev_map}
+                    all_years.update(rev_map.keys())
+                    if hist_rev:
+                        text_lines.append(f"- **{name}** ({tick}): latest revenue ${hist_rev[0]/1e9:.1f}B")
+
+                common_years = sorted(all_years)
+                chart_rows = []
+                for y in common_years:
+                    row: dict = {"period": y}
+                    for tick, _, _ in company_data:
+                        rv = hist_map[tick]["rev_map"].get(y)
+                        if rv:
+                            row[tick.lower()] = round(rv / 1e9, 2)
+                    chart_rows.append(row)
+
+                if len(chart_rows) < 2:
+                    return "Error: Not enough historical revenue data to build a time-series chart."
+
+                chart_id = f"rev_history_{'_'.join(t for t, _, _ in company_data)}"
+                series = [
+                    {"key": tick.lower(), "label": hist_map[tick]["name"], "type": "line",
+                     "color": COLORS[i % len(COLORS)], "yAxis": "left"}
+                    for i, (tick, _, _) in enumerate(company_data)
+                ]
+                chart_spec = {
+                    "id": chart_id,
+                    "chart_type": "multi_line",
+                    "title": f"Revenue History ($B) — {', '.join(t for t, _, _ in company_data)}",
+                    "data": chart_rows,
+                    "series": series,
+                    "x_key": "period",
+                    "y_format": "currency_b",
+                }
+                result = f"**Revenue History Comparison**\n\n" + "\n".join(text_lines)
+                if failed:
+                    result += f"\n\n*Could not fetch: {', '.join(failed)}*"
+                result += f"\n---CHART_DATA:{chart_id}---\n{json.dumps(chart_spec)}\n---END_CHART_DATA:{chart_id}---"
+                result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss the revenue comparison. Do NOT reproduce the CHART_DATA block.]"
+                return result
+
+            # ── snapshot metrics: bar chart ──────────────────────────────────
+            rows = []
+            text_lines = []
+            for i, (tick, info, m) in enumerate(company_data):
+                name = info.get('company_name', tick)
+                label = name if len(name) <= 18 else tick
+                rev = m.get('latest_revenue') or 0
+                mcap = info.get('market_cap') or 0
+                fcf = m.get('latest_fcf') or 0
+                fcf_margin = (fcf / rev * 100) if rev > 0 else 0
+                hist_rev = m.get('historical_revenue', [])
+                rev_cagr = None
+                if len(hist_rev) >= 2 and hist_rev[-1] > 0 and hist_rev[0] > 0:
+                    n = len(hist_rev) - 1
+                    rev_cagr = ((hist_rev[0] / hist_rev[-1]) ** (1 / n) - 1) * 100
+
+                if metric == "market_cap":
+                    value = round(mcap / 1e9, 1)
+                    text_lines.append(f"- **{name}** ({tick}): ${mcap/1e9:.1f}B market cap")
+                elif metric == "fcf_margin":
+                    value = round(fcf_margin, 1)
+                    text_lines.append(f"- **{name}** ({tick}): {fcf_margin:.1f}% FCF margin")
+                elif metric == "growth":
+                    value = round(rev_cagr, 1) if rev_cagr is not None else 0
+                    cagr_str = f"{rev_cagr:.1f}%" if rev_cagr is not None else "N/A"
+                    text_lines.append(f"- **{name}** ({tick}): {cagr_str} revenue CAGR")
+                else:
+                    value = round(rev / 1e9, 1)
+                    text_lines.append(f"- **{name}** ({tick}): ${rev/1e9:.1f}B revenue")
+                rows.append({"company": label, "value": value})
+
+            METRIC_LABELS = {
+                "revenue": "Revenue ($B)", "market_cap": "Market Cap ($B)",
+                "fcf_margin": "FCF Margin (%)", "growth": "Revenue CAGR (%)",
+            }
+            METRIC_FORMATS = {
+                "revenue": "currency_b", "market_cap": "currency_b",
+                "fcf_margin": "percent", "growth": "percent",
+            }
+            metric_label = METRIC_LABELS.get(metric, "Revenue ($B)")
+            y_format = METRIC_FORMATS.get(metric, "currency_b")
+
+            chart_id = f"multi_compare_{'_'.join(t for t, _, _ in company_data)}_{metric}"
+            ticker_str = ", ".join(t for t, _, _ in company_data)
+            chart_spec = {
+                "id": chart_id,
+                "chart_type": "bar",
+                "title": f"{metric_label} Comparison — {ticker_str}",
+                "data": rows,
+                "series": [
+                    {"key": "value", "label": metric_label, "type": "bar", "color": "#2563EB", "yAxis": "left"}
+                ],
+                "x_key": "company",
+                "y_format": y_format,
+            }
+
+            result = f"**Multi-Company {metric_label} Comparison**\n\n"
+            result += "\n".join(text_lines)
+            if failed:
+                result += f"\n\n*Could not fetch data for: {', '.join(failed)}*"
+            result += f"\n---CHART_DATA:{chart_id}---\n{json.dumps(chart_spec)}\n---END_CHART_DATA:{chart_id}---"
+            result += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss the comparison. Do NOT reproduce the CHART_DATA block.]"
+            return result
+
+        except Exception as e:
+            return f"Error comparing companies: {str(e)}"
+
+    async def _arun(self, tickers: str, metric: str = "revenue") -> str:
+        return await asyncio.to_thread(self._run, tickers, metric)
+
+
 def get_research_assistant_tools() -> List[BaseTool]:
     """Get all research assistant tools"""
     from tools.sec_tools import GetSECFilingsTool, AnalyzeSECFilingTool, GetSECFinancialsTool
@@ -1013,6 +1351,8 @@ def get_research_assistant_tools() -> List[BaseTool]:
         FinancialCalculatorTool(),
         RecentNewsTool(),
         CompanyComparisonTool(),
+        CompareMultipleCompaniesTool(),
+        GetRevenueSegmentsTool(),
         GetSECFilingsTool(),
         AnalyzeSECFilingTool(),
         GetSECFinancialsTool(),

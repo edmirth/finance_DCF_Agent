@@ -84,13 +84,18 @@ export interface ChartSeriesConfig {
 export interface ChartDataEvent {
   type: 'chart_data';
   id: string;
-  chart_type: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar';
+  chart_type: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar' | 'pie' | 'table';
   ticker?: string;
   title: string;
+  subtitle?: string;
   data: Array<Record<string, string | number | boolean>>;
-  series: ChartSeriesConfig[];
+  series?: ChartSeriesConfig[];
+  x_key?: string;
   y_format?: 'number' | 'currency' | 'currency_b' | 'currency_t' | 'percent';
   y_right_format?: string;
+  // table-only fields
+  columns?: string[];
+  rows?: string[][];
 }
 
 export interface StreamEvent {
@@ -116,14 +121,18 @@ export interface StreamEvent {
   input?: string;
   ticker?: string; // Ticker detected from user query
 
-  // Chart data event fields
+  // Chart data event fields (keep in sync with ChartDataEvent)
   id?: string;
-  chart_type?: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar';
+  chart_type?: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar' | 'pie' | 'table';
   title?: string;
+  subtitle?: string;
   data?: Array<Record<string, string | number | boolean>>;
   series?: ChartSeriesConfig[];
+  x_key?: string;
   y_format?: 'number' | 'currency' | 'currency_b' | 'currency_t' | 'percent';
   y_right_format?: string;
+  columns?: string[];
+  rows?: string[][];
 
   // Fields for enhanced events
   phase?: string;

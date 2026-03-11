@@ -41,6 +41,9 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     'get_price_targets': '[Getting] analyst price targets',
     'get_analyst_ratings': '[Fetching] analyst rating changes',
     'get_earnings_call_insights': '[Analyzing] earnings call transcripts',
+    'get_sec_filings': '[Fetching] SEC EDGAR filings',
+    'analyze_sec_filing': '[Analyzing] SEC filing content',
+    'get_sec_financials': '[Retrieving] SEC XBRL financials',
 }
 
 # Map tools to reasoning phases for better UI organization
@@ -69,4 +72,7 @@ TOOL_TO_PHASE: Dict[str, str] = {
     'calculate': 'calculating',
     'calculate_portfolio_metrics': 'calculating',
     'identify_tax_loss_harvesting': 'calculating',
+    'get_sec_filings': 'gathering_data',
+    'analyze_sec_filing': 'analyzing',
+    'get_sec_financials': 'gathering_data',
 }

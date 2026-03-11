@@ -1,5 +1,5 @@
 """
-Main entry point for DCF Analysis Agent, Equity Analyst Agent, and Financial Research Assistant
+Main entry point for DCF Analysis Agent, Equity Analyst Agent, and Finance Q&A Agent
 """
 import os
 import sys
@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
-from agents.research_assistant_agent import create_research_assistant, interactive_session
+from agents.finance_qa_agent import create_finance_qa_agent, interactive_session
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
 from agents.earnings_agent import create_earnings_agent
@@ -42,7 +42,7 @@ Examples:
   python main.py --mode market
   python main.py --mode market --interactive
 
-  # Financial Research Assistant (conversational, interactive)
+  # Finance Q&A (conversational, interactive)
   python main.py --mode research
 
   # Earnings Analysis (fast earnings-focused research)
@@ -58,7 +58,7 @@ Modes:
   analyst   - Comprehensive equity research report (industry, competitors, moat, valuation)
   graph     - Equity research using LangGraph (structured 10-step workflow)
   market    - Market analysis (indices, sectors, news, sentiment, regime classification)
-  research  - Conversational research assistant (ask questions, get suggestions, deep-dive)
+  research  - Finance Q&A: quick data lookups, calculations, comparisons, and news (conversational)
   portfolio - Portfolio analysis (metrics, diversification, tax optimization)
   earnings  - Fast earnings-focused equity research (15 min) with quarterly trends and estimates
         """
@@ -102,11 +102,11 @@ Modes:
 
     # Research mode is always interactive and doesn't need ticker
     if args.mode == "research":
-        print("Launching Financial Research Assistant...")
+        print("Launching Finance Q&A...")
         try:
             interactive_session(model=args.model)
         except Exception as e:
-            print(f"Error running research assistant: {e}")
+            print(f"Error running Finance Q&A: {e}")
             sys.exit(1)
         return
 

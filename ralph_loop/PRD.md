@@ -1,775 +1,431 @@
-# PRD: Data Visualization System — Inline Agent Charts
+# PRD: Project Feature — Persistent Investment Thesis Workspace
 
 ## Introduction
 
-Agents currently produce rich financial data but output only markdown text. This feature adds Rogo/Hebba-style inline charts: charts appear at the exact point in the agent's narrative where the data is discussed (between paragraphs). Charts are auto-generated from tool outputs, light-themed, full-width, and persist across session reloads via the DB layer.
+Build a persistent, context-aware workspace where a user defines an investment thesis (e.g. "Equinor is overvalued given the oil cycle") and every subsequent analysis session inside that project is grounded in that thesis, accumulated memory, and uploaded documents.
 
-**Mechanism:** Tools append a `---CHART_DATA:id---` block to their output string. The LLM is instructed to place `{{CHART:id}}` placeholders inline. The streaming callback intercepts chart data blocks and emits `chart_data` SSE events. Message.tsx preprocesses placeholders into fenced code blocks that ReactMarkdown renders as `<AgentChart />` components.
-
----
+The core value: insight compounds across sessions. Every agent query inside a project receives the full thesis, the living memory document (past conclusions, violated assumptions, thesis health), and semantically relevant chunks from uploaded documents — all assembled automatically before any analysis runs.
 
 ## Goals
 
-- Auto-generate charts from structured tool output (no manual trigger needed)
-- Charts appear inline mid-narrative at semantically relevant positions
-- Persist chart specs in DB so charts restore on session reload
-- Light-themed design: `#F8FAFC` card, `#2563EB` primary, `#10B981` teal, Inter font
-- Support 5 chart types: `bar_line`, `bar`, `line`, `grouped_bar`, `beat_miss_bar`
-- PNG download via html2canvas
-- Beat/miss EPS bars: green (#10B981) for beats, red (#EF4444) for misses
+- Users can create named investment projects anchored to a thesis statement
+- Every chat session within a project is automatically grounded in project context
+- A structured memory document accumulates conclusions, signals, and thesis health across sessions
+- Uploaded documents (10-K, research reports, news) are chunked, embedded, and retrieved semantically
+- A lightweight router selects and tasks the right agents per query
+- All agents run in parallel via a new LangGraph graph (ProjectAnalysisGraph)
+- Memory updates happen as a non-blocking async background task after each response
+- Projects have a dedicated `/projects` route and sidebar section
 
----
-
-## Design System Reference
-
-```
-Card:       bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg p-4 my-4
-Title:      text-[#111827] text-base font-semibold font-inter
-Grid:       horizontal only — stroke="#E5E7EB" strokeDasharray="3 3" vertical={false}
-Chart H:    280px
-Legend:     bottom-center, iconType="square" iconSize={10}
-Palette:    #2563EB, #10B981, #F59E0B, #8B5CF6, #EC4899
-Beat color: #10B981 (actual ≥ estimate), #EF4444 (actual < estimate)
-```
-
----
-
-## Inline Mechanism ({{CHART:id}} Placeholder System)
+## Architecture Overview
 
 ```
-1. Tool._run() appends:
-   ---CHART_DATA:quarterly_earnings_AAPL---
-   {"id":"quarterly_earnings_AAPL","chart_type":"bar_line",...}
-   ---END_CHART_DATA:quarterly_earnings_AAPL---
-   [CHART_INSTRUCTION: Place {{CHART:quarterly_earnings_AAPL}} where you discuss revenue/EPS]
-
-2. streaming.py on_tool_end():
-   → Regex-extracts JSON from ---CHART_DATA:id--- block
-   → Emits {type:"chart_data", id:"...", ...} SSE event
-
-3. LLM follows [CHART_INSTRUCTION] and writes:
-   "Revenue has grown significantly.
-   {{CHART:quarterly_earnings_AAPL}}
-   Breaking this down..."
-
-4. Chat.tsx receives chart_data event:
-   → message.chartsById["quarterly_earnings_AAPL"] = chartEvent
-
-5. Message.tsx preprocessChartPlaceholders():
-   {{CHART:id}} → ```chart:id\n```
-
-6. ReactMarkdown renders code blocks with language="chart:id"
-   → <AgentChart {...message.chartsById[id]} />
+User Query
+    ↓
+assemble_project_context()
+  ├─ project.memory_doc (SQLite)
+  ├─ top-K relevant chunks (ChromaDB)
+  └─ thesis + config
+    ↓
+route_for_project() → JSON list of agents + tasks
+    ↓
+ProjectAnalysisGraph (LangGraph)
+  ├─ run_agent_dcf     ─┐
+  ├─ run_agent_analyst  ├─ parallel
+  ├─ run_agent_earnings ┤
+  ├─ run_agent_market   ┤
+  └─ run_agent_research ┘
+    ↓ (sync)
+synthesize() → final response tied to thesis
+    ↓
+extract_memory_patch() → patch dict
+    ↓
+asyncio.create_task(update_project_memory())  ← non-blocking
 ```
 
----
+## Technical Decisions
 
-## Chart → Tool Mapping
+- **Vector DB**: ChromaDB with local `all-MiniLM-L6-v2` embeddings (no API key, ~90MB download on first run)
+- **UI**: New `/projects` route + `/projects/:id` workspace, sidebar Projects section above Recent Chats
+- **Memory update**: `asyncio.create_task()` (same pattern as existing `_persist_conversation()`)
+- **Agents in scope**: All agents (dcf, analyst, earnings, market, research, portfolio), router-driven
 
-### `get_quarterly_earnings` → `quarterly_earnings_{TICKER}` → `bar_line`
-Data fields: `fiscal_period`, `revenue`, `net_income`, `weighted_average_shares`
-Series: Revenue ($B) bar (left axis) + EPS ($) line (right axis)
-Arrays: newest-first from API → reverse for chronological display
+## SQLite Schema (3 new tables)
 
-### `get_earnings_surprises` → `earnings_surprises_{TICKER}` → `beat_miss_bar`
-Data fields (FMP): `date`, `epsActual`, `epsEstimated`
-Series: gray estimate bar + conditional-colored actual bar (green=beat, red=miss)
+```sql
+-- projects: one record per investment thesis workspace
+id TEXT PK, title TEXT, thesis TEXT, config TEXT (JSON), memory_doc TEXT,
+status TEXT DEFAULT 'active', created_at DATETIME, updated_at DATETIME
 
-### `get_analyst_estimates` → `analyst_estimates_{TICKER}` → `line`
-Data fields (FMP quarterly): `date`, `epsAvg`, `epsHigh`, `epsLow`
-Series: 3 lines — Consensus, High, Low
+-- project_sessions: links sessions to a project
+id TEXT PK, project_id→projects CASCADE, session_id→sessions CASCADE,
+created_at DATETIME, UNIQUE(project_id, session_id)
 
-### `get_financial_metrics` (dcf_tools.py) → `financial_metrics_{TICKER}` → `bar_line`
-Data fields: `historical_years[]`, `historical_revenue[]`, `historical_fcf[]`
-Arrays: newest-first → reverse. Series: Revenue ($B) bar + FCF ($B) line
+-- project_documents: uploaded files + chroma chunk references
+id TEXT PK, project_id→projects CASCADE, filename TEXT, file_type TEXT,
+raw_text TEXT, chunk_count INT, chroma_ids TEXT (JSON), uploaded_at DATETIME
+```
 
-### `get_quick_data` (research_assistant_tools.py) → `quick_data_{TICKER}` → `bar`
-Data fields: `historical_years[]`, `historical_revenue[]`
-Arrays: newest-first → reverse. Series: Revenue ($B) bar only
+## Memory Document Schema (fixed sections)
+
+```markdown
+# Project Memory: {project_title}
+_Last updated: {ISO timestamp}_
+
+## Thesis
+{thesis_statement}
+
+## Key Assumptions
+- {assumption}
+
+## Violated or Revised Assumptions
+- {date}: {what changed and why}
+
+## Thesis Health
+**Status**: STRONG | WEAKENING | CHALLENGED | INVALIDATED
+**Rationale**: {one-sentence rationale}
+
+## Key Companies & Tickers
+- {TICKER}: {description}
+
+## Accumulated Conclusions
+- [{date} — {agent}] {conclusion}
+
+## Open Questions
+- {question}
+
+## Uploaded Document Summaries
+### {filename}
+{200-word summary}
+
+## Live Data Snapshots
+- {TICKER}: price={x}, P/E={x}, last updated={date}
+```
+
+Sections are patched individually via regex between `## Header` and next `##`. Target ≤800 tokens.
 
 ---
 
 ## User Stories
 
-### US-001: Add chart_specs column to DB (schema + migration)
-
-**Description:** As a developer, I need to store chart specs in the messages table so charts restore on session reload.
-
-**Files:**
-- `backend/models.py` — add `chart_specs: Mapped[Optional[str]]` column to `DBMessage`
-- `backend/database.py` — add safe `ALTER TABLE messages ADD COLUMN chart_specs TEXT` migration in `init_db()` (wrapped in try/except so it's idempotent)
+### US-001: SQLite schema — 3 new ORM tables
+**Description:** As a developer, I need the database schema for projects, project sessions, and project documents so the feature has a persistent storage foundation.
 
 **Acceptance Criteria:**
-- [x] `DBMessage` has `chart_specs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)` field
-- [x] `init_db()` runs `ALTER TABLE messages ADD COLUMN chart_specs TEXT` after `create_all`, wrapped in `try/except Exception: pass`
-- [x] `from sqlalchemy import text` is imported in database.py (needed for raw SQL)
-- [x] Typecheck passes
+- [ ] Add `Project`, `ProjectSession`, `ProjectDocument` ORM classes to `backend/models.py` using same `Mapped`/`mapped_column` pattern as existing tables
+- [ ] `Project`: id (UUID), title, thesis, config (JSON Text), memory_doc (Text, default empty init), status (default 'active'), created_at, updated_at
+- [ ] `ProjectSession`: id, project_id (FK→Project CASCADE), session_id (FK→Session CASCADE), created_at, UNIQUE(project_id, session_id)
+- [ ] `ProjectDocument`: id, project_id (FK→Project CASCADE), filename, file_type, raw_text (Text), chunk_count (int), chroma_ids (JSON Text), uploaded_at
+- [ ] Add idempotent `CREATE TABLE IF NOT EXISTS` migration in `backend/database.py` `init_db()` (same pattern as existing `chart_specs` column migration)
+- [ ] Add indexes on project_id FKs and project status
+- [ ] Typecheck passes
 
 ---
 
-### US-002: Add chart blocks to earnings_tools.py (4 tools)
-
-**Description:** As a developer, I need 3 earnings tools to append structured `---CHART_DATA---` blocks so the streaming callback can extract chart specs.
-
-**Files:** `tools/earnings_tools.py`
-
-**Key changes:**
-
-1. Add `import json` at the top (after existing imports).
-
-2. **`GetQuarterlyEarningsTool._run()`** — After calling `self._format_quarterly_earnings(quarterly_data, ticker, quarters)`, append chart block. Build chart data from `income_stmts = quarterly_data.get("income_statements", [])`. Reverse list for chronological order. EPS = `net_income / weighted_average_shares` (null-safe: `if shares else 0`). Wrap in `try/except Exception: pass`.
-
-3. **`GetEarningsSurprisesTool._fetch_from_fmp()`** — After building `historical` list and calling `_format_earnings_surprises_from_calendar(historical[:quarters], ticker)`, append chart block using `historical` data. Fields: `date` → period, `epsActual`, `epsEstimated`. beat = `epsActual >= epsEstimated`. Wrap in `try/except Exception: pass`.
-
-4. **`GetAnalystEstimatesTool._format_fmp_estimates()`** — At the end before returning, append chart block from `quarterly` list. Fields: `date`, `epsAvg` (or `estimatedEpsAvg`), `epsHigh`, `epsLow`. Wrap in `try/except Exception: pass`.
-
-**Chart ID format:** `quarterly_earnings_{ticker.upper()}`, `earnings_surprises_{ticker.upper()}`, `analyst_estimates_{ticker.upper()}`
-
-**Chart block format:**
-```
-\n---CHART_DATA:{chart_id}---\n{json_string}\n---END_CHART_DATA:{chart_id}---
-\n[CHART_INSTRUCTION: Place {{CHART:{chart_id}}} on its own line where you discuss X. Do NOT reproduce the CHART_DATA block.]
-```
-
-**Chart JSON for quarterly_earnings:**
-```json
-{
-  "id": "quarterly_earnings_AAPL",
-  "chart_type": "bar_line",
-  "title": "AAPL Quarterly Revenue & EPS",
-  "data": [{"period": "Q1 2024", "revenue_b": 119.58, "eps": 2.18}, ...],
-  "series": [
-    {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB", "yAxis": "left"},
-    {"key": "eps", "label": "EPS ($)", "type": "line", "color": "#10B981", "yAxis": "right"}
-  ],
-  "y_format": "currency_b",
-  "y_right_format": "currency"
-}
-```
-
-**Chart JSON for earnings_surprises:**
-```json
-{
-  "id": "earnings_surprises_AAPL",
-  "chart_type": "beat_miss_bar",
-  "title": "AAPL EPS: Actual vs. Estimate",
-  "data": [{"period": "2024-01-01", "eps_actual": 2.18, "eps_estimate": 2.10, "beat": true}, ...],
-  "series": [
-    {"key": "eps_estimate", "label": "Estimate", "type": "bar", "color": "#E5E7EB", "yAxis": "left"},
-    {"key": "eps_actual", "label": "Actual", "type": "bar", "color": "#2563EB", "yAxis": "left",
-     "colorByField": "beat", "colorIfTrue": "#10B981", "colorIfFalse": "#EF4444"}
-  ],
-  "y_format": "currency"
-}
-```
-
-**Chart JSON for analyst_estimates:**
-```json
-{
-  "id": "analyst_estimates_AAPL",
-  "chart_type": "line",
-  "title": "AAPL Forward EPS Estimates",
-  "data": [{"period": "2025-03-31", "eps_avg": 1.62, "eps_high": 1.72, "eps_low": 1.52}, ...],
-  "series": [
-    {"key": "eps_avg", "label": "Consensus EPS", "type": "line", "color": "#2563EB"},
-    {"key": "eps_high", "label": "High Est.", "type": "line", "color": "#10B981"},
-    {"key": "eps_low", "label": "Low Est.", "type": "line", "color": "#F59E0B"}
-  ],
-  "y_format": "currency"
-}
-```
+### US-002: ChromaDB dependency + ProjectChromaClient
+**Description:** As a developer, I need a ChromaDB client singleton that manages per-project collections so documents can be embedded and queried semantically.
 
 **Acceptance Criteria:**
-- [x] `import json` added at top of file
-- [x] `GetQuarterlyEarningsTool._run()` appends chart block with `bar_line` chart data when income_stmts available
-- [x] EPS calculation is null-safe: `eps = round(net_income / shares, 2) if shares else 0`
-- [x] `GetEarningsSurprisesTool._fetch_from_fmp()` appends `beat_miss_bar` chart block after formatting
-- [x] `GetAnalystEstimatesTool._format_fmp_estimates()` appends `line` chart block before returning
-- [x] All chart block construction wrapped in `try/except Exception: pass` so failures are silent
-- [x] Each block uses exact format: `\n---CHART_DATA:{id}---\n{json}\n---END_CHART_DATA:{id}---\n[CHART_INSTRUCTION: ...]`
-- [x] Typecheck passes
+- [ ] Add `chromadb>=0.4.0,<0.6.0` to `requirements.txt`
+- [ ] Create `data/chroma_client.py` with `ProjectChromaClient` singleton class
+- [ ] `get_or_create_collection(project_id)` returns named collection `project_{project_id}`
+- [ ] `add_document_chunks(project_id, document_id, filename, raw_text, chunk_size=800, chunk_overlap=100)` splits text, embeds with `DefaultEmbeddingFunction`, upserts, returns list of chroma IDs
+- [ ] `query(project_id, query_text, n_results=5)` returns `List[{"text": str, "source": str, "score": float}]`
+- [ ] `delete_chunks(project_id, chroma_ids)` deletes specific chunk IDs
+- [ ] `delete_collection(project_id)` drops entire collection
+- [ ] All sync Chroma operations wrapped for async compatibility (usable from async FastAPI handlers)
+- [ ] Chroma persists to `./chroma_db/` directory alongside `finance_agent.db`
+- [ ] Typecheck passes
 
 ---
 
-### US-003: Add chart blocks to dcf_tools.py and research_assistant_tools.py
-
-**Description:** As a developer, I need 2 more tools to emit chart blocks for revenue history charts.
-
-**Files:** `tools/dcf_tools.py`, `tools/research_assistant_tools.py`
-
-**Changes:**
-
-**`tools/dcf_tools.py` — `GetFinancialMetricsTool._run()`**
-
-After building `result` (the final return string), before `return result`:
-- Extract `years = list(reversed(metrics.get('historical_years', [])))`, `rev = list(reversed(metrics.get('historical_revenue', [])))`, `fcf = list(reversed(metrics.get('historical_fcf', [])))`
-- Build `bar_line` chart data pairing year+revenue+fcf (skip items where revenue or fcf is falsy)
-- Chart ID: `financial_metrics_{ticker.upper()}`
-- If chart data is non-empty, append chart block to `result`
-- Wrap in `try/except Exception: pass`
-- `import json` is already present at top of dcf_tools.py ✓
-
-**Chart JSON for financial_metrics:**
-```json
-{
-  "id": "financial_metrics_AAPL",
-  "chart_type": "bar_line",
-  "title": "AAPL Annual Revenue & FCF",
-  "data": [{"period": "2020", "revenue_b": 274.52, "fcf_b": 73.37}, ...],
-  "series": [
-    {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB", "yAxis": "left"},
-    {"key": "fcf_b", "label": "FCF ($B)", "type": "line", "color": "#10B981", "yAxis": "right"}
-  ],
-  "y_format": "currency_b",
-  "y_right_format": "currency_b"
-}
-```
-
-**`tools/research_assistant_tools.py` — `QuickFinancialDataTool._run()`**
-
-After building `result.strip()` (just before `return result.strip()`):
-- Extract `years = list(reversed(key_metrics.get('historical_years', [])))`, `rev = list(reversed(key_metrics.get('historical_revenue', [])))`
-- Build `bar` chart data (only when `historical_revenue` and `historical_years` are available)
-- Chart ID: `quick_data_{ticker.upper()}`
-- If chart data is non-empty, append chart block to result
-- Wrap in `try/except Exception: pass`
-- Add `import json` at top of file if not already present
-
-**Chart JSON for quick_data:**
-```json
-{
-  "id": "quick_data_AAPL",
-  "chart_type": "bar",
-  "title": "AAPL Revenue History ($B)",
-  "data": [{"period": "2020", "revenue_b": 274.52}, ...],
-  "series": [
-    {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB"}
-  ],
-  "y_format": "currency_b"
-}
-```
+### US-003: Memory document — initialize and patch functions
+**Description:** As a developer, I need a module that creates and updates the structured memory document so project memory can be maintained across sessions.
 
 **Acceptance Criteria:**
-- [x] `GetFinancialMetricsTool._run()` appends `bar_line` chart block to result string (before return)
-- [x] Arrays are reversed from newest-first to oldest-first before building chart data
-- [x] Data items with falsy revenue or fcf are skipped
-- [x] `QuickFinancialDataTool._run()` appends `bar` chart block when historical data available
-- [x] `import json` present at top of research_assistant_tools.py
-- [x] All chart block construction wrapped in `try/except Exception: pass`
-- [x] Typecheck passes
+- [ ] Create `data/project_memory.py`
+- [ ] `initialize_memory_doc(title: str, thesis: str) -> str` returns the empty memory document populated with thesis and placeholder sections
+- [ ] `patch_memory_section(memory_doc: str, section_name: str, new_content: str, mode: str = "replace") -> str` locates section by `## {section_name}` header, replaces/prepends/appends content, returns updated doc string
+- [ ] `SECTION_HEADERS` list defines all valid sections (same as memory doc schema above)
+- [ ] `update_project_memory(project_id: str, memory_patch: dict, db: AsyncSession) -> None` applies full patch dict (conclusions, violated_assumptions, thesis_health, open_questions) to project.memory_doc in SQLite with optimistic `updated_at` locking
+- [ ] `generate_document_summary(filename: str, raw_text: str, llm) -> str` calls LLM (Haiku) to produce ≤200-word summary
+- [ ] Typecheck passes
 
 ---
 
-### US-004: Update streaming.py to extract chart_data SSE events
-
-**Description:** As a developer, I need the streaming callback to intercept `---CHART_DATA---` blocks from tool outputs and emit them as structured SSE events.
-
-**File:** `backend/callbacks/streaming.py`
-
-**Change:** In `on_tool_end()`, add chart extraction at the very beginning (before extracting sources):
-
-```python
-async def on_tool_end(self, output: str, **kwargs: Any) -> None:
-    """Called when tool execution ends"""
-    import json as _json
-    import re as _re
-    output = self._ensure_str(output)
-
-    # Extract chart data blocks and emit as chart_data events
-    _CHART_RE = _re.compile(
-        r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---',
-        _re.DOTALL
-    )
-    for match in _CHART_RE.finditer(output):
-        try:
-            chart_event = _json.loads(match.group(2).strip())
-            chart_event["type"] = "chart_data"
-            await self.queue.put(chart_event)
-        except Exception as e:
-            import logging as _logging
-            _logging.getLogger(__name__).warning(f"chart_data parse error: {e}")
-
-    # Extract sources from output (existing code follows)
-    sources = self._extract_sources_from_output(output)
-    ...
-```
+### US-004: Context assembly middleware
+**Description:** As a developer, I need a function that assembles project context from memory + ChromaDB + thesis on every query so agents always receive grounded context.
 
 **Acceptance Criteria:**
-- [x] `on_tool_end()` uses regex `r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---'` with `re.DOTALL`
-- [x] Each matched JSON blob is parsed and emitted to queue with `type: "chart_data"` field added
-- [x] Parse errors are caught silently (logged as warning, not raised)
-- [x] Existing source extraction and `tool_result` event emission unchanged
-- [x] Typecheck passes
+- [ ] Create `backend/context_assembly.py`
+- [ ] `assemble_project_context(project_id, query, db, chroma_client, top_k=5) -> str` function
+- [ ] Returns empty string if `project_id` is None (non-project sessions unaffected)
+- [ ] Loads `project.thesis`, `project.memory_doc`, `project.config` from SQLite
+- [ ] Queries ChromaDB for top-K chunks relevant to `query`
+- [ ] Assembles and returns XML-wrapped context block: `<project_context>...</project_context>`
+- [ ] Context block sections: thesis, memory_doc, relevant document excerpts (if any), project tickers
+- [ ] Total context cap: ≤3500 tokens (memory_doc ≤800, chunks ≤5×400 tokens each)
+- [ ] Typecheck passes
 
 ---
 
-### US-005: Add chart placeholder instructions to agent prompts (finance_qa, dcf, equity_analyst)
-
-**Description:** As a developer, I need 3 agent prompts to instruct the LLM to use `{{CHART:id}}` placeholders inline in its response.
-
-**Files:**
-- `agents/finance_qa_agent.py`
-- `agents/dcf_agent.py`
-- `agents/equity_analyst_agent.py`
-
-**`agents/finance_qa_agent.py`** — In `_create_agent()`, find where `intro` string is built. After the existing content (after the SEC FILING WORKFLOW section or at the end of the system message), append:
-
-```python
-chart_instructions = """
-**CHART PLACEHOLDERS:**
-Some tool outputs include [CHART_INSTRUCTION: Place {{CHART:id}} ...].
-Follow the instruction exactly: place {{CHART:chart_id}} on its own line at the exact point where the chart is relevant.
-Do NOT reproduce ---CHART_DATA--- blocks or [CHART_INSTRUCTION] text in your response. Only use the {{CHART:id}} placeholder.
-"""
-```
-
-Then include `chart_instructions` when building the system prompt.
-
-**`agents/dcf_agent.py`** — In `_create_agent()`, find the `template` string. Add the following instruction block (anywhere in the template, ideally near the top after the PHASE 1 description):
-
-```
-CHART PLACEHOLDERS: When a tool output includes [CHART_INSTRUCTION: Place {{CHART:id}} ...], follow the instruction.
-Place {{CHART:chart_id}} on its own line at the relevant point in your response.
-Do NOT reproduce ---CHART_DATA--- blocks in your response.
-```
-
-Note: In Python f-strings with `{tools}` style template variables, `{{` and `}}` are literal braces. Since the DCF agent template uses `{tools}` and `{tool_names}` etc., the `{{CHART:id}}` in the instruction text must be written as `{{{{CHART:id}}}}` inside an f-string, OR the instruction string must be outside the f-string and concatenated, OR use a raw string for that section. Inspect the existing template structure to determine the right approach.
-
-**`agents/equity_analyst_agent.py`** — In `_create_agent()`, find the `system_message` string. After the existing DATA-GATHERING WORKFLOW section, append:
-
-```
-**CHART PLACEHOLDERS:**
-When a tool output includes [CHART_INSTRUCTION: Place {{CHART:id}} ...], follow the instruction.
-Place {{CHART:chart_id}} on its own line at the exact point in the report where the chart data is relevant.
-Do NOT reproduce ---CHART_DATA--- blocks or [CHART_INSTRUCTION] text in your output.
-```
-
-Again, watch for f-string brace escaping if the system_message uses an f-string.
+### US-005: Project router — agent routing LLM call
+**Description:** As a developer, I need a lightweight LLM-based router that reads a query + project context and decides which agents to invoke with what task so queries are handled by the right agents.
 
 **Acceptance Criteria:**
-- [x] `finance_qa_agent.py` system prompt includes chart placeholder instructions
-- [x] `dcf_agent.py` template includes chart placeholder instructions with correct brace escaping
-- [x] `equity_analyst_agent.py` system_message includes chart placeholder instructions with correct brace escaping
-- [x] No existing prompt content removed or broken
-- [x] Typecheck passes
+- [ ] Create `backend/project_router.py`
+- [ ] `route_for_project(query: str, context_block: str, project_config: dict) -> ProjectRoutingDecision` function
+- [ ] `ProjectRoutingDecision` dataclass: `agents: List[AgentTask]`, `reasoning: str`
+- [ ] `AgentTask` dataclass: `agent_type: str`, `task: str`
+- [ ] Uses Claude Haiku (same client pattern as existing `route_agent_for_message()` in `api_server.py`)
+- [ ] Router prompt selects 1–3 agents from: dcf, analyst, earnings, market, research, portfolio
+- [ ] Activation rules encoded in prompt: DCF/analyst for valuation, earnings for quarterly results, market for macro, research for default/follow-ups
+- [ ] Task string for each agent includes thesis excerpt for context grounding
+- [ ] Fallback to `[AgentTask(agent_type="research", task=query)]` if LLM call or JSON parse fails
+- [ ] Typecheck passes
 
 ---
 
-### US-006: Update earnings_agent.py with hardcoded chart placeholders in LLM prompts
-
-**Description:** As a developer, I need the earnings agent's LangGraph LLM prompts to include hardcoded chart placeholders, since tool outputs are not directly visible to these nodes.
-
-**File:** `agents/earnings_agent.py`
-
-**IMPORTANT:** The earnings agent uses LangGraph. The `comprehensive_analysis` (line ~576) and `develop_thesis` (line ~690) nodes receive aggregated state — they do NOT see raw tool output strings. Chart placeholders must be hardcoded using the ticker from state.
-
-**In `comprehensive_analysis` node** (~line 576), inside the `prompt` f-string, add after the "Be specific with numbers" line:
-
-```python
-f"""
-CHART PLACEHOLDERS — include these on their own line where relevant:
-- Where you discuss quarterly revenue/EPS trends: {{CHART:quarterly_earnings_{state['ticker']}}}
-- Where you discuss earnings surprises (beats/misses): {{CHART:earnings_surprises_{state['ticker']}}}
-- Where you discuss analyst consensus estimates: {{CHART:analyst_estimates_{state['ticker']}}}
-Do NOT reproduce any ---CHART_DATA--- blocks.
-"""
-```
-
-Note: since the node's `prompt` is already an f-string, `{state['ticker']}` is already a valid f-string expression. `{{CHART:...}}` becomes literal `{CHART:...}` in the rendered string (correct, since it's passed to an LLM, not another Python f-string).
-
-**Do NOT modify** `develop_thesis` node — `ComparePeerEarningsTool` is excluded from chart generation (see Non-Goals), so there is no `chart_data` event for peer comparison. Adding a placeholder here would produce a silently-invisible element.
-
-**Do NOT modify** `generate_report` node (it's a template string, not an LLM call).
+### US-006: ProjectAnalysisGraph — LangGraph 10-node graph
+**Description:** As a developer, I need a LangGraph graph that runs selected agents in parallel and synthesizes results against the project thesis so project queries produce grounded, multi-agent responses.
 
 **Acceptance Criteria:**
-- [x] `comprehensive_analysis` prompt includes 3 chart placeholder instructions: `quarterly_earnings_`, `earnings_surprises_`, `analyst_estimates_`
-- [x] `develop_thesis` node is NOT modified (no chart data source exists for peer comparison)
-- [x] All placeholders use `{{CHART:..._{state['ticker']}}}` pattern (double-brace for f-string literal)
-- [x] `generate_report` node is NOT modified
-- [x] Typecheck passes
+- [ ] Create `agents/project_agent.py`
+- [ ] `ProjectAnalysisState` TypedDict with fields: query, project_id, context_block (pre-populated by API handler before graph invocation), routing_decision, agent_results (List, operator.add reducer), synthesis, memory_patch, final_response, errors (List, operator.add), start_time
+- [ ] 10 nodes: `route`, `run_agent_{dcf|analyst|earnings|market|research|portfolio}` (6 agent nodes), `sync_point`, `synthesize`, `extract_memory_patch`
+- [ ] `context_block` is passed as initial state by the API handler (via `assemble_project_context()` from US-004) — the graph does not re-assemble it
+- [ ] `route` is Node 1; `add_conditional_edges` returns list of `run_agent_*` node names based on routing_decision
+- [ ] All `run_agent_*` nodes append `{"agent_type", "task", "output"}` to `agent_results`
+- [ ] `synthesize` node: 1 Sonnet LLM call that ties all agent outputs back to project thesis
+- [ ] `extract_memory_patch` node: 1 Haiku LLM call that extracts conclusions, violated_assumptions, thesis_health, open_questions from synthesis
+- [ ] `ProjectAnalysisGraph` class with `ProjectAnalysisGraphAdapter` exposing `.invoke({"input": query, "project_id": id})` for backend compatibility
+- [ ] `_emit_progress()` SSE events for each node (same pattern as earnings_agent.py)
+- [ ] Typecheck passes
 
 ---
 
-### US-007: Update api_server.py to collect, persist, and return chart specs
-
-**Description:** As a developer, I need the API server to collect chart_data events during streaming, persist them alongside messages, and return them in the sessions endpoint.
-
-**File:** `backend/api_server.py`
-
-**Changes:**
-
-**A) In `stream_agent_response()`** — Add `collected_charts: dict = {}` after `collected_thinking: list = []`. In the event loop, handle `chart_data` events:
-
-```python
-elif event["type"] == "chart_data":
-    chart_id = event.get("id")
-    if chart_id:
-        collected_charts[chart_id] = event
-    # Also stream to frontend so live messages get charts
-    yield f"data: {json.dumps(event)}\n\n"
-```
-
-Also ensure `chart_data` events are NOT added to `collected_thinking`.
-
-**B) In the `_persist_conversation()` call** — Add `chart_specs=collected_charts` parameter.
-
-**C) Update `_persist_conversation()` signature** — Add `chart_specs: dict = None` parameter. When saving the assistant `DBMessage`, add:
-```python
-chart_specs=json.dumps(chart_specs) if chart_specs else None,
-```
-
-**D) In `get_session()` endpoint** — Add `chart_specs` to the message serialization dict:
-```python
-"chart_specs": m.chart_specs,  # raw JSON string or None
-```
+### US-007: Project CRUD REST endpoints
+**Description:** As a developer, I need REST endpoints to create, read, update, and delete projects so the frontend can manage the project lifecycle.
 
 **Acceptance Criteria:**
-- [x] `collected_charts: dict = {}` initialized in `stream_agent_response()`
-- [x] `chart_data` events are captured into `collected_charts[event["id"]] = event` AND streamed to frontend via SSE
-- [x] `chart_data` events are NOT added to `collected_thinking`
-- [x] `_persist_conversation()` receives `chart_specs` parameter
-- [x] Assistant `DBMessage` is saved with `chart_specs=json.dumps(chart_specs) if chart_specs else None`
-- [x] `GET /sessions/{id}` returns `"chart_specs": m.chart_specs` for each message
-- [x] Typecheck passes
+- [ ] Add to `backend/api_server.py`:
+  - `POST /projects` — create project, call `initialize_memory_doc()`, return ProjectDetail
+  - `GET /projects` — list active projects (id, title, thesis, status, created_at, updated_at, session_count, document_count)
+  - `GET /projects/{project_id}` — full project detail including memory_doc
+  - `PATCH /projects/{project_id}` — update title/thesis/config/status
+  - `DELETE /projects/{project_id}` — set status='archived', delete Chroma collection
+  - `GET /projects/{project_id}/memory` — return memory_doc string
+  - `PATCH /projects/{project_id}/memory` — manual memory edit
+  - `GET /projects/{project_id}/sessions` — list linked sessions
+- [ ] `CreateProjectRequest` Pydantic model: title, thesis, tickers (optional list)
+- [ ] Typecheck passes
 
 ---
 
-### US-008: Create frontend/src/components/AgentChart.tsx (new file)
-
-**Description:** As a user, I want to see beautiful inline charts rendered from agent data at the relevant point in the response.
-
-**File:** `frontend/src/components/AgentChart.tsx` (NEW)
-
-**Dependencies:** Install if not already present: `recharts`, `html2canvas`. Check `package.json` first — add to devDependencies/dependencies if missing.
-
-**Component requirements:**
-
-```typescript
-import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-         Legend, ResponsiveContainer, Cell } from 'recharts';
-import html2canvas from 'html2canvas';
-import { useRef } from 'react';
-import { Download } from 'lucide-react';
-
-interface ChartSeriesConfig {
-  key: string;
-  label: string;
-  type: 'bar' | 'line';
-  color: string;
-  yAxis?: 'left' | 'right';
-  colorByField?: string;   // for beat_miss_bar: boolean field in data
-  colorIfTrue?: string;    // color when field is true (beat)
-  colorIfFalse?: string;   // color when field is false (miss)
-}
-
-interface AgentChartProps {
-  id: string;
-  chart_type: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar';
-  title: string;
-  data: Array<Record<string, string | number | boolean>>;
-  series: ChartSeriesConfig[];
-  y_format?: 'number' | 'currency' | 'currency_b' | 'currency_t' | 'percent';
-  y_right_format?: string;
-}
-
-const FORMAT: Record<string, (v: number) => string> = {
-  currency_b: (v) => `$${v.toFixed(1)}B`,
-  currency_t: (v) => `$${v.toFixed(1)}T`,
-  currency:   (v) => `$${v.toFixed(2)}`,
-  percent:    (v) => `${v.toFixed(1)}%`,
-  number:     (v) => v.toLocaleString(),
-};
-```
-
-**Card style:**
-```
-<div className="bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg p-4 my-4 w-full">
-  <div className="flex justify-between items-start mb-3">
-    <span className="text-[#111827] text-base font-semibold font-inter">{title}</span>
-    <button onClick={handleDownload} className="...download button...">
-      <Download className="w-4 h-4" />
-    </button>
-  </div>
-  <ResponsiveContainer width="100%" height={280}>
-    <ComposedChart data={data}>
-      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-      <XAxis dataKey="period" tick={{ fill: "#6B7280", fontSize: 12, fontFamily: "Inter" }} />
-      <YAxis tick={{ fill: "#6B7280", fontSize: 12, fontFamily: "Inter" }} tickFormatter={leftFormatter} />
-      {hasRightAxis && <YAxis yAxisId="right" orientation="right" tickFormatter={rightFormatter} />}
-      <Tooltip contentStyle={{ ... light style ... }} />
-      <Legend iconType="square" iconSize={10} wrapperStyle={{ fontFamily: "Inter", fontSize: 12 }} />
-      {series.map(s => s.type === 'bar' ? renderBar(s) : renderLine(s))}
-    </ComposedChart>
-  </ResponsiveContainer>
-</div>
-```
-
-**For `beat_miss_bar` type:** Render bars with `<Cell>` for conditional coloring:
-```tsx
-<Bar key={s.key} dataKey={s.key} name={s.label} yAxisId="left">
-  {data.map((entry, i) => (
-    <Cell key={i} fill={
-      s.colorByField
-        ? entry[s.colorByField] ? s.colorIfTrue : s.colorIfFalse
-        : s.color
-    } />
-  ))}
-</Bar>
-```
-
-**PNG Download:**
-```typescript
-const chartRef = useRef<HTMLDivElement>(null);
-const handleDownload = async () => {
-  if (!chartRef.current) return;
-  const canvas = await html2canvas(chartRef.current, { scale: 2 });
-  const link = document.createElement('a');
-  link.download = `${title.replace(/\s+/g, '_')}.png`;
-  link.href = canvas.toDataURL('image/png');
-  link.click();
-};
-```
+### US-008: Document upload endpoint for projects
+**Description:** As a developer, I need a document upload endpoint that extracts text, chunks it, embeds it in ChromaDB, and saves the record so uploaded files are semantically searchable within a project.
 
 **Acceptance Criteria:**
-- [x] `recharts` and `html2canvas` are installed (in package.json) — add if missing
-- [x] AgentChart.tsx created with correct props interface
-- [x] Card uses `bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg p-4 my-4`
-- [x] Grid: horizontal only (`vertical={false}`) with `stroke="#E5E7EB"`
-- [x] Axis tick color `#6B7280`, font Inter, size 12
-- [x] `beat_miss_bar` type renders conditional Cell colors using `colorByField`/`colorIfTrue`/`colorIfFalse`
-- [x] PNG download button top-right, uses html2canvas at scale=2
-- [x] `y_format` and `y_right_format` drive axis tick formatters from FORMAT map
-- [x] Right Y-axis rendered when any series has `yAxis: "right"`
-- [x] Component exported as named export `AgentChart`
-- [x] Typecheck passes
+- [ ] Add `POST /projects/{project_id}/documents` to `api_server.py`
+- [ ] Reuse existing `extract_text_from_file()` function for PDF/DOCX/XLSX/CSV/PPTX extraction
+- [ ] Call `chroma_client.add_document_chunks()` to embed and store chunks
+- [ ] Call `generate_document_summary()` (Haiku LLM call) and append summary to memory_doc `Uploaded Document Summaries` section
+- [ ] Save `ProjectDocument` record to SQLite with chunk_count and chroma_ids
+- [ ] `GET /projects/{project_id}/documents` — list documents (no raw_text in response)
+- [ ] `DELETE /projects/{project_id}/documents/{doc_id}` — delete record + delete chroma chunks
+- [ ] Typecheck passes
+
+---
+
+### US-009: Inject project context into `/chat/stream`
+**Description:** As a developer, I need the `/chat/stream` endpoint to detect when a session belongs to a project and route through ProjectAnalysisGraph with assembled context so project chats are grounded.
+
+**Acceptance Criteria:**
+- [ ] Extend `ChatMessage` (or create `ProjectChatMessage`) with optional `project_id: Optional[str]` field in `api_server.py`
+- [ ] In `/chat/stream` handler: if `project_id` is present, call `assemble_project_context()` first, then pass the resulting `context_block` as part of the initial state when invoking `ProjectAnalysisGraph` — the graph receives `context_block` ready-made and does not call `assemble_project_context()` again
+- [ ] Modify `_persist_conversation()` to accept optional `project_id` and create `ProjectSession` link if set
+- [ ] Pre-load `ProjectChromaClient` in FastAPI `on_startup` so embedding model downloads before first request
+- [ ] Non-project sessions (`project_id=None`) are completely unaffected
+- [ ] Typecheck passes
+
+---
+
+### US-010: Memory update background job
+**Description:** As a developer, I need a non-blocking background task that patches the project memory document after each project response so memory compounds automatically across sessions.
+
+**Acceptance Criteria:**
+- [ ] After `ProjectAnalysisGraph` completes and `memory_patch` is populated, call `asyncio.create_task(update_project_memory(project_id, memory_patch, db))`
+- [ ] `update_project_memory()` applies patch: prepend to `Accumulated Conclusions`, append to `Violated or Revised Assumptions`, replace `Thesis Health`, append to `Open Questions`
+- [ ] Optimistic locking: load project row inside the task, apply patch, write back with `updated_at` timestamp check to avoid race conditions from concurrent sessions
+- [ ] Task errors are logged (not raised) so a memory update failure never breaks the user response
+- [ ] Typecheck passes
+
+---
+
+### US-011: Frontend TypeScript types for projects
+**Description:** As a developer, I need TypeScript interfaces for projects, project documents, and extended chat requests so the frontend is fully type-safe.
+
+**Acceptance Criteria:**
+- [ ] Add to `frontend/src/types.ts`:
+  - `ProjectSummary`: id, title, thesis, status, created_at, updated_at, session_count, document_count
+  - `ProjectDetail extends ProjectSummary`: config (tickers, preferred_agents), memory_doc
+  - `ProjectDocument`: id, project_id, filename, file_type, chunk_count, uploaded_at
+- [ ] `ChatRequest` (or a new `ProjectChatRequest`) extended with optional `project_id?: string`
+- [ ] Typecheck passes
+
+---
+
+### US-012: Frontend API client functions for projects
+**Description:** As a developer, I need API client functions for all project endpoints so pages can fetch and mutate project data.
+
+**Acceptance Criteria:**
+- [ ] Add to `frontend/src/api.ts`:
+  - `getProjects() → Promise<ProjectSummary[]>`
+  - `getProject(id) → Promise<ProjectDetail>`
+  - `createProject(title, thesis, tickers?) → Promise<ProjectDetail>`
+  - `updateProject(id, patch) → Promise<ProjectDetail>`
+  - `deleteProject(id) → Promise<void>`
+  - `uploadProjectDocument(id, file) → Promise<ProjectDocument>`
+  - `getProjectDocuments(id) → Promise<ProjectDocument[]>`
+  - `deleteProjectDocument(projectId, docId) → Promise<void>`
+  - `getProjectMemory(id) → Promise<string>`
+  - `patchProjectMemory(id, memoryDoc) → Promise<void>`
+  - `getProjectSessions(id) → Promise<SessionSummary[]>`
+- [ ] `streamMessage()` passes `project_id` in request body when present
+- [ ] Typecheck passes
+
+---
+
+### US-013: Sidebar — Projects section
+**Description:** As a user, I want to see my projects in the sidebar so I can navigate to them quickly.
+
+**Acceptance Criteria:**
+- [ ] Add "Projects" NavLink (Folder icon) to navigation section in `Sidebar.tsx`, linking to `/projects`
+- [ ] When sidebar is expanded: show a "Projects" section above "Recent Chats" listing up to 5 active projects
+- [ ] Each project row shows title + thesis excerpt (first 60 chars) + click → navigate to `/projects/{id}`
+- [ ] "View all projects →" link at bottom of section navigating to `/projects`
+- [ ] Projects list loaded via `getProjects()` on mount + refreshed every 30s (same pattern as sessions)
+- [ ] Typecheck passes
 - [ ] Verify changes work in browser
 
 ---
 
-### US-009: Update frontend/src/types.ts with chart types
-
-**Description:** As a developer, I need TypeScript interfaces for chart data events and the chartsById field on Message.
-
-**File:** `frontend/src/types.ts`
-
-**Add to StreamEvent type union:** `| "chart_data"`
-
-**Add new interfaces:**
-
-```typescript
-export interface ChartSeriesConfig {
-  key: string;
-  label: string;
-  type: 'bar' | 'line';
-  color: string;
-  yAxis?: 'left' | 'right';
-  colorByField?: string;
-  colorIfTrue?: string;
-  colorIfFalse?: string;
-}
-
-export interface ChartDataEvent {
-  type: 'chart_data';
-  id: string;
-  chart_type: 'bar_line' | 'bar' | 'line' | 'multi_line' | 'grouped_bar' | 'beat_miss_bar';
-  ticker?: string;
-  title: string;
-  data: Array<Record<string, string | number | boolean>>;
-  series: ChartSeriesConfig[];
-  y_format?: 'number' | 'currency' | 'currency_b' | 'currency_t' | 'percent';
-  y_right_format?: string;
-}
-```
-
-**Update `Message` interface** — add `chartsById` field:
-```typescript
-chartsById?: Record<string, ChartDataEvent>;
-```
-
-**Update `SessionMessage` interface** — add `chart_specs` field:
-```typescript
-chart_specs?: string | null;  // raw JSON string from DB
-```
+### US-014: App.tsx — add project routes
+**Description:** As a developer, I need React Router routes for the projects list and workspace pages so the URLs resolve correctly.
 
 **Acceptance Criteria:**
-- [x] `"chart_data"` added to `StreamEvent` type union
-- [x] `ChartSeriesConfig` interface exported
-- [x] `ChartDataEvent` interface exported with all fields
-- [x] `Message` interface has `chartsById?: Record<string, ChartDataEvent>`
-- [x] `SessionMessage` interface has `chart_specs?: string | null`
-- [x] Typecheck passes
+- [ ] Add `Route path="/projects"` → `ProjectsListPage` to `App.tsx`
+- [ ] Add `Route path="/projects/:projectId"` → `ProjectWorkspace` to `App.tsx`
+- [ ] Import both page components
+- [ ] Existing routes (`/`, `/portfolio`, `/earnings`, `/library`) unchanged
+- [ ] Typecheck passes
 
 ---
 
-### US-010: Update Chat.tsx to handle chart_data events (live + session reload)
-
-**Description:** As a user, I want charts to appear in real-time during streaming and to be restored when I reload a session.
-
-**File:** `frontend/src/components/Chat.tsx`
-
-**Changes:**
-
-**A) Import `ChartDataEvent` from types.ts**
-
-**B) Handle `chart_data` event in the stream callback** (inside `streamMessage()` callback, after the `follow_ups` handler block):
-
-```typescript
-} else if (event.type === 'chart_data') {
-  const chartEvent = event as unknown as ChartDataEvent;
-  if (chartEvent.id) {
-    setMessages(prev => prev.map(msg =>
-      msg.id === assistantMessageId
-        ? { ...msg, chartsById: { ...(msg.chartsById ?? {}), [chartEvent.id]: chartEvent } }
-        : msg
-    ));
-  }
-}
-```
-
-**C) Session reload — parse chart_specs when restoring messages from `initialMessages` prop.** Find where `initialMessages` is used to set messages state. The `initialMessages` arrive from the parent (ChatPage.tsx likely). The chart_specs on each message is a JSON string from the backend. In the `useEffect` that restores `initialMessages`, parse chart_specs:
-
-Find this pattern (in the `useEffect` that responds to `initialMessages`):
-```typescript
-useEffect(() => {
-  if (initialMessages && initialMessages.length > 0) {
-    setMessages(initialMessages);
-  }
-}, [initialMessages]);
-```
-
-Change to:
-```typescript
-useEffect(() => {
-  if (initialMessages && initialMessages.length > 0) {
-    const withCharts = initialMessages.map(m => ({
-      ...m,
-      chartsById: (m as any).chart_specs
-        ? JSON.parse((m as any).chart_specs)
-        : m.chartsById,
-    }));
-    setMessages(withCharts);
-  }
-}, [initialMessages]);
-```
+### US-015: ProjectsListPage — list and create projects
+**Description:** As a user, I want to see all my investment projects and create new ones so I can manage my thesis workspaces.
 
 **Acceptance Criteria:**
-- [x] `chart_data` events are handled in the stream callback and update `chartsById` on the assistant message
-- [x] Session reload useEffect parses `chart_specs` JSON string into `chartsById` on each message
-- [x] `ChartDataEvent` type imported from `../types`
-- [x] Existing event handling (thought, tool, content, etc.) unchanged
-- [x] Typecheck passes
-
----
-
-### US-011: Update Message.tsx for chart rendering (cleanContent + placeholder + renderer)
-
-**Description:** As a user, I want chart placeholders in the agent response to render as actual inline charts, and chart system artifacts to be stripped from visible text.
-
-**File:** `frontend/src/components/Message.tsx`
-
-**Changes:**
-
-**A) Import `AgentChart`:**
-```typescript
-import { AgentChart } from './AgentChart';
-```
-
-**B) Add safety strips to `cleanContent()`** — after the existing `.replace(...)` chain, before `.trim()`:
-```typescript
-// Strip chart system artifacts if LLM accidentally echoes them
-.replace(/\[CHART_INSTRUCTION:[^\]]*\]/g, '')
-.replace(/---CHART_DATA:[^-\n]*---[\s\S]*?---END_CHART_DATA:[^-\n]*---/g, '')
-```
-
-**C) Add `preprocessChartPlaceholders()` function** (module-level, outside component):
-```typescript
-function preprocessChartPlaceholders(content: string): string {
-  return content.replace(
-    /\{\{CHART:([^}]+)\}\}/g,
-    (_, id) => `\`\`\`chart:${id.trim()}\n\`\`\``
-  );
-}
-```
-
-**D) Apply preprocessing** — after `const displayContent = ...`, add:
-```typescript
-const processedContent = isUser ? displayContent : preprocessChartPlaceholders(displayContent);
-```
-
-Replace the `displayContent` passed to `ReactMarkdown` with `processedContent`.
-
-**E) Update the `ReactMarkdown` components prop** — `financialTableComponents` (from FinancialTable.tsx) defines only `table`, `thead`, `tbody`, `tr`, `th`, `td`. It has **no `code` renderer**, so there is no conflict. Spread it and add `code` alongside:
-
-```typescript
-components={{
-  ...financialTableComponents,
-  code: ({ node, inline, className, children, ...props }: any) => {
-    const match = /^chart:(.+)$/.exec((className ?? '').replace('language-', ''));
-    if (match && !inline) {
-      const chartId = match[1];
-      const chartData = message.chartsById?.[chartId];
-      if (chartData) return <AgentChart {...chartData} />;
-      return null;  // placeholder not yet loaded — render nothing
-    }
-    // Default code block rendering
-    return <code className={className} {...props}>{children}</code>;
-  }
-}}
-
-**Acceptance Criteria:**
-- [x] `AgentChart` imported from `./AgentChart`
-- [x] `cleanContent()` strips `[CHART_INSTRUCTION:...]` patterns
-- [x] `cleanContent()` strips `---CHART_DATA:...---END_CHART_DATA:...---` blocks
-- [x] `preprocessChartPlaceholders()` converts `{{CHART:id}}` → ` ```chart:id\n``` `
-- [x] `processedContent` is passed to `ReactMarkdown` instead of raw `displayContent`
-- [x] ReactMarkdown `code` component renders `<AgentChart />` for `language-chart:*` code blocks
-- [x] Unknown chart IDs (chartsById missing) return `null` (not an error)
-- [x] Existing code/inline code rendering still works for non-chart code blocks
-- [x] Typecheck passes
+- [ ] Create `frontend/src/pages/ProjectsListPage.tsx`
+- [ ] Fetches and displays active projects as cards: title, thesis excerpt (first 120 chars), session count, document count, last updated date
+- [ ] "New Project" button opens an inline form with: title input, thesis textarea, optional tickers input (comma-separated)
+- [ ] Submit calls `createProject()` and navigates to `/projects/{id}`
+- [ ] Archive button on each card calls `deleteProject()` (soft archive) and removes from list
+- [ ] Empty state: "No projects yet — create your first investment thesis" with New Project CTA
+- [ ] Typecheck passes
 - [ ] Verify changes work in browser
+
+---
+
+### US-016: ProjectWorkspace — chat panel
+**Description:** As a user, I want to chat with agents inside a project workspace so all my queries are grounded in my thesis and accumulated memory.
+
+**Acceptance Criteria:**
+- [ ] Create `frontend/src/pages/ProjectWorkspace.tsx`
+- [ ] Loads project detail via `getProject(projectId)` from URL param
+- [ ] Renders project title and thesis excerpt at top of page
+- [ ] Left panel (2/3 width): reuses existing `<Chat>` component with `project_id` passed in every `streamMessage()` call
+- [ ] Chat sessions created in this workspace are automatically linked to the project (handled server-side)
+- [ ] Loads existing project sessions via `getProjectSessions()` and allows restoring them (same `?session=` URL param pattern)
+- [ ] Typecheck passes
+- [ ] Verify changes work in browser
+
+---
+
+### US-017: ProjectWorkspace — memory and documents panel
+**Description:** As a user, I want to see the living memory document and uploaded files in the project workspace so I can track how the thesis is evolving.
+
+**Acceptance Criteria:**
+- [ ] Right panel (1/3 width) in `ProjectWorkspace.tsx` with 3 tabs: "Memory", "Documents", "Sessions"
+- [ ] **Memory tab**: renders `memory_doc` markdown (use existing `react-markdown` component); shows last-updated timestamp; "Edit" button toggles to textarea for manual edits (calls `patchProjectMemory()`)
+- [ ] Memory tab auto-refreshes every 10s during an active session (polls `getProjectMemory()`)
+- [ ] **Documents tab**: lists uploaded documents (filename, file type, chunk count, upload date); delete button per doc
+- [ ] **Sessions tab**: lists `getProjectSessions()` result; click navigates to `/?session={id}`
+- [ ] Typecheck passes
+- [ ] Verify changes work in browser
+
+---
+
+### US-018: ProjectWorkspace — document upload UI
+**Description:** As a user, I want to upload research documents (PDFs, 10-Ks, news articles) to a project so they inform all future analyses.
+
+**Acceptance Criteria:**
+- [ ] In Documents tab: drag-drop upload zone accepts PDF, DOCX, XLSX, PPTX, CSV
+- [ ] Reuse existing `FileUploadModal.tsx` patterns or replicate inline (whichever is simpler)
+- [ ] On file drop/select: calls `uploadProjectDocument(projectId, file)` with loading state
+- [ ] On success: document appears in list with chunk_count > 0
+- [ ] On failure: error toast with message
+- [ ] Max file size client-side check: 10MB
+- [ ] Typecheck passes
+- [ ] Verify changes work in browser
+
+---
+
+### US-019: ProjectWorkspace — thesis health indicator
+**Description:** As a user, I want to see the current thesis health status prominently in the workspace so I immediately know if the thesis is holding.
+
+**Acceptance Criteria:**
+- [ ] Parse `Thesis Health` section from `memory_doc` and display as a colored badge in the workspace header: STRONG (green), WEAKENING (yellow), CHALLENGED (orange), INVALIDATED (red)
+- [ ] Badge shows status text + rationale on hover/tooltip
+- [ ] Updates whenever memory panel refreshes (every 10s during active session)
+- [ ] If memory_doc is empty or Thesis Health section not yet populated, show neutral "Not assessed" badge
+- [ ] Typecheck passes
+- [ ] Verify changes work in browser
+
+---
+
+### US-020: End-to-end integration test
+**Description:** As a developer, I want to verify the full project feature flow works end-to-end so I can confirm all layers integrate correctly.
+
+**Acceptance Criteria:**
+- [ ] Can create a project via `POST /projects` and retrieve it via `GET /projects/{id}`
+- [ ] Can upload a PDF to a project and verify `chunk_count > 0` in response
+- [ ] Can send a chat message with `project_id` set and receive a streamed response that references the project thesis
+- [ ] After the response, `GET /projects/{id}/memory` returns an updated `Accumulated Conclusions` section
+- [ ] Frontend `/projects` page loads and displays created project
+- [ ] Frontend `/projects/:id` workspace renders chat + memory panel
+- [ ] Memory panel shows updated memory doc after a chat session
+- [ ] Thesis health badge renders correctly
 
 ---
 
 ## Non-Goals
 
-- No chart type for `ComparePeerEarningsTool` (Tavily returns unstructured text — no chart data)
-- No chart for the `analyze_industry`, `analyze_competitors`, `analyze_moat` tools
-- No chart for `perform_dcf_analysis` (results are narrative, not tabular time-series)
-- No chart editing or configuration by users
-- No chart type switching UI
-- No animated transitions
-- No mobile-optimized chart sizing (full-width responsive is sufficient)
-- No server-side chart rendering
-
----
+- No real-time price alerts or threshold notifications based on signals
+- No automatic thesis invalidation (human-in-the-loop, AI suggests health status only)
+- No sharing or multi-user collaboration on projects
+- No project version history or memory rollback
+- No fine-tuning or custom embeddings beyond the default all-MiniLM-L6-v2 model
+- No mobile-specific layout for the project workspace
 
 ## Technical Considerations
 
-- **recharts** and **html2canvas** must be in `frontend/package.json` (check before creating US-008)
-- **Double-brace escaping in f-strings:** `{{CHART:id}}` in an f-string renders as `{CHART:id}` — correct since it's passed to LLM. But `{{{{CHART:id}}}}` is needed if you're building a string that contains `{{CHART:id}}` as text (for templates-of-templates). Study each agent's string construction carefully.
-- **DB migration is idempotent:** `ALTER TABLE ... ADD COLUMN` wrapped in `try/except` safely no-ops if column exists
-- **chart_data events must be streamed to frontend:** They cannot only go to `collected_charts` — they must also be yielded as SSE events so live messages get charts
-- **beat_miss_bar type:** Uses Recharts `<Bar>` with `<Cell>` children for per-bar color. The estimate bar (gray `#E5E7EB`) and actual bar (`colorByField`) stack side-by-side, not stacked
-- **existing ReactMarkdown code renderer:** Check Message.tsx for existing `code` component before adding — merge, don't replace
-- **FinancialTable.tsx:** `financialTableComponents` is already imported in Message.tsx — it also provides a `code` renderer. Check for conflicts before adding chart code renderer
-
----
-
-## Dependency Order
-
-```
-US-001 (DB schema)
-  → US-007 (api_server uses new DB column)
-US-002 (earnings_tools chart blocks)
-  → US-004 (streaming extracts them)
-  → US-006 (earnings_agent prompt references chart IDs)
-US-003 (dcf+research_assistant chart blocks)
-  → US-004 (streaming extracts them)
-  → US-005 (agent prompts reference chart IDs)
-US-009 (types)
-  → US-008 (AgentChart uses types)
-  → US-010 (Chat.tsx uses types)
-  → US-011 (Message.tsx uses AgentChart)
-```
-
-**Recommended implementation order:** US-001 → US-002 → US-003 → US-004 → US-005 → US-006 → US-007 → US-009 → US-008 → US-010 → US-011
+- **Chroma cold-start**: Pre-load `DefaultEmbeddingFunction` at FastAPI `on_startup` (the model is ~90MB and downloads automatically on first use)
+- **Async Chroma**: Wrap sync Chroma operations in `run_in_executor(None, fn)` since ChromaDB client is synchronous
+- **Memory race condition**: Use optimistic locking (`updated_at` check) in `update_project_memory()` since concurrent sessions can both trigger background updates
+- **`_persist_conversation()` modification**: Must accept optional `project_id` and create `ProjectSession` link — critical coupling point
+- **Fan-out in LangGraph**: Pre-register all 6 agent nodes, use `add_conditional_edges` returning a list of selected node names from `routing_decision`
+- **Context token budget**: memory_doc ≤800 tokens, chunks ≤5×400 tokens, thesis always verbatim — total ≤3500 tokens
+- **Chroma version**: Pin `chromadb>=0.4.0,<0.6.0` to avoid breaking API changes
+- **Chroma DB path**: Resolve relative to same directory as `finance_agent.db` using `os.path.dirname(os.path.abspath(__file__))`
+- **Reuse existing patterns**: `extract_text_from_file()` for document text extraction, `route_agent_for_message()` pattern for Haiku routing call, `asyncio.create_task()` for background memory update, `EarningsAgentExecutorAdapter` pattern for LangGraph adapter

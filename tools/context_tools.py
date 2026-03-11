@@ -8,8 +8,7 @@ from langchain.tools import BaseTool
 from typing import Type
 from pydantic import BaseModel, Field
 from data.financial_data import FinancialDataFetcher
-import os
-from openai import OpenAI
+from shared.tavily_client import get_tavily_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -62,72 +61,19 @@ class GetCompanyContextTool(BaseTool):
             else:
                 market_cap_str = f"${market_cap:,.0f}"
 
-            # Get rich context from web search
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                # Return basic info if no Perplexity API key
-                return f"""
-Company Context for {company_name} ({ticker_clean}):
-
-BASIC INFORMATION:
-- Sector: {sector}
-- Industry: {industry}
-- Market Cap: {market_cap_str}
-- Current Price: ${current_price:.2f}
-
-Note: PERPLEXITY_API_KEY not found. Unable to fetch detailed business context, recent news, and catalysts.
-Please add PERPLEXITY_API_KEY to your .env file for comprehensive context.
-"""
-
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
-
-            # Query for comprehensive company context
-            context_query = f"""Provide a comprehensive business context for {company_name} ({ticker_clean}):
-
-1. BUSINESS MODEL & REVENUE STREAMS:
-   - How does the company make money?
-   - Key business segments and % of revenue
-   - Geographic revenue breakdown
-   - Recurring vs one-time revenue
-
-2. RECENT NEWS & CATALYSTS (Last 30 days):
-   - Major announcements or developments
-   - Product launches or partnerships
-   - Management changes or strategic shifts
-   - Analyst upgrades/downgrades
-
-3. STOCK PERFORMANCE CONTEXT:
-   - Recent price trends and drivers
-   - How has the stock performed YTD and vs S&P 500?
-   - Any significant price movements and reasons
-
-4. UPCOMING EVENTS & CATALYSTS:
-   - Next earnings date
-   - Upcoming product launches
-   - Conferences or investor days
-   - Regulatory decisions pending
-
-5. KEY RISKS & CONCERNS:
-   - Current market concerns about the company
-   - Competitive threats
-   - Regulatory or legal issues
-
-Be specific with dates, numbers, and cite sources."""
-
-            response = client.chat.completions.create(
-                model="sonar-pro",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a financial research analyst providing business context for investment analysis. Be specific, cite sources, and focus on recent developments."
-                    },
-                    {"role": "user", "content": context_query}
-                ],
-            )
-
-            if response.choices and len(response.choices) > 0:
-                web_context = response.choices[0].message.content
-            else:
+            # Get rich context from web search via Tavily
+            try:
+                tavily = get_tavily_client()
+                context_query = f"{company_name} ({ticker_clean}) business model revenue segments recent news catalysts stock performance risks {sector}"
+                web_context = tavily.search_text(
+                    query=context_query,
+                    topic="finance",
+                    search_depth="advanced",
+                    max_results=5,
+                    include_answer="advanced",
+                )
+            except Exception as search_err:
+                logger.warning(f"Web search failed for {ticker_clean}: {search_err}")
                 web_context = "Unable to fetch detailed context from web search."
 
             # Combine basic info with web context

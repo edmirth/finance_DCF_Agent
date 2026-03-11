@@ -331,6 +331,9 @@ DCF Driver Ratios (from raw statements):
             _years = list(reversed(metrics.get('historical_years', [])))
             _rev = list(reversed(metrics.get('historical_revenue', [])))
             _fcf_list = list(reversed(metrics.get('historical_fcf', [])))
+            _gp_list = list(reversed(metrics.get('historical_gross_profit', [])))
+
+            # Chart 1: Revenue & FCF
             _chart_data = [
                 {"period": str(_years[i]), "revenue_b": round(_rev[i] / 1e9, 2), "fcf_b": round(_fcf_list[i] / 1e9, 2)}
                 for i in range(min(len(_years), len(_rev), len(_fcf_list)))
@@ -351,6 +354,34 @@ DCF Driver Ratios (from raw statements):
                     "y_right_format": "currency_b"
                 })
                 result += f"\n---CHART_DATA:{chart_id}---\n{chart_json}\n---END_CHART_DATA:{chart_id}---\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss revenue and FCF history. Do NOT reproduce the CHART_DATA block.]"
+
+            # Chart 2: Revenue vs Cost of Revenue vs Gross Profit
+            _cost_chart_data = [
+                {
+                    "period": str(_years[i]),
+                    "revenue_b": round(_rev[i] / 1e9, 2),
+                    "cost_b": round((_rev[i] - _gp_list[i]) / 1e9, 2),
+                    "gross_profit_b": round(_gp_list[i] / 1e9, 2),
+                }
+                for i in range(min(len(_years), len(_rev), len(_gp_list)))
+                if _rev[i] and _gp_list[i]
+            ]
+            if _cost_chart_data:
+                cost_chart_id = f"revenue_vs_cost_{ticker.upper()}"
+                cost_chart_json = json.dumps({
+                    "id": cost_chart_id,
+                    "chart_type": "bar_line",
+                    "title": f"{ticker.upper()} Revenue vs Cost of Revenue",
+                    "data": _cost_chart_data,
+                    "series": [
+                        {"key": "revenue_b", "label": "Revenue ($B)", "type": "bar", "color": "#2563EB", "yAxis": "left"},
+                        {"key": "cost_b", "label": "Cost of Revenue ($B)", "type": "bar", "color": "#EF4444", "yAxis": "left"},
+                        {"key": "gross_profit_b", "label": "Gross Profit ($B)", "type": "line", "color": "#10B981", "yAxis": "right"},
+                    ],
+                    "y_format": "currency_b",
+                    "y_right_format": "currency_b"
+                })
+                result += f"\n---CHART_DATA:{cost_chart_id}---\n{cost_chart_json}\n---END_CHART_DATA:{cost_chart_id}---\n[CHART_INSTRUCTION: Place {{{{CHART:{cost_chart_id}}}}} on its own line where you discuss revenue vs cost or gross profit. Do NOT reproduce the CHART_DATA block.]"
         except Exception:
             pass
 

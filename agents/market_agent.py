@@ -77,7 +77,7 @@ When users ask about finding stocks or investment opportunities, follow this top
    - Income investor → get_dividend_stocks
    - Custom criteria → screen_stocks
 4. **Present Results**: Show screener results in table format with key metrics
-5. **Suggest Next Steps**: Recommend using Research Assistant or Equity Analyst for deep dive
+5. **Suggest Next Steps**: Recommend using Finance Q&A or Equity Analyst for deep dive
 
 **IMPORTANT - INDUSTRY NAMES:**
 When screening by industry, use the EXACT industry classification from the financial data API:
@@ -106,7 +106,7 @@ User: "Screen for profitable tech companies with low P/E"
 You:
   1. screen_stocks with industry="Semiconductors", pe_ratio_max=20, net_income_min=0
   2. Present results in table format
-  3. Recommend: "These 10 candidates look promising. Use Research Assistant to explore NVDA, AMD, or GOOGL further."
+  3. Recommend: "These 10 candidates look promising. Use Finance Q&A to explore NVDA, AMD, or GOOGL further."
 
 User: "Find Electric Vehicle stocks with positive income"
 You:

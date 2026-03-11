@@ -4,52 +4,44 @@ Specialized Tools for Equity Analyst Agent
 from langchain.tools import BaseTool
 from typing import Optional, Type
 from pydantic import BaseModel, Field
-import os
-from openai import OpenAI
 import logging
-from shared.retry_utils import retry_with_backoff, RetryConfig
+import os
+import anthropic
+from shared.tavily_client import get_tavily_client
 
 logger = logging.getLogger(__name__)
 
 
-# =========================================================================
-# Retry-Wrapped API Helpers
-# =========================================================================
+def _structure_with_llm(raw_data: str, structure_prompt: str) -> str:
+    """Use Claude Haiku to extract structured, specific data from raw Tavily results.
 
-@retry_with_backoff(RetryConfig(
-    max_attempts=3,
-    base_delay=1.5,
-    max_delay=45.0
-))
-def _perplexity_api_call(client: OpenAI, query: str, system_prompt: str):
+    This converts messy web search text into clean, analyst-ready data the
+    equity research agent can directly insert into its report template.
+    Falls back to the raw data if the LLM call fails.
     """
-    Internal function with retry logic for Perplexity API completion calls.
-
-    Args:
-        client: OpenAI client configured for Perplexity
-        query: User query
-        system_prompt: System prompt for the model
-
-    Returns:
-        ChatCompletion response from Perplexity
-
-    Raises:
-        Exception: On API errors (will be retried by decorator)
-    """
-    response = client.chat.completions.create(
-        model="sonar-pro",
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2500,
+            messages=[{
                 "role": "user",
-                "content": query
-            }
-        ],
-    )
-    return response
+                "content": (
+                    f"{structure_prompt}\n\n"
+                    "IMPORTANT RULES:\n"
+                    "- Only include facts actually found in the source data — never invent numbers\n"
+                    "- When a specific number is missing, write 'not disclosed' rather than estimating\n"
+                    "- Be concrete and specific; avoid generic statements like 'the company is growing'\n"
+                    "- Do NOT include source URLs or citation markers in your output\n"
+                    "- Do NOT use ASCII borders (=====, -----) — use clean Markdown only\n\n"
+                    f"Raw research data:\n\n{raw_data}"
+                )
+            }]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"LLM structuring failed, using raw Tavily output: {e}")
+        return raw_data
 
 
 # Input Schemas
@@ -96,48 +88,52 @@ class IndustryAnalysisTool(BaseTool):
     def _run(self, company: str, ticker: str, sector: str) -> str:
         """Analyze industry dynamics"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found. Cannot perform industry analysis."
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+            query = (
+                f"{company} ({ticker}) {sector} industry analysis 2024 2025: "
+                f"(1) Total Addressable Market size in dollars and CAGR growth rate forecast through 2028-2030, "
+                f"(2) Porter's Five Forces — competitive rivalry intensity, barriers to entry, supplier power, buyer power, substitute threats with specific reasons, "
+                f"(3) top 3 structural trends reshaping the industry and their timeline, "
+                f"(4) key regulatory environment, policy risks or tailwinds, "
+                f"(5) industry benchmark margins (gross, EBIT, net) and valuation multiples (P/E, EV/EBITDA). "
+                f"Include specific dollar figures, percentages, and named sources."
+            )
 
-            query = f"""Provide a comprehensive industry analysis for {company} ({ticker}) in the {sector} sector:
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
 
-1. Market Size & Growth:
-   - Total Addressable Market (TAM)
-   - Industry growth rate and projections
-   - Key market segments and their growth
+            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker}) in the {sector} sector into a clean, specific industry analysis. Extract only facts present in the source — do not invent numbers.
 
-2. Industry Structure (Porter's 5 Forces):
-   - Competitive rivalry intensity
-   - Threat of new entrants
-   - Bargaining power of suppliers
-   - Bargaining power of buyers
-   - Threat of substitutes
+Structure your output using these headings:
 
-3. Key Industry Trends:
-   - Technological innovations
-   - Consumer behavior shifts
-   - Regulatory changes
-   - Macroeconomic factors
+**TAM & Market Size**
+State the total addressable market in dollars and projected CAGR through 2028-2030. Name the source (e.g., IDC, Gartner, company filing) if mentioned.
 
-4. Industry Benchmarks:
-   - Average profit margins
-   - Typical valuation multiples (P/E, EV/EBITDA)
-   - Growth rates
-   - Return on capital metrics
+**Porter's Five Forces**
+For each force, state the intensity (High/Medium/Low) and the specific reason:
+- Competitive Rivalry: [intensity — reason]
+- Threat of New Entrants: [intensity — reason]
+- Supplier Power: [intensity — reason]
+- Buyer Power: [intensity — reason]
+- Threat of Substitutes: [intensity — reason]
 
-Provide specific numbers and data points with sources."""
+**Key Industry Trends**
+List 3 specific structural trends with their expected timeline and direct impact on {company}.
 
-            # Use retry-wrapped API call
-            system_prompt = "You are an expert industry analyst. Provide detailed, data-driven analysis with specific metrics and cite your sources."
-            response = _perplexity_api_call(client, query, system_prompt)
+**Regulatory Environment**
+State any relevant regulations, pending legislation, or policy tailwinds/headwinds. Say whether this is a net positive, negative, or neutral for {company}.
 
-            if response.choices and len(response.choices) > 0:
-                return f"Industry Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
-            else:
-                return "Error: No industry analysis results returned"
+**Industry Benchmark Metrics**
+Gross margin range, EBIT margin range, typical P/E and EV/EBITDA multiples for the sector (if found in the data)."""
+
+            structured = _structure_with_llm(raw, structure_prompt)
+            return structured
 
         except Exception as e:
             logger.error(f"Error in industry analysis: {e}")
@@ -171,9 +167,7 @@ class CompetitorAnalysisTool(BaseTool):
                 import json
                 import re
                 try:
-                    # Try to parse company as JSON
                     if isinstance(company, str) and ('{' in company or company.startswith('{')):
-                        # Clean up potential markdown or extra characters
                         json_str = re.sub(r'```json\s*|\s*```', '', company)
                         parsed = json.loads(json_str)
                         company = parsed.get('company', company)
@@ -182,55 +176,49 @@ class CompetitorAnalysisTool(BaseTool):
                 except (json.JSONDecodeError, AttributeError):
                     pass
 
-            # If still missing required fields, return error
             if not ticker or not industry:
                 return f"Error: Missing required parameters. Please provide company, ticker, and industry."
 
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found. Cannot perform competitor analysis."
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+            query = (
+                f"{company} ({ticker}) {industry} competitive landscape 2024 2025: "
+                f"(1) name the top 4-5 direct competitors with their ticker symbols and estimated market share percentages, "
+                f"(2) for each competitor provide: annual revenue (TTM), revenue growth rate, EBIT or operating margin, and current P/E and EV/EBITDA multiples, "
+                f"(3) who is the market share leader and is {company} gaining or losing share, "
+                f"(4) key competitive differentiators — what does {company} do better or worse than peers, "
+                f"(5) any recent competitive moves (new entrants, M&A, pricing changes). "
+                f"Be specific with dollar amounts, percentages, and company names."
+            )
 
-            query = f"""Provide a comprehensive competitive analysis for {company} ({ticker}) in the {industry} industry:
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
 
-1. Key Competitors:
-   - Identify top 3-5 direct competitors with ticker symbols
-   - Market share data for each competitor
-   - Market share trends (gaining/losing)
+            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker}) and its competitors in {industry} into a clean, specific competitive analysis.
 
-2. Competitive Positioning:
-   - {company}'s competitive strengths
-   - {company}'s competitive weaknesses
-   - Key differentiators vs competitors
+Structure your output as follows:
 
-3. Financial Comparison:
-   - Revenue growth rates: {company} vs competitors
-   - Profit margins comparison
-   - Return on invested capital (ROIC)
-   - Free cash flow generation
+**Market Position**
+State {company}'s estimated market share and rank (e.g., "#2 in North American cloud"). State whether it is gaining or losing share, with supporting evidence.
 
-4. Valuation Comparison:
-   - P/E ratio: {company} vs competitors
-   - EV/EBITDA multiples
-   - Price/Sales ratios
-   - Is {company} trading at premium/discount?
+**Top Competitors**
+For each competitor found in the data, provide a row:
+| Company (Ticker) | Est. Market Share | Revenue (TTM) | Revenue Growth | EBIT Margin | P/E | EV/EBITDA |
+Fill with real data from the source. If a metric is not mentioned, write "N/A".
 
-5. Strategic Positioning:
-   - Who is winning market share and why?
-   - Which competitors are most threatening?
-   - Competitive dynamics and pricing trends
+**Competitive Differentiators**
+What does {company} do measurably better than peers? What are its clear weaknesses vs. competitors? Be specific (e.g., "30% lower cost per unit than AWS", "inferior developer tooling vs. Microsoft").
 
-Provide specific numbers and recent data with sources."""
+**Recent Competitive Moves**
+Any new entrants, M&A deals, pricing changes, or product launches that shift the competitive landscape (last 12-18 months)."""
 
-            # Use retry-wrapped API call
-            system_prompt = "You are an expert competitive analyst. Provide detailed comparisons with specific metrics and cite your sources."
-            response = _perplexity_api_call(client, query, system_prompt)
-
-            if response.choices and len(response.choices) > 0:
-                return f"Competitor Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
-            else:
-                return "Error: No competitor analysis results returned"
+            structured = _structure_with_llm(raw, structure_prompt)
+            return structured
 
         except Exception as e:
             logger.error(f"Error in competitor analysis: {e}")
@@ -258,66 +246,54 @@ class MoatAnalysisTool(BaseTool):
     def _run(self, company: str, ticker: str) -> str:
         """Analyze competitive moat"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found. Cannot perform moat analysis."
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+            query = (
+                f"{company} ({ticker}) economic moat competitive advantage analysis 2024 2025: "
+                f"(1) does {company} have a WIDE, NARROW, or NO economic moat — give a clear rating and why, "
+                f"(2) for each moat source that applies, give a SPECIFIC piece of evidence: "
+                f"    — switching costs (e.g., customer retention rate %, average contract length, cost-to-switch), "
+                f"    — network effects (e.g., user counts, platform lock-in mechanisms), "
+                f"    — brand power (e.g., NPS scores, brand value rankings, pricing premium vs. generic), "
+                f"    — cost advantage / economies of scale (e.g., gross margin vs. peers, unit economics), "
+                f"    — intangible assets / patents / regulatory moats (e.g., number of patents, exclusive licenses), "
+                f"(3) pricing power evidence — has {company} been able to raise prices without losing customers, "
+                f"(4) durability — is the moat strengthening, stable, or at risk of erosion. "
+                f"Be concrete — cite customer retention rates, specific products, named examples."
+            )
 
-            query = f"""Analyze the competitive moat (sustainable competitive advantages) of {company} ({ticker}):
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
 
-1. Moat Sources - Assess each:
+            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker})'s economic moat into a clean, specific analysis.
 
-   A. Brand Power:
-   - Brand recognition and reputation
-   - Customer loyalty metrics
-   - Pricing premium vs competitors
-   - Evidence: Net Promoter Score, brand value rankings
+Structure your output as follows:
 
-   B. Network Effects:
-   - Does the product/service become more valuable as more people use it?
-   - Examples and strength of network effects
+**Moat Rating: WIDE / NARROW / NONE**
+State clearly which rating applies and give the single most compelling reason in one sentence.
 
-   C. Switching Costs:
-   - How difficult/expensive is it for customers to switch?
-   - Lock-in mechanisms (ecosystem, data, integration)
-   - Customer retention rates
+**Moat Sources — Evidence**
+For each moat type that applies to {company}, give one specific, concrete piece of evidence:
+- **Switching Costs**: [customer retention rate %, average contract length, or cost-to-switch estimate — if found]
+- **Network Effects**: [user count, platform stickiness metric, or lock-in mechanism — if found]
+- **Brand Power**: [brand value ranking, pricing premium vs. generic, NPS score — if found]
+- **Cost Advantage / Scale**: [gross margin vs. peer median, unit cost advantage — if found]
+- **Intangible Assets**: [number of patents, exclusive licenses, regulatory moats — if found]
+If a moat type does NOT apply or no data was found, omit it.
 
-   D. Cost Advantages:
-   - Economies of scale
-   - Proprietary technology or processes
-   - Advantaged supply chain or distribution
-   - Cost per unit vs competitors
+**Pricing Power**
+Has {company} raised prices without meaningful customer loss? Give the most recent specific example (product name, price increase %, date) if available.
 
-   E. Intangible Assets:
-   - Patents and intellectual property
-   - Regulatory licenses or approvals
-   - Proprietary data or technology
+**Moat Durability**
+Is the moat strengthening, stable, or at risk of erosion? Give one specific reason supporting your assessment."""
 
-2. Pricing Power:
-   - Can the company raise prices without losing customers?
-   - Historical pricing trends
-   - Price elasticity evidence
-
-3. Moat Durability:
-   - How sustainable are these advantages?
-   - Threats to the moat
-   - Is the moat widening or narrowing?
-
-4. Overall Moat Rating:
-   - No Moat / Narrow Moat / Wide Moat
-   - Justification with evidence
-
-Provide specific examples and data with sources."""
-
-            # Use retry-wrapped API call
-            system_prompt = "You are an expert in competitive strategy and moat analysis. Assess competitive advantages critically with evidence and cite sources."
-            response = _perplexity_api_call(client, query, system_prompt)
-
-            if response.choices and len(response.choices) > 0:
-                return f"Competitive Moat Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
-            else:
-                return "Error: No moat analysis results returned"
+            structured = _structure_with_llm(raw, structure_prompt)
+            return structured
 
         except Exception as e:
             logger.error(f"Error in moat analysis: {e}")
@@ -344,61 +320,60 @@ class ManagementAnalysisTool(BaseTool):
     def _run(self, company: str, ticker: str) -> str:
         """Analyze management quality"""
         try:
-            api_key = os.getenv("PERPLEXITY_API_KEY")
-            if not api_key:
-                return "Error: PERPLEXITY_API_KEY not found. Cannot perform management analysis."
+            tavily = get_tavily_client()
 
-            client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+            query = (
+                f"{company} ({ticker}) management quality assessment 2024 2025: "
+                f"(1) CEO full name, how long they have been CEO, and their professional background before joining, "
+                f"(2) CFO and 1-2 other key executives if notable, "
+                f"(3) capital allocation track record over the past 3-5 years: "
+                f"    — M&A history (named deals, were they accretive or dilutive?), "
+                f"    — share buybacks (total amount spent, was timing good?), "
+                f"    — dividends (yield, payout ratio, growth history), "
+                f"    — R&D investment (% of revenue, key bets), "
+                f"(4) insider ownership percentage for CEO and board — is it meaningful?, "
+                f"(5) any notable insider purchases or sales in the last 12 months, "
+                f"(6) executive compensation structure — is pay aligned with shareholder value creation?, "
+                f"(7) any governance red flags (related-party transactions, board independence issues). "
+                f"Name specific people, deals, and dollar amounts."
+            )
 
-            query = f"""Analyze the management quality and leadership of {company} ({ticker}):
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
 
-1. Leadership Team:
-   - CEO name, background, tenure
-   - Key executives (CFO, COO, etc.)
-   - Relevant experience and track record
-   - Succession planning
+            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker})'s management team into a clean, specific management quality assessment.
 
-2. Capital Allocation Track Record:
-   - Historical M&A deals and their outcomes
-   - Share buyback programs and timing
-   - Dividend policy and sustainability
-   - R&D investment levels and innovation output
-   - Debt management and capital structure decisions
-   - Overall ROIC trend (improving/declining)
+Structure your output as follows:
 
-3. Alignment with Shareholders:
-   - Insider ownership percentage
-   - Recent insider buying/selling activity
-   - Executive compensation structure (salary vs stock-based)
-   - Vesting schedules and performance metrics
+**Leadership Team**
+- CEO: [Full name, years as CEO, background before joining, key strategic initiatives under their tenure]
+- CFO: [Full name if found, background]
+- Other key executives if noteworthy
 
-4. Strategic Vision & Execution:
-   - Stated strategic priorities
-   - Historical execution vs guidance
-   - Product roadmap and innovation pipeline
-   - Response to competitive threats
+**Capital Allocation Track Record**
+Rate each category found in the data: Excellent / Good / Fair / Poor
+- M&A: [Named deals, whether accretive or dilutive, approximate values]
+- Share Buybacks: [Total spent in last 3 years, were they well-timed?]
+- Dividends: [Current yield, payout ratio, growth history]
+- R&D Investment: [% of revenue, key technology bets, any notable results]
+Overall Capital Allocation Rating: [Excellent / Good / Fair / Poor] — one sentence justification
 
-5. Governance & Transparency:
-   - Board independence and quality
-   - Related party transactions
-   - Communication quality with shareholders
-   - Accounting quality and any red flags
+**Insider Ownership & Alignment**
+- CEO ownership: [%]
+- Board ownership: [collective %]
+- Notable insider transactions in last 12 months: [buys or sells, amounts if disclosed]
 
-6. Management Quality Rating:
-   - Overall assessment (Excellent/Good/Fair/Poor)
-   - Key strengths and weaknesses
-   - Red flags or concerns
+**Compensation & Governance**
+- Is pay tied to long-term performance metrics? [Yes/No, brief description]
+- Any governance red flags: [related-party transactions, board independence issues, activist investors]"""
 
-Provide specific examples, data, and recent developments with sources."""
-
-            # Use retry-wrapped API call
-            system_prompt = "You are an expert in management assessment and corporate governance. Provide balanced analysis with specific evidence and cite sources."
-            response = _perplexity_api_call(client, query, system_prompt)
-
-            if response.choices and len(response.choices) > 0:
-                return f"Management Quality Analysis for {company} ({ticker}):\n\n{response.choices[0].message.content}"
-            else:
-                return "Error: No management analysis results returned"
+            structured = _structure_with_llm(raw, structure_prompt)
+            return structured
 
         except Exception as e:
             logger.error(f"Error in management analysis: {e}")
@@ -410,9 +385,13 @@ Provide specific examples, data, and recent developments with sources."""
 
 def get_equity_analyst_tools():
     """Return list of all equity analyst tools"""
+    from tools.sec_tools import GetSECFilingsTool, AnalyzeSECFilingTool, GetSECFinancialsTool
     return [
         IndustryAnalysisTool(),
         CompetitorAnalysisTool(),
         MoatAnalysisTool(),
-        ManagementAnalysisTool()
+        ManagementAnalysisTool(),
+        GetSECFilingsTool(),
+        AnalyzeSECFilingTool(),
+        GetSECFinancialsTool(),
     ]

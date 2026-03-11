@@ -5,15 +5,33 @@ import EarningsLoadingState from '../components/earnings/EarningsLoadingState';
 import EarningsReport from '../components/EarningsReport';
 import EarningsFollowUpInput from '../components/earnings/EarningsInput';
 
+export interface ProgressStep {
+  node: string;
+  label: string;
+  status: 'pending' | 'active' | 'completed';
+  detail?: string;
+}
+
+const STEP_LABELS: Record<string, string> = {
+  fetch_company_info: 'Company info',
+  fetch_earnings_history: 'Earnings history',
+  fetch_analyst_estimates: 'Analyst estimates',
+  fetch_guidance_and_news: 'Earnings calls & peers',
+  comprehensive_analysis: 'Financial analysis',
+  develop_thesis: 'Investment thesis',
+  generate_report: 'Writing report',
+};
+
 function EarningsPage() {
   const [ticker, setTicker] = useState('');
   const [quarters] = useState(1);
-  const [focusQuery, setFocusQuery] = useState('');
+  const [focusQuery] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [rawResponse, setRawResponse] = useState('');
   const [lastQuery, setLastQuery] = useState('');
   const [elapsedTime, setElapsedTime] = useState(0);
   const [sourceCount, setSourceCount] = useState(0);
+  const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
   const [followUps, setFollowUps] = useState<Array<{question: string, answer: string, isLoading: boolean}>>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -70,6 +88,7 @@ function EarningsPage() {
     setRawResponse('');
     setLastQuery(query);
     setSourceCount(0);
+    setProgressSteps([]);
     setFollowUps([]);
 
     let toolCount = 0;
@@ -83,7 +102,31 @@ function EarningsPage() {
           session_id: `earnings-${Date.now()}`,
         },
         (event) => {
-          if (event.type === 'tool' || event.type === 'tool_result') {
+          if (event.type === 'earnings_progress' && event.node && event.status) {
+            const node = event.node;
+            const status = event.status;
+            const detail = event.detail || '';
+            const label = STEP_LABELS[node] || node;
+
+            setProgressSteps(prev => {
+              if (status === 'started') {
+                const existing = prev.find(s => s.node === node);
+                if (existing) {
+                  return prev.map(s => s.node === node ? { ...s, status: 'active', detail } : s);
+                }
+                return [...prev, { node, label, status: 'active', detail }];
+              } else if (status === 'completed') {
+                const exists = prev.some(s => s.node === node);
+                if (exists) {
+                  return prev.map(s => s.node === node ? { ...s, status: 'completed', detail } : s);
+                }
+                return [...prev, { node, label, status: 'completed', detail }];
+              } else if (status === 'sub_progress') {
+                return prev.map(s => s.node === node ? { ...s, detail } : s);
+              }
+              return prev;
+            });
+          } else if (event.type === 'tool' || event.type === 'tool_result') {
             toolCount++;
             setSourceCount(Math.ceil(toolCount / 2));
           } else if (event.type === 'content' && event.content) {
@@ -207,6 +250,7 @@ function EarningsPage() {
               <EarningsLoadingState
                 elapsedTime={formatTime(elapsedTime)}
                 sourceCount={sourceCount}
+                progressSteps={progressSteps}
               />
             </>
           )}

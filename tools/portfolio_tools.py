@@ -2,10 +2,8 @@
 Portfolio Analysis Tools
 
 Tools for analyzing investment portfolios including:
-- Portfolio metrics (Sharpe ratio, beta, volatility)
-- Diversification analysis
-- Performance attribution
-- Rebalancing recommendations
+- Portfolio metrics (P&L, concentration risk, position sizing)
+- Sector diversification analysis (Herfindahl index)
 - Tax loss harvesting opportunities
 """
 
@@ -295,6 +293,20 @@ class AnalyzeDiversificationTool(BaseTool):
 
             if diversification_score > 75:
                 output += f"  ✅ Portfolio is well-diversified across sectors\n"
+
+            # Emit pie chart for sector allocation
+            if sector_allocation:
+                pie_data = [{"label": s["sector"], "value": round(s["weight"], 1)} for s in sector_allocation]
+                chart_id = "portfolio_sector_allocation"
+                chart_spec = json.dumps({
+                    "id": chart_id,
+                    "chart_type": "pie",
+                    "title": "Portfolio Sector Allocation",
+                    "subtitle": "% of total portfolio value",
+                    "data": pie_data,
+                })
+                output += f"\n---CHART_DATA:{chart_id}---\n{chart_spec}\n---END_CHART_DATA:{chart_id}---"
+                output += f"\n[CHART_INSTRUCTION: Place {{{{CHART:{chart_id}}}}} on its own line where you discuss sector allocation. Do NOT reproduce the CHART_DATA block.]"
 
             return output
 

@@ -29,7 +29,7 @@ interface MessageProps {
 function preprocessChartPlaceholders(content: string): string {
   return content.replace(
     /\{\{CHART:([^}]+)\}\}/g,
-    (_, id) => `\`\`\`chart:${id.trim()}\n\`\`\``
+    (_, id) => `\n\`\`\`chart:${id.trim()}\n\`\`\`\n`
   );
 }
 
@@ -49,10 +49,20 @@ function MessageComponent({ message, agent, isStreaming = false, onFollowUpClick
 
   if (!message.content && !message.thinkingSteps?.length) return null;
 
-  // Filter out ReAct format markers, ASCII borders, and tool output headers
+  // Filter out ReAct format markers, ASCII borders, and tool output headers.
+  // Chart placeholders ({{CHART:id}}) are tokenized before cleaning and restored
+  // after, so aggressive multi-line regexes cannot accidentally consume them.
   const cleanContent = (content: string): string => {
     if (!content) return '';
-    return content
+
+    // Protect {{CHART:id}} placeholders from being consumed by greedy regexes
+    const saved: string[] = [];
+    let protected_ = content.replace(/\{\{CHART:[^}]+\}\}/g, (m) => {
+      saved.push(m);
+      return `\x00CHART${saved.length - 1}\x00`;
+    });
+
+    protected_ = protected_
       // ReAct chain-of-thought markers
       .replace(/<thinking>[\s\S]*?<\/thinking>/g, '')
       .replace(/<reflection>[\s\S]*?<\/reflection>/g, '')
@@ -80,6 +90,9 @@ function MessageComponent({ message, agent, isStreaming = false, onFollowUpClick
       // Collapse triple+ blank lines down to double
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+
+    // Restore chart placeholders
+    return protected_.replace(/\x00CHART(\d+)\x00/g, (_, i) => saved[parseInt(i)]);
   };
 
   const displayContent = isUser ? message.content : cleanContent(message.content);

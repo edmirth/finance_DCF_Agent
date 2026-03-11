@@ -48,16 +48,20 @@ function Chat({
     }
   }, [sessionIdProp]);
 
-  // Restore messages when initialMessages changes
+  // Restore messages when initialMessages changes.
+  // Use functional updater so we never overwrite an active chat — this prevents
+  // the sessionSaved URL update from triggering a DB restore that wipes chartsById.
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
-      const withCharts = initialMessages.map(m => ({
-        ...m,
-        chartsById: (m as any).chart_specs
-          ? JSON.parse((m as any).chart_specs)
-          : m.chartsById,
-      }));
-      setMessages(withCharts);
+      setMessages(prev => {
+        if (prev.length > 0) return prev; // active chat — don't clobber live state
+        return initialMessages.map(m => ({
+          ...m,
+          chartsById: (m as any).chart_specs
+            ? JSON.parse((m as any).chart_specs)
+            : m.chartsById,
+        }));
+      });
     }
   }, [initialMessages]);
 
@@ -350,8 +354,8 @@ function Chat({
             content: step.reflectionText,
           }));
         } else if (event.type === 'chart_data') {
-          const chartEvent = event as unknown as ChartDataEvent;
-          if (chartEvent.id) {
+          if (event.id) {
+            const chartEvent = event as ChartDataEvent;
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? { ...msg, chartsById: { ...(msg.chartsById ?? {}), [chartEvent.id]: chartEvent } }

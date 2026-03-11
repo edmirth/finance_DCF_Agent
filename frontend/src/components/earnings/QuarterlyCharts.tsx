@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { ComposedChart, LineChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { QuarterlyDataPoint } from '../../types/earnings';
 
 interface QuarterlyChartsProps {
@@ -31,17 +31,22 @@ function QuarterlyCharts({ revenueData, epsData }: QuarterlyChartsProps) {
     return null;
   };
 
-  // Prepare data for combined chart (memoized)
-  const combinedData = useMemo(() =>
-    revenueData.map((revPoint, idx) => ({
-      quarter: revPoint.quarter,
-      revenue: revPoint.value,
-      revenueGrowth: revPoint.yoyGrowth || 0,
-      eps: epsData[idx]?.value || 0,
-      epsGrowth: epsData[idx]?.yoyGrowth || 0,
-    })),
-    [revenueData, epsData]
-  );
+  // Prepare data for combined chart (memoized).
+  // Match eps to revenue by quarter label instead of by index so mismatched
+  // array lengths or different orderings don't silently corrupt the chart.
+  const combinedData = useMemo(() => {
+    const epsMap = new Map(epsData.map(e => [e.quarter, e]));
+    return revenueData.map((revPoint) => {
+      const eps = epsMap.get(revPoint.quarter);
+      return {
+        quarter: revPoint.quarter,
+        revenue: revPoint.value,
+        revenueGrowth: revPoint.yoyGrowth || 0,
+        eps: eps?.value || 0,
+        epsGrowth: eps?.yoyGrowth || 0,
+      };
+    });
+  }, [revenueData, epsData]);
 
   return (
     <div className="space-y-6">
@@ -102,7 +107,7 @@ function QuarterlyCharts({ revenueData, epsData }: QuarterlyChartsProps) {
       <div className="glass-effect rounded-2xl p-6 border border-slate-200/50 shadow-lg">
         <h3 className="text-lg font-semibold text-slate-900 mb-6">Quarterly Earnings Per Share</h3>
         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={combinedData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+          <ComposedChart data={combinedData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis
               dataKey="quarter"
@@ -143,7 +148,7 @@ function QuarterlyCharts({ revenueData, epsData }: QuarterlyChartsProps) {
               dot={{ fill: '#f59e0b', r: 4 }}
               name="YoY Growth (%)"
             />
-          </BarChart>
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
 
@@ -175,11 +180,21 @@ function QuarterlyCharts({ revenueData, epsData }: QuarterlyChartsProps) {
   );
 }
 
-// Memoize to prevent unnecessary re-renders
+// Memoize to prevent unnecessary re-renders.
+// Compare all quarter labels AND the last data values so any revision to
+// numbers (not just length changes) triggers a re-render.
 export default memo(QuarterlyCharts, (prevProps, nextProps) => {
-  return (
+  const sameRevenue =
     prevProps.revenueData.length === nextProps.revenueData.length &&
+    prevProps.revenueData.every((p, i) =>
+      p.quarter === nextProps.revenueData[i]?.quarter &&
+      p.value === nextProps.revenueData[i]?.value
+    );
+  const sameEps =
     prevProps.epsData.length === nextProps.epsData.length &&
-    prevProps.revenueData[0]?.quarter === nextProps.revenueData[0]?.quarter
-  );
+    prevProps.epsData.every((p, i) =>
+      p.quarter === nextProps.epsData[i]?.quarter &&
+      p.value === nextProps.epsData[i]?.value
+    );
+  return sameRevenue && sameEps;
 });

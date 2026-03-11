@@ -227,8 +227,8 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
         if agent_type not in AGENT_FALLBACK_METHODS:
             raise ValueError(f"Unknown agent type: {agent_type}")
 
-        # Inject progress queue for earnings agent (sync→async bridge)
-        if agent_type == "earnings":
+        # Inject progress queue for agents that use direct tool calls (bypassing LangChain callbacks)
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = queue
             agent._progress_loop = loop
 
@@ -250,8 +250,8 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             fallback_method = getattr(agent, fallback_method_name)
             response = await loop.run_in_executor(None, fallback_method, message)
 
-        # Clean up progress queue for earnings agent
-        if agent_type == "earnings":
+        # Clean up progress queue
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = None
             agent._progress_loop = None
 

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import Chat from '../components/Chat';
 import ToastNotification from '../components/ToastNotification';
 import { Agent, Message } from '../types';
-import { getAgents, getSession, getWatchlists, createWatchlist, addTickerToWatchlist } from '../api';
+import { getAgents, getSession } from '../api';
 
 // Virtual "Auto" agent — routes each message to the best specialized agent
 const AUTO_AGENT: Agent = {
@@ -25,18 +25,27 @@ function ChatPage() {
   // Session restore
   const [restoredSessionId, setRestoredSessionId] = useState<string | undefined>(undefined);
   const [restoredMessages, setRestoredMessages] = useState<Message[] | undefined>(undefined);
-
-  // Watchlist
-  const [watchlistTickers, setWatchlistTickers] = useState<string[]>([]);
-  const [defaultWatchlistId, setDefaultWatchlistId] = useState<string | null>(null);
+  // Incremented to force Chat to remount as a fresh session
+  const [chatKey, setChatKey] = useState(0);
 
   // Toast
   const [showToast, setShowToast] = useState(false);
 
   useEffect(() => {
     loadAgents();
-    loadWatchlists();
   }, []);
+
+  // Reset to a fresh chat when the Home button is clicked
+  useEffect(() => {
+    const handler = () => {
+      setRestoredSessionId(undefined);
+      setRestoredMessages(undefined);
+      setSearchParams({});
+      setChatKey(k => k + 1);
+    };
+    window.addEventListener('newChat', handler);
+    return () => window.removeEventListener('newChat', handler);
+  }, [setSearchParams]);
 
   // Update URL when a new session is saved (so it can be bookmarked / restored)
   useEffect(() => {
@@ -75,24 +84,6 @@ function ChatPage() {
     }
   };
 
-  const loadWatchlists = async () => {
-    try {
-      const wls = await getWatchlists();
-      if (wls.length === 0) {
-        // Create a default watchlist on first load
-        const wl = await createWatchlist('My Watchlist');
-        setDefaultWatchlistId(wl.id);
-        setWatchlistTickers([]);
-      } else {
-        const first = wls[0];
-        setDefaultWatchlistId(first.id);
-        setWatchlistTickers(first.tickers.map(t => t.ticker));
-      }
-    } catch {
-      // ignore — backend might not have watchlists yet
-    }
-  };
-
   const restoreSession = async (sessionId: string) => {
     try {
       const session = await getSession(sessionId);
@@ -114,20 +105,6 @@ function ChatPage() {
       setSearchParams({});
     }
   };
-
-  const handleAddWatchlistTicker = useCallback(async (ticker: string) => {
-    if (!defaultWatchlistId) return;
-    try {
-      await addTickerToWatchlist(defaultWatchlistId, ticker);
-      setWatchlistTickers(prev => prev.includes(ticker) ? prev : [...prev, ticker]);
-    } catch {
-      // Duplicate or other error — ignore silently
-    }
-  }, [defaultWatchlistId]);
-
-  const handleWatchlistChipClick = useCallback((_ticker: string) => {
-    // Chat.tsx handles chip click directly by calling sendToAgent
-  }, []);
 
   const handleAnalysisSaved = useCallback(() => {
     setShowToast(true);
@@ -200,14 +177,12 @@ function ChatPage() {
       <main className="flex justify-center items-start min-h-screen">
         <div className="w-full max-w-[720px] px-6 mx-auto">
           <Chat
+            key={chatKey}
             agent={selectedAgent}
             agents={agents}
             onSelectAgent={setSelectedAgent}
             sessionId={restoredSessionId}
             initialMessages={restoredMessages}
-            watchlistTickers={watchlistTickers}
-            onWatchlistChipClick={handleWatchlistChipClick}
-            onAddWatchlistTicker={handleAddWatchlistTicker}
             onAnalysisSaved={handleAnalysisSaved}
           />
         </div>

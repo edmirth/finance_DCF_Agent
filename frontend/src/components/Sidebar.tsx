@@ -190,6 +190,7 @@ function Sidebar() {
           <NavLink
             to="/"
             end
+            onClick={() => window.dispatchEvent(new CustomEvent('newChat'))}
             className={({ isActive }) =>
               `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
                 isActive
