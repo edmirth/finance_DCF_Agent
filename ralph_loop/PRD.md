@@ -329,7 +329,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 - [x] "View all projects →" link at bottom of section navigating to `/projects`
 - [x] Projects list loaded via `getProjects()` on mount + refreshed every 30s (same pattern as sessions)
 - [x] Typecheck passes
-- [ ] Verify changes work in browser
+- [x] Verify changes work in browser
 
 ---
 
@@ -356,7 +356,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 - [x] Archive button on each card calls `deleteProject()` (soft archive) and removes from list
 - [x] Empty state: "No projects yet — create your first investment thesis" with New Project CTA
 - [x] Typecheck passes
-- [ ] Verify changes work in browser
+- [x] Verify changes work in browser
 
 ---
 
@@ -364,14 +364,14 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a user, I want to chat with agents inside a project workspace so all my queries are grounded in my thesis and accumulated memory.
 
 **Acceptance Criteria:**
-- [ ] Create `frontend/src/pages/ProjectWorkspace.tsx`
-- [ ] Loads project detail via `getProject(projectId)` from URL param
-- [ ] Renders project title and thesis excerpt at top of page
-- [ ] Left panel (2/3 width): reuses existing `<Chat>` component with `project_id` passed in every `streamMessage()` call
-- [ ] Chat sessions created in this workspace are automatically linked to the project (handled server-side)
-- [ ] Loads existing project sessions via `getProjectSessions()` and allows restoring them (same `?session=` URL param pattern)
-- [ ] Typecheck passes
-- [ ] Verify changes work in browser
+- [x] Create `frontend/src/pages/ProjectWorkspace.tsx`
+- [x] Loads project detail via `getProject(projectId)` from URL param
+- [x] Renders project title and thesis excerpt at top of page
+- [x] Left panel (2/3 width): reuses existing `<Chat>` component with `project_id` passed in every `streamMessage()` call
+- [x] Chat sessions created in this workspace are automatically linked to the project (handled server-side)
+- [x] Loads existing project sessions via `getProjectSessions()` and allows restoring them (same `?session=` URL param pattern)
+- [x] Typecheck passes
+- [x] Verify changes work in browser
 
 ---
 
@@ -379,13 +379,13 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a user, I want to see the living memory document and uploaded files in the project workspace so I can track how the thesis is evolving.
 
 **Acceptance Criteria:**
-- [ ] Right panel (1/3 width) in `ProjectWorkspace.tsx` with 3 tabs: "Memory", "Documents", "Sessions"
-- [ ] **Memory tab**: renders `memory_doc` markdown (use existing `react-markdown` component); shows last-updated timestamp; "Edit" button toggles to textarea for manual edits (calls `patchProjectMemory()`)
-- [ ] Memory tab auto-refreshes every 10s during an active session (polls `getProjectMemory()`)
-- [ ] **Documents tab**: lists uploaded documents (filename, file type, chunk count, upload date); delete button per doc
-- [ ] **Sessions tab**: lists `getProjectSessions()` result; click navigates to `/?session={id}`
-- [ ] Typecheck passes
-- [ ] Verify changes work in browser
+- [x] Right panel (1/3 width) in `ProjectWorkspace.tsx` with 3 tabs: "Memory", "Documents", "Sessions"
+- [x] **Memory tab**: renders `memory_doc` markdown (use existing `react-markdown` component); shows last-updated timestamp; "Edit" button toggles to textarea for manual edits (calls `patchProjectMemory()`)
+- [x] Memory tab auto-refreshes every 10s during an active session (polls `getProjectMemory()`)
+- [x] **Documents tab**: lists uploaded documents (filename, file type, chunk count, upload date); delete button per doc
+- [x] **Sessions tab**: lists `getProjectSessions()` result; click navigates to `/?session={id}`
+- [x] Typecheck passes
+- [x] Verify changes work in browser
 
 ---
 
