@@ -167,6 +167,16 @@
   - Use `or {}` guard on memory_patch to handle None (graph may not always populate it)
 ---
 
+## Iteration 13 - US-011: Frontend TypeScript types for projects
+- Added ProjectSummary, ProjectConfig, ProjectDetail, ProjectDocument interfaces to frontend/src/types.ts
+- Extended ChatRequest with optional `project_id?: string` field
+- Pre-existing tsc error in AgentChart.tsx (not my change) — confirmed by stash test
+- Files changed: frontend/src/types.ts, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - AgentChart.tsx has a pre-existing TS error — don't count it as a failure
+  - Stash test is a reliable way to confirm errors are pre-existing
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`
