@@ -323,12 +323,12 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a user, I want to see my projects in the sidebar so I can navigate to them quickly.
 
 **Acceptance Criteria:**
-- [ ] Add "Projects" NavLink (Folder icon) to navigation section in `Sidebar.tsx`, linking to `/projects`
-- [ ] When sidebar is expanded: show a "Projects" section above "Recent Chats" listing up to 5 active projects
-- [ ] Each project row shows title + thesis excerpt (first 60 chars) + click → navigate to `/projects/{id}`
-- [ ] "View all projects →" link at bottom of section navigating to `/projects`
-- [ ] Projects list loaded via `getProjects()` on mount + refreshed every 30s (same pattern as sessions)
-- [ ] Typecheck passes
+- [x] Add "Projects" NavLink (Folder icon) to navigation section in `Sidebar.tsx`, linking to `/projects`
+- [x] When sidebar is expanded: show a "Projects" section above "Recent Chats" listing up to 5 active projects
+- [x] Each project row shows title + thesis excerpt (first 60 chars) + click → navigate to `/projects/{id}`
+- [x] "View all projects →" link at bottom of section navigating to `/projects`
+- [x] Projects list loaded via `getProjects()` on mount + refreshed every 30s (same pattern as sessions)
+- [x] Typecheck passes
 - [ ] Verify changes work in browser
 
 ---
@@ -337,11 +337,11 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need React Router routes for the projects list and workspace pages so the URLs resolve correctly.
 
 **Acceptance Criteria:**
-- [ ] Add `Route path="/projects"` → `ProjectsListPage` to `App.tsx`
-- [ ] Add `Route path="/projects/:projectId"` → `ProjectWorkspace` to `App.tsx`
-- [ ] Import both page components
-- [ ] Existing routes (`/`, `/portfolio`, `/earnings`, `/library`) unchanged
-- [ ] Typecheck passes
+- [x] Add `Route path="/projects"` → `ProjectsListPage` to `App.tsx`
+- [x] Add `Route path="/projects/:projectId"` → `ProjectWorkspace` to `App.tsx`
+- [x] Import both page components
+- [x] Existing routes (`/`, `/portfolio`, `/earnings`, `/library`) unchanged
+- [x] Typecheck passes
 
 ---
 

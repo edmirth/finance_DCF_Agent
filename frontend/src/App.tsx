@@ -4,6 +4,8 @@ import ChatPage from './pages/ChatPage';
 import Portfolio from './pages/Portfolio';
 import EarningsPage from './pages/EarningsPage';
 import LibraryPage from './pages/LibraryPage';
+import ProjectsListPage from './pages/ProjectsListPage';
+import ProjectWorkspace from './pages/ProjectWorkspace';
 
 function App() {
   return (
@@ -18,6 +20,8 @@ function App() {
           <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/earnings" element={<EarningsPage />} />
           <Route path="/library" element={<LibraryPage />} />
+          <Route path="/projects" element={<ProjectsListPage />} />
+          <Route path="/projects/:projectId" element={<ProjectWorkspace />} />
         </Routes>
       </div>
     </div>

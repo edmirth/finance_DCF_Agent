@@ -190,6 +190,32 @@
   - streamMessage already correct since ChatRequest has project_id?: string and full request serialized to JSON
 ---
 
+## Iteration 15 - US-013: Sidebar — Projects section
+- Added Folder import from lucide-react, getProjects import from api, ProjectSummary from types
+- Added projects state + loadProjects() with 30s interval refresh (same pattern as sessions)
+- Added Projects NavLink (Folder icon) after Library in nav section — links to /projects
+- Added Projects section above Recent Conversations: lists up to 5 active projects
+- Each row: Folder icon + title + thesis excerpt (60 chars) + NavLink to /projects/{id}
+- "View all projects →" footer link to /projects
+- Typecheck: only pre-existing AgentChart.tsx error (type unknown), no new errors
+- Files changed: frontend/src/components/Sidebar.tsx
+- Learnings for future iterations:
+  - Filter projects by status='active' client-side (backend GET /projects returns all by default)
+  - NavLink inside map() works fine — each gets its own active state
+---
+
+## Iteration 16 - US-014: App.tsx — add project routes
+- Added ProjectsListPage and ProjectWorkspace stub components (placeholder pages for US-015/016)
+- Added Route path="/projects" → ProjectsListPage to App.tsx
+- Added Route path="/projects/:projectId" → ProjectWorkspace to App.tsx
+- Imported both page components in App.tsx
+- Existing routes (/, /portfolio, /earnings, /library) unchanged
+- Files changed: frontend/src/App.tsx, frontend/src/pages/ProjectsListPage.tsx (new stub), frontend/src/pages/ProjectWorkspace.tsx (new stub)
+- Learnings for future iterations:
+  - US-015 and US-016 page components must exist at import time — create stubs in US-014 then fill in US-015/016
+  - Only pre-existing AgentChart.tsx error in tsc — not a failure
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`
