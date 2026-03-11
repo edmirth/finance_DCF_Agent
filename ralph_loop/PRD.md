@@ -174,16 +174,16 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need a lightweight LLM-based router that reads a query + project context and decides which agents to invoke with what task so queries are handled by the right agents.
 
 **Acceptance Criteria:**
-- [ ] Create `backend/project_router.py`
-- [ ] `route_for_project(query: str, context_block: str, project_config: dict) -> ProjectRoutingDecision` function
-- [ ] `ProjectRoutingDecision` dataclass: `agents: List[AgentTask]`, `reasoning: str`
-- [ ] `AgentTask` dataclass: `agent_type: str`, `task: str`
-- [ ] Uses Claude Haiku (same client pattern as existing `route_agent_for_message()` in `api_server.py`)
-- [ ] Router prompt selects 1–3 agents from: dcf, analyst, earnings, market, research (portfolio excluded — incompatible input format)
-- [ ] Activation rules encoded in prompt: DCF/analyst for valuation, earnings for quarterly results, market for macro, research for default/follow-ups
-- [ ] Task string for each agent includes thesis excerpt for context grounding
-- [ ] Fallback to `[AgentTask(agent_type="research", task=query)]` if LLM call or JSON parse fails
-- [ ] Typecheck passes
+- [x] Create `backend/project_router.py`
+- [x] `route_for_project(query: str, context_block: str, project_config: dict) -> ProjectRoutingDecision` function
+- [x] `ProjectRoutingDecision` dataclass: `agents: List[AgentTask]`, `reasoning: str`
+- [x] `AgentTask` dataclass: `agent_type: str`, `task: str`
+- [x] Uses Claude Haiku (same client pattern as existing `route_agent_for_message()` in `api_server.py`)
+- [x] Router prompt selects 1–3 agents from: dcf, analyst, earnings, market, research (portfolio excluded — incompatible input format)
+- [x] Activation rules encoded in prompt: DCF/analyst for valuation, earnings for quarterly results, market for macro, research for default/follow-ups
+- [x] Task string for each agent includes thesis excerpt for context grounding
+- [x] Fallback to `[AgentTask(agent_type="research", task=query)]` if LLM call or JSON parse fails
+- [x] Typecheck passes
 
 ---
 

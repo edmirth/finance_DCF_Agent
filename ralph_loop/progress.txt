@@ -43,6 +43,19 @@
   - XML tags chosen over markdown to avoid conflicts with memory_doc markdown content
 ---
 
+## Iteration 5 - US-005: Project router — agent routing LLM call
+- Created `backend/project_router.py` with `AgentTask` and `ProjectRoutingDecision` dataclasses
+- `route_for_project(query, context_block, project_config)` async function using Claude Haiku
+- System prompt encodes activation rules for all 5 agents (dcf, analyst, earnings, market, research)
+- Extracts thesis excerpt from XML context_block for task grounding
+- Parses JSON response, filters to valid agent_types, falls back to research on any error
+- Files changed: backend/project_router.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - Extract thesis from XML context_block using string find() — robust, no XML parser needed
+  - `from __future__ import annotations` needed for `List[AgentTask]` forward refs in dataclasses
+  - Validate agent_types against whitelist after JSON parse to prevent invalid routing
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`
