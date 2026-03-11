@@ -105,6 +105,26 @@
   - Thesis extracted from <thesis>...</thesis> XML tags in context_block using string find() — same pattern as project_router.py
 ---
 
+## Iteration 9 - US-007: Project CRUD REST endpoints
+- Added 8 endpoints to backend/api_server.py under "REST Endpoints — Projects" section
+- Imported Project, ProjectSession, ProjectDocument from backend.models
+- CreateProjectRequest (title, thesis, tickers optional), ProjectPatch, ProjectMemoryPatch Pydantic models
+- _project_detail() / _project_summary() helpers serialize Project ORM to dict
+- POST /projects: calls initialize_memory_doc(), stores config as JSON with tickers list
+- GET /projects: queries session_count + document_count via func.count() for each project
+- GET /projects/{id}: full detail with counts
+- PATCH /projects/{id}: partial update of title/thesis/config/status + updated_at
+- DELETE /projects/{id}: soft archive (status='archived') + best-effort Chroma cleanup
+- GET /projects/{id}/memory and PATCH /projects/{id}/memory: memory_doc read/write
+- GET /projects/{id}/sessions: joins ProjectSession → DBSession for session list
+- Files changed: backend/api_server.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - Import `func` from sqlalchemy for count() queries in async context
+  - `@app.post("/projects", status_code=201)` — decorator with status_code not matched by naive `@app.post("/projects")` string check — always check file directly with grep
+  - Use `async_delete_collection` (already exists in chroma_client.py) for async Chroma cleanup
+  - `_project_summary` strips memory_doc to keep list responses lean
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`

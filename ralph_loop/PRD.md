@@ -230,7 +230,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need REST endpoints to create, read, update, and delete projects so the frontend can manage the project lifecycle.
 
 **Acceptance Criteria:**
-- [ ] Add to `backend/api_server.py`:
+- [x] Add to `backend/api_server.py`:
   - `POST /projects` — create project, call `initialize_memory_doc()`, return ProjectDetail
   - `GET /projects` — list active projects (id, title, thesis, status, created_at, updated_at, session_count, document_count)
   - `GET /projects/{project_id}` — full project detail including memory_doc
@@ -239,8 +239,8 @@ Sections are patched individually via regex between `## Header` and next `##`. T
   - `GET /projects/{project_id}/memory` — return memory_doc string
   - `PATCH /projects/{project_id}/memory` — manual memory edit
   - `GET /projects/{project_id}/sessions` — list linked sessions
-- [ ] `CreateProjectRequest` Pydantic model: title, thesis, tickers (optional list)
-- [ ] Typecheck passes
+- [x] `CreateProjectRequest` Pydantic model: title, thesis, tickers (optional list)
+- [x] Typecheck passes
 
 ---
 
