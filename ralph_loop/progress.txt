@@ -16,3 +16,18 @@
   - Import test (`python -c "from backend.models import ..."`) is fast typecheck substitute when mypy not installed
   - Column inspection via `__mapper__.columns` confirms ORM field completeness
 ---
+
+## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
+- Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
+- Created `data/chroma_client.py` with singleton `ProjectChromaClient`
+- Implemented: get_or_create_collection, add_document_chunks, query, delete_chunks, delete_collection
+- All sync methods wrapped in async variants via `run_in_executor`
+- Chroma persists to `chroma_db/` in project root (resolved relative to data/ dir using __file__)
+- Typecheck: import test + unit test of _split_text logic (no chromadb install needed for logic tests)
+- Files changed: requirements.txt, data/chroma_client.py, ralph_loop/PRD.md
+- Learnings for future iterations:
+  - chromadb import deferred to _ensure_initialized() so module imports cleanly even if chromadb not yet installed
+  - Singleton pattern: __new__ + _initialized flag (same as SECEdgarClient pattern in data/sec_edgar.py)
+  - Chroma query raises if collection is empty — wrap in try/except and return []
+  - L2 distance → similarity score: 1/(1+dist) maps [0, ∞) → (0, 1]
+---
