@@ -143,14 +143,14 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need a module that creates and updates the structured memory document so project memory can be maintained across sessions.
 
 **Acceptance Criteria:**
-- [ ] Create `data/project_memory.py`
-- [ ] `initialize_memory_doc(title: str, thesis: str) -> str` returns the empty memory document populated with thesis and placeholder sections
-- [ ] `patch_memory_section(memory_doc: str, section_name: str, new_content: str, mode: str = "replace") -> str` locates section by `## {section_name}` header, replaces/prepends/appends content, returns updated doc string
-- [ ] `SECTION_HEADERS` list defines all valid sections (same as memory doc schema above)
-- [ ] `update_project_memory(project_id: str, memory_patch: dict, db: AsyncSession) -> None` applies full patch dict (conclusions, violated_assumptions, thesis_health, open_questions) to project.memory_doc in SQLite with optimistic `updated_at` locking
-- [ ] `trim_memory_doc(memory_doc: str, max_conclusions: int = 20, max_questions: int = 10) -> str` — truncates the `Accumulated Conclusions` section to the most recent `max_conclusions` bullet entries and `Open Questions` to `max_questions` entries; all other sections left untouched; called inside `update_project_memory()` after applying patch, before writing back to SQLite
-- [ ] `generate_document_summary(filename: str, raw_text: str, llm) -> str` calls LLM (Haiku) to produce ≤200-word summary
-- [ ] Typecheck passes
+- [x] Create `data/project_memory.py`
+- [x] `initialize_memory_doc(title: str, thesis: str) -> str` returns the empty memory document populated with thesis and placeholder sections
+- [x] `patch_memory_section(memory_doc: str, section_name: str, new_content: str, mode: str = "replace") -> str` locates section by `## {section_name}` header, replaces/prepends/appends content, returns updated doc string
+- [x] `SECTION_HEADERS` list defines all valid sections (same as memory doc schema above)
+- [x] `update_project_memory(project_id: str, memory_patch: dict, db: AsyncSession) -> None` applies full patch dict (conclusions, violated_assumptions, thesis_health, open_questions) to project.memory_doc in SQLite with optimistic `updated_at` locking
+- [x] `trim_memory_doc(memory_doc: str, max_conclusions: int = 20, max_questions: int = 10) -> str` — truncates the `Accumulated Conclusions` section to the most recent `max_conclusions` bullet entries and `Open Questions` to `max_questions` entries; all other sections left untouched; called inside `update_project_memory()` after applying patch, before writing back to SQLite
+- [x] `generate_document_summary(filename: str, raw_text: str, llm) -> str` calls LLM (Haiku) to produce ≤200-word summary
+- [x] Typecheck passes
 
 ---
 
