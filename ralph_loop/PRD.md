@@ -289,12 +289,12 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need TypeScript interfaces for projects, project documents, and extended chat requests so the frontend is fully type-safe.
 
 **Acceptance Criteria:**
-- [ ] Add to `frontend/src/types.ts`:
+- [x] Add to `frontend/src/types.ts`:
   - `ProjectSummary`: id, title, thesis, status, created_at, updated_at, session_count, document_count
   - `ProjectDetail extends ProjectSummary`: config (tickers, preferred_agents), memory_doc
   - `ProjectDocument`: id, project_id, filename, file_type, chunk_count, uploaded_at
-- [ ] `ChatRequest` (or a new `ProjectChatRequest`) extended with optional `project_id?: string`
-- [ ] Typecheck passes
+- [x] `ChatRequest` (or a new `ProjectChatRequest`) extended with optional `project_id?: string`
+- [x] Typecheck passes
 
 ---
 
