@@ -263,12 +263,12 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need the `/chat/stream` endpoint to detect when a session belongs to a project and route through ProjectAnalysisGraph with assembled context so project chats are grounded.
 
 **Acceptance Criteria:**
-- [ ] Extend `ChatMessage` (or create `ProjectChatMessage`) with optional `project_id: Optional[str]` field in `api_server.py`
-- [ ] In `/chat/stream` handler: if `project_id` is present, (1) call `assemble_project_context(project_id, query, db, chroma_client)` to get `context_block`, (2) call `route_for_project(query, context_block, project.config)` to get `routing_decision`, (3) pass both `context_block` and `routing_decision` in the initial state dict when invoking `ProjectAnalysisGraph` — the graph receives both ready-made and does not re-assemble or re-route internally
-- [ ] Modify `_persist_conversation()` to accept optional `project_id` and create `ProjectSession` link if set
-- [ ] Pre-load `ProjectChromaClient` in FastAPI `on_startup` so embedding model downloads before first request
-- [ ] Non-project sessions (`project_id=None`) are completely unaffected
-- [ ] Typecheck passes
+- [x] Extend `ChatMessage` (or create `ProjectChatMessage`) with optional `project_id: Optional[str]` field in `api_server.py`
+- [x] In `/chat/stream` handler: if `project_id` is present, (1) call `assemble_project_context(project_id, query, db, chroma_client)` to get `context_block`, (2) call `route_for_project(query, context_block, project.config)` to get `routing_decision`, (3) pass both `context_block` and `routing_decision` in the initial state dict when invoking `ProjectAnalysisGraph` — the graph receives both ready-made and does not re-assemble or re-route internally
+- [x] Modify `_persist_conversation()` to accept optional `project_id` and create `ProjectSession` link if set
+- [x] Pre-load `ProjectChromaClient` in FastAPI `on_startup` so embedding model downloads before first request
+- [x] Non-project sessions (`project_id=None`) are completely unaffected
+- [x] Typecheck passes
 
 ---
 

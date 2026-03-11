@@ -55,6 +55,13 @@ async def on_startup():
     """Initialize the database on startup."""
     await init_db()
     logger.info("Database initialized")
+    # Pre-load Chroma embedding model so the ~90MB download happens before first request
+    try:
+        from data.chroma_client import ProjectChromaClient
+        _ = ProjectChromaClient()
+        logger.info("ProjectChromaClient initialised")
+    except Exception as _e:
+        logger.warning(f"ProjectChromaClient pre-load failed (non-fatal): {_e}")
 
 
 # Configure CORS
@@ -143,6 +150,7 @@ class ChatMessage(BaseModel):
     is_followup: bool = False
     # Persistence metadata (populated by frontend after receiving session_id)
     persist: bool = True   # set False to skip DB write (e.g. health checks)
+    project_id: Optional[str] = None  # Set when chat is inside a project workspace
 
 
 class ChatResponse(BaseModel):
@@ -269,6 +277,36 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
         await queue.put({"type": "error", "error": str(e)})
 
 
+async def run_project_graph_with_callbacks(
+    adapter,
+    input_dict: dict,
+    queue: asyncio.Queue,
+    state_container: dict,
+) -> None:
+    """Run ProjectAnalysisGraph in executor, stream progress events via queue.
+
+    Final response is placed in queue as {"type": "response", "content": ...}.
+    Extracted state (including memory_patch) is written to state_container["state"].
+    """
+    loop = asyncio.get_event_loop()
+    graph_instance = adapter.graph_instance
+    graph_instance._progress_queue = queue
+    graph_instance._progress_loop = loop
+
+    try:
+        result = await loop.run_in_executor(None, lambda: adapter.invoke(input_dict))
+        state_container["state"] = result.get("_state", {}) if result else {}
+        output = result.get("output", "") if result else ""
+        await queue.put({"type": "response", "content": output})
+        await queue.put({"type": "done"})
+    except Exception as exc:
+        state_container["state"] = {}
+        await queue.put({"type": "error", "error": str(exc)})
+    finally:
+        graph_instance._progress_queue = None
+        graph_instance._progress_loop = None
+
+
 async def route_agent_for_message(message: str) -> str:
     """Use Claude Haiku to classify a user message to the best chat agent.
 
@@ -360,9 +398,106 @@ async def stream_agent_response(
     is_followup: bool = False,
     session_id: Optional[str] = None,
     persist: bool = True,
+    project_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response using Server-Sent Events with thinking process"""
     queue = asyncio.Queue()
+
+    # ── Project session path ──────────────────────────────────────────────────
+    if project_id:
+        try:
+            from backend.database import AsyncSessionLocal
+            from backend.context_assembly import assemble_project_context
+            from backend.project_router import route_for_project
+            from agents.project_agent import ProjectAnalysisGraph, ProjectAnalysisGraphAdapter
+            from data.chroma_client import ProjectChromaClient
+
+            # 1. Assemble context and load project config
+            async with AsyncSessionLocal() as _db:
+                _chroma = ProjectChromaClient()
+                context_block = await assemble_project_context(project_id, message, _db, _chroma)
+                _proj_result = await _db.execute(select(Project).where(Project.id == project_id))
+                _proj = _proj_result.scalar_one_or_none()
+                if not _proj:
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Project not found'})}\n\n"
+                    return
+                project_config: dict = json.loads(_proj.config) if _proj.config else {}
+
+            # 2. Route query to agents
+            routing_decision_obj = await route_for_project(message, context_block, project_config)
+            routing_decision = {
+                "agents": [
+                    {"agent_type": a.agent_type, "task": a.task}
+                    for a in routing_decision_obj.agents
+                ],
+                "reasoning": routing_decision_obj.reasoning,
+            }
+
+            yield f"data: {json.dumps({'type': 'routing_decision', 'agent': 'project', 'routing': routing_decision})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'agent': 'project'})}\n\n"
+
+            # 3. Run graph
+            graph = ProjectAnalysisGraph()
+            adapter = ProjectAnalysisGraphAdapter(graph)
+            state_container: dict = {}
+            task = asyncio.create_task(
+                run_project_graph_with_callbacks(
+                    adapter,
+                    {
+                        "input": message,
+                        "project_id": project_id,
+                        "context_block": context_block,
+                        "routing_decision": routing_decision,
+                    },
+                    queue,
+                    state_container,
+                )
+            )
+
+            # 4. Drain queue (same pattern as regular path)
+            collected_response = ""
+            while True:
+                event = await queue.get()
+                if event["type"] == "done":
+                    break
+                elif event["type"] == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'error': event['error']})}\n\n"
+                    break
+                elif event["type"] == "response":
+                    collected_response = event["content"]
+                    for i in range(0, len(collected_response), SSE_CHUNK_SIZE):
+                        chunk = collected_response[i:i + SSE_CHUNK_SIZE]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                        await asyncio.sleep(SSE_STREAM_DELAY_SECONDS)
+                else:
+                    yield f"data: {json.dumps(event)}\n\n"
+
+            await task
+
+            # 5. Persist with project_id linkage
+            ticker = extract_ticker_from_query(message)
+            if persist and collected_response:
+                try:
+                    asyncio.create_task(
+                        _persist_conversation(
+                            session_id=session_id,
+                            user_message=message,
+                            assistant_response=collected_response,
+                            agent_type="project",
+                            ticker=ticker,
+                            thinking_steps=[],
+                            follow_ups=[],
+                            project_id=project_id,
+                        )
+                    )
+                except Exception as _pe:
+                    logger.warning(f"Failed to schedule project persistence: {_pe}")
+
+            yield f"data: {json.dumps({'type': 'end'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': f'Project analysis error: {str(e)}'})}\n\n"
+        return
+    # ── End project path ──────────────────────────────────────────────────────
 
     try:
         # Auto-route when agent_type is "auto" — use Claude Haiku to classify the query
@@ -472,6 +607,7 @@ async def _persist_conversation(
     thinking_steps: list,
     follow_ups: list[str],
     chart_specs: Optional[dict] = None,
+    project_id: Optional[str] = None,
 ) -> None:
     """Persist session, messages, and optional analysis to the database."""
     from backend.database import AsyncSessionLocal
@@ -540,6 +676,17 @@ async def _persist_conversation(
                     tags="[]",
                 )
                 db.add(analysis)
+
+            # Link session to project (upsert — UNIQUE constraint prevents duplicates)
+            if project_id:
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                link_stmt = sqlite_insert(ProjectSession).values(
+                    id=str(_uuid_mod.uuid4()),
+                    project_id=project_id,
+                    session_id=sid,
+                    created_at=datetime.utcnow(),
+                ).on_conflict_do_nothing()
+                await db.execute(link_stmt)
 
             await db.commit()
             logger.info(f"[DB] Persisted session {sid} with {agent_type} message")
@@ -615,6 +762,7 @@ async def chat_stream(chat_message: ChatMessage):
             chat_message.is_followup,
             session_id=chat_message.session_id,
             persist=chat_message.persist,
+            project_id=chat_message.project_id,
         ),
         media_type="text/event-stream",
         headers={
