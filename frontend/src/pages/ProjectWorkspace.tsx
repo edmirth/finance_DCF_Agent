@@ -1,9 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Chat from '../components/Chat';
 import ToastNotification from '../components/ToastNotification';
-import { Agent, Message, ProjectDetail, SessionSummary } from '../types';
-import { getAgents, getProject, getProjectSessions, getSession } from '../api';
+import { Agent, Message, ProjectDetail, ProjectDocument, SessionSummary } from '../types';
+import {
+  getAgents, getProject, getProjectSessions, getSession,
+  getProjectMemory, patchProjectMemory, getProjectDocuments,
+  deleteProjectDocument, uploadProjectDocument,
+} from '../api';
 
 const AUTO_AGENT: Agent = {
   id: 'auto',
@@ -13,6 +19,16 @@ const AUTO_AGENT: Agent = {
   icon: '✨',
   color: 'bg-gray-500',
 };
+
+const ACCEPTED_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.xlsx', '.csv'];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+type PanelTab = 'memory' | 'documents' | 'sessions';
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 
 function ProjectWorkspace() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -33,8 +49,27 @@ function ProjectWorkspace() {
   // Project sessions list
   const [projectSessions, setProjectSessions] = useState<SessionSummary[]>([]);
 
+  // Right panel
+  const [activeTab, setActiveTab] = useState<PanelTab>('memory');
+
+  // Memory tab state
+  const [memoryDoc, setMemoryDoc] = useState<string>('');
+  const [memoryUpdatedAt, setMemoryUpdatedAt] = useState<string>('');
+  const [editingMemory, setEditingMemory] = useState(false);
+  const [editedMemoryDoc, setEditedMemoryDoc] = useState('');
+  const [savingMemory, setSavingMemory] = useState(false);
+  const memoryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Documents tab state
+  const [documents, setDocuments] = useState<ProjectDocument[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [docError, setDocError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Toast
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('Analysis saved to library');
 
   useEffect(() => {
     if (!projectId) return;
@@ -70,6 +105,19 @@ function ProjectWorkspace() {
     return () => window.removeEventListener('sessionSaved', handler);
   }, [projectId]);
 
+  // Memory auto-refresh every 10s
+  useEffect(() => {
+    if (!projectId) return;
+    memoryIntervalRef.current = setInterval(() => {
+      if (!editingMemory) {
+        loadMemory(projectId);
+      }
+    }, 10000);
+    return () => {
+      if (memoryIntervalRef.current) clearInterval(memoryIntervalRef.current);
+    };
+  }, [projectId, editingMemory]);
+
   const loadData = async (id: string) => {
     try {
       const [proj, fetchedAgents] = await Promise.all([
@@ -77,9 +125,14 @@ function ProjectWorkspace() {
         getAgents(),
       ]);
       setProject(proj);
+      setMemoryDoc(proj.memory_doc || '');
+      setMemoryUpdatedAt(proj.updated_at);
       const chatAgents = [AUTO_AGENT, ...fetchedAgents.filter(a => a.id !== 'portfolio' && a.id !== 'dcf')];
       setAgents(chatAgents);
-      await loadProjectSessions(id);
+      await Promise.all([
+        loadProjectSessions(id),
+        loadDocuments(id),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
     } finally {
@@ -93,6 +146,28 @@ function ProjectWorkspace() {
       setProjectSessions(sessions);
     } catch {
       // non-fatal
+    }
+  };
+
+  const loadMemory = async (id: string) => {
+    try {
+      const doc = await getProjectMemory(id);
+      setMemoryDoc(doc);
+      setMemoryUpdatedAt(new Date().toISOString());
+    } catch {
+      // non-fatal
+    }
+  };
+
+  const loadDocuments = async (id: string) => {
+    setDocsLoading(true);
+    try {
+      const docs = await getProjectDocuments(id);
+      setDocuments(docs);
+    } catch {
+      // non-fatal
+    } finally {
+      setDocsLoading(false);
     }
   };
 
@@ -125,8 +200,65 @@ function ProjectWorkspace() {
   }, [setSearchParams]);
 
   const handleAnalysisSaved = useCallback(() => {
+    setToastMessage('Analysis saved to library');
     setShowToast(true);
   }, []);
+
+  const handleSaveMemory = async () => {
+    if (!projectId) return;
+    setSavingMemory(true);
+    try {
+      await patchProjectMemory(projectId, editedMemoryDoc);
+      setMemoryDoc(editedMemoryDoc);
+      setMemoryUpdatedAt(new Date().toISOString());
+      setEditingMemory(false);
+    } catch {
+      // non-fatal, stay in edit mode
+    } finally {
+      setSavingMemory(false);
+    }
+  };
+
+  const handleDeleteDocument = async (docId: string) => {
+    if (!projectId) return;
+    try {
+      await deleteProjectDocument(projectId, docId);
+      setDocuments(docs => docs.filter(d => d.id !== docId));
+    } catch {
+      // non-fatal
+    }
+  };
+
+  const handleFileSelect = async (files: FileList | null) => {
+    if (!files || !projectId) return;
+    const file = files[0];
+    if (!file) return;
+
+    const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+      setDocError(`Unsupported file type. Accepted: ${ACCEPTED_EXTENSIONS.join(', ')}`);
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      setDocError('File exceeds 10MB limit.');
+      return;
+    }
+
+    setDocError(null);
+    setUploadingDoc(true);
+    try {
+      const doc = await uploadProjectDocument(projectId, file);
+      setDocuments(docs => [doc, ...docs]);
+      setToastMessage('Document uploaded and embedded');
+      setShowToast(true);
+      // Refresh memory after upload (summary gets added)
+      loadMemory(projectId);
+    } catch (err) {
+      setDocError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploadingDoc(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -174,16 +306,17 @@ function ProjectWorkspace() {
   }
 
   return (
-    <div className="pl-20 min-h-screen" style={{ background: '#FFFFFF' }}>
+    <div className="pl-20 min-h-screen flex flex-col" style={{ background: '#FFFFFF' }}>
       {/* Project header */}
       <div
         style={{
           borderBottom: '1px solid #F3F4F6',
           padding: '1rem 1.5rem',
           background: '#FAFAFA',
+          flexShrink: 0,
         }}
       >
-        <div className="flex items-start justify-between max-w-[1200px] mx-auto">
+        <div className="flex items-start justify-between max-w-[1400px] mx-auto">
           <div>
             <div className="flex items-center gap-2 mb-1">
               <button
@@ -233,13 +366,11 @@ function ProjectWorkspace() {
 
         {/* Past sessions row */}
         {projectSessions.length > 0 && (
-          <div className="max-w-[1200px] mx-auto" style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <div className="max-w-[1400px] mx-auto" style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {projectSessions.slice(0, 8).map(s => (
               <button
                 key={s.id}
-                onClick={() => {
-                  setSearchParams({ session: s.id });
-                }}
+                onClick={() => setSearchParams({ session: s.id })}
                 style={{
                   fontFamily: 'Inter, sans-serif',
                   fontSize: '0.75rem',
@@ -262,24 +393,328 @@ function ProjectWorkspace() {
         )}
       </div>
 
-      {/* Chat panel — full width, constrained */}
-      <div className="flex justify-center items-start min-h-[calc(100vh-120px)]">
-        <div className="w-full max-w-[720px] px-6 mx-auto">
-          <Chat
-            key={chatKey}
-            agent={selectedAgent}
-            agents={agents}
-            onSelectAgent={setSelectedAgent}
-            sessionId={restoredSessionId}
-            initialMessages={restoredMessages}
-            onAnalysisSaved={handleAnalysisSaved}
-            projectId={projectId}
-          />
+      {/* Main content: chat (2/3) + right panel (1/3) */}
+      <div className="flex flex-1 max-w-[1400px] mx-auto w-full" style={{ minHeight: 0 }}>
+        {/* Chat panel */}
+        <div className="flex-1 flex justify-center items-start" style={{ minWidth: 0 }}>
+          <div className="w-full max-w-[720px] px-6 mx-auto">
+            <Chat
+              key={chatKey}
+              agent={selectedAgent}
+              agents={agents}
+              onSelectAgent={setSelectedAgent}
+              sessionId={restoredSessionId}
+              initialMessages={restoredMessages}
+              onAnalysisSaved={handleAnalysisSaved}
+              projectId={projectId}
+            />
+          </div>
+        </div>
+
+        {/* Right panel */}
+        <div
+          style={{
+            width: '360px',
+            flexShrink: 0,
+            borderLeft: '1px solid #F3F4F6',
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 'calc(100vh - 120px)',
+          }}
+        >
+          {/* Tabs */}
+          <div style={{ display: 'flex', borderBottom: '1px solid #F3F4F6', flexShrink: 0 }}>
+            {(['memory', 'documents', 'sessions'] as PanelTab[]).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                style={{
+                  flex: 1,
+                  padding: '0.625rem 0.5rem',
+                  fontFamily: 'Inter, sans-serif',
+                  fontSize: '0.8125rem',
+                  fontWeight: activeTab === tab ? 600 : 400,
+                  color: activeTab === tab ? '#1A1A1A' : '#9CA3AF',
+                  background: 'none',
+                  border: 'none',
+                  borderBottom: activeTab === tab ? '2px solid #1A1A1A' : '2px solid transparent',
+                  cursor: 'pointer',
+                  textTransform: 'capitalize',
+                }}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
+
+            {/* ── Memory Tab ── */}
+            {activeTab === 'memory' && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                  <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#9CA3AF' }}>
+                    {memoryUpdatedAt ? `Updated ${formatDate(memoryUpdatedAt)}` : 'Not yet updated'}
+                  </span>
+                  {editingMemory ? (
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        onClick={() => setEditingMemory(false)}
+                        style={{
+                          fontFamily: 'Inter, sans-serif',
+                          fontSize: '0.75rem',
+                          color: '#6B7280',
+                          background: 'none',
+                          border: '1px solid #E5E7EB',
+                          borderRadius: '0.375rem',
+                          padding: '0.25rem 0.625rem',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveMemory}
+                        disabled={savingMemory}
+                        style={{
+                          fontFamily: 'Inter, sans-serif',
+                          fontSize: '0.75rem',
+                          color: '#FFFFFF',
+                          background: savingMemory ? '#9CA3AF' : '#1A1A1A',
+                          border: 'none',
+                          borderRadius: '0.375rem',
+                          padding: '0.25rem 0.625rem',
+                          cursor: savingMemory ? 'default' : 'pointer',
+                        }}
+                      >
+                        {savingMemory ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setEditedMemoryDoc(memoryDoc);
+                        setEditingMemory(true);
+                      }}
+                      style={{
+                        fontFamily: 'Inter, sans-serif',
+                        fontSize: '0.75rem',
+                        color: '#6B7280',
+                        background: 'none',
+                        border: '1px solid #E5E7EB',
+                        borderRadius: '0.375rem',
+                        padding: '0.25rem 0.625rem',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+
+                {editingMemory ? (
+                  <textarea
+                    value={editedMemoryDoc}
+                    onChange={e => setEditedMemoryDoc(e.target.value)}
+                    style={{
+                      width: '100%',
+                      minHeight: '60vh',
+                      fontFamily: 'IBM Plex Mono, monospace',
+                      fontSize: '0.75rem',
+                      color: '#1A1A1A',
+                      border: '1px solid #E5E7EB',
+                      borderRadius: '0.5rem',
+                      padding: '0.75rem',
+                      resize: 'vertical',
+                      lineHeight: 1.6,
+                      background: '#FAFAFA',
+                    }}
+                  />
+                ) : memoryDoc ? (
+                  <div
+                    style={{
+                      fontFamily: 'Inter, sans-serif',
+                      fontSize: '0.8125rem',
+                      color: '#1A1A1A',
+                      lineHeight: 1.65,
+                    }}
+                    className="markdown-body project-memory"
+                  >
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{memoryDoc}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '2rem' }}>
+                    Memory will populate automatically after your first chat session.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* ── Documents Tab ── */}
+            {activeTab === 'documents' && (
+              <div>
+                {/* Upload area */}
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => {
+                    e.preventDefault();
+                    handleFileSelect(e.dataTransfer.files);
+                  }}
+                  style={{
+                    border: '1.5px dashed #D1D5DB',
+                    borderRadius: '0.625rem',
+                    padding: '1.25rem',
+                    textAlign: 'center',
+                    cursor: uploadingDoc ? 'default' : 'pointer',
+                    background: uploadingDoc ? '#F9FAFB' : '#FFFFFF',
+                    marginBottom: '1rem',
+                    transition: 'border-color 0.15s',
+                  }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={ACCEPTED_EXTENSIONS.join(',')}
+                    style={{ display: 'none' }}
+                    onChange={e => handleFileSelect(e.target.files)}
+                  />
+                  {uploadingDoc ? (
+                    <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF' }}>
+                      Uploading…
+                    </p>
+                  ) : (
+                    <>
+                      <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#6B7280', margin: 0 }}>
+                        Drop a file or click to upload
+                      </p>
+                      <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#9CA3AF', marginTop: '0.25rem', marginBottom: 0 }}>
+                        PDF, DOCX, XLSX, PPTX, CSV · max 10 MB
+                      </p>
+                    </>
+                  )}
+                </div>
+
+                {docError && (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#EF4444', marginBottom: '0.75rem' }}>
+                    {docError}
+                  </p>
+                )}
+
+                {docsLoading ? (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center' }}>Loading…</p>
+                ) : documents.length === 0 ? (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '1rem' }}>
+                    No documents yet. Upload 10-Ks, research reports, or news articles.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {documents.map(doc => (
+                      <div
+                        key={doc.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.625rem 0.75rem',
+                          border: '1px solid #F3F4F6',
+                          borderRadius: '0.5rem',
+                          background: '#FAFAFA',
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <p style={{
+                            fontFamily: 'Inter, sans-serif',
+                            fontSize: '0.8125rem',
+                            color: '#1A1A1A',
+                            fontWeight: 500,
+                            margin: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            maxWidth: '200px',
+                          }}>
+                            {doc.filename}
+                          </p>
+                          <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.6875rem', color: '#9CA3AF', margin: 0, marginTop: '0.125rem' }}>
+                            {doc.chunk_count} chunks · {formatDate(doc.uploaded_at)}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          style={{
+                            fontFamily: 'Inter, sans-serif',
+                            fontSize: '0.75rem',
+                            color: '#EF4444',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '0.25rem 0.5rem',
+                            flexShrink: 0,
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Sessions Tab ── */}
+            {activeTab === 'sessions' && (
+              <div>
+                {projectSessions.length === 0 ? (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '1rem' }}>
+                    No sessions yet. Start a chat to create your first session.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {projectSessions.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => navigate(`/?session=${s.id}`)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '0.625rem 0.75rem',
+                          border: '1px solid #F3F4F6',
+                          borderRadius: '0.5rem',
+                          background: '#FAFAFA',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <p style={{
+                          fontFamily: 'Inter, sans-serif',
+                          fontSize: '0.8125rem',
+                          color: '#1A1A1A',
+                          fontWeight: 500,
+                          margin: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {s.title || 'Untitled session'}
+                        </p>
+                        <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.6875rem', color: '#9CA3AF', margin: 0, marginTop: '0.125rem' }}>
+                          {formatDate(s.created_at)}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
         </div>
       </div>
 
       <ToastNotification
-        message="Analysis saved to library"
+        message={toastMessage}
         visible={showToast}
         onDismiss={() => setShowToast(false)}
       />
