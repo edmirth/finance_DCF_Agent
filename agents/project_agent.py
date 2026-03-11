@@ -282,22 +282,139 @@ class ProjectAnalysisGraph:
         return {}
 
     # -----------------------------------------------------------------------
-    # Node 8: synthesize — stub (to be implemented in US-006c)
+    # Node 8: synthesize — 1 Sonnet LLM call
     # -----------------------------------------------------------------------
 
     def synthesize(self, state: ProjectAnalysisState) -> dict:
-        """Stub: Synthesis LLM call (to be implemented in US-006c)."""
-        logger.info("[project_graph] synthesize stub — pass-through")
-        return {}
+        """Sonnet synthesis: combine agent outputs into a thesis-grounded response."""
+        import anthropic
+        import json as _json
+
+        self._emit_progress("project_progress", {"node": "synthesize", "status": "started", "detail": "Synthesising agent outputs"})
+        agent_results: List[Dict[str, Any]] = state.get("agent_results", [])
+        errors: List[str] = state.get("errors", [])
+        context_block: str = state.get("context_block", "")
+
+        # Extract thesis from context_block
+        thesis = ""
+        try:
+            start = context_block.find("<thesis>")
+            end = context_block.find("</thesis>")
+            if start != -1 and end != -1:
+                thesis = context_block[start + 8 : end].strip()
+        except Exception:
+            pass
+
+        if not agent_results:
+            error_list = "; ".join(errors) if errors else "all agents failed to return results"
+            msg = (
+                f"I was unable to complete the analysis for this query. "
+                f"The following errors occurred: {error_list}. "
+                "Please try again or rephrase your query."
+            )
+            logger.warning("[project_graph] synthesize — no agent_results, returning graceful error")
+            self._emit_progress("project_progress", {"node": "synthesize", "status": "error", "detail": "No agent results"})
+            return {"synthesis": msg, "final_response": msg}
+
+        # Build agent outputs section
+        outputs_text = ""
+        for r in agent_results:
+            agent_type = r.get("agent_type", "unknown")
+            output = r.get("output", "")
+            outputs_text += f"\n\n### {agent_type.upper()} Agent Output\n{output}"
+
+        system_prompt = (
+            "You are a senior investment analyst synthesising multiple agent outputs into a coherent, "
+            "thesis-grounded response. Your synthesis must:\n"
+            "1. Directly address the user's query.\n"
+            "2. Reference the investment thesis explicitly and assess whether the new findings support, "
+            "challenge, or are neutral to the thesis.\n"
+            "3. Integrate insights from all agent outputs, noting agreements and conflicts.\n"
+            "4. Conclude with a clear takeaway tied to the thesis.\n"
+            "5. Be concise (400–800 words) and actionable.\n"
+            "Use markdown formatting with headers."
+        )
+
+        user_message = (
+            f"Investment Thesis:\n{thesis}\n\n"
+            f"Agent Outputs:{outputs_text}\n\n"
+            f"Query: {state.get('query', '')}\n\n"
+            "Synthesise the above into a coherent, thesis-grounded response."
+        )
+
+        try:
+            client = anthropic.Anthropic()
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            synthesis = response.content[0].text.strip()
+            logger.info(f"[project_graph] synthesize complete ({len(synthesis)} chars)")
+            self._emit_progress("project_progress", {"node": "synthesize", "status": "completed"})
+            return {"synthesis": synthesis, "final_response": synthesis}
+        except Exception as exc:
+            msg = f"Synthesis error: {exc}. Raw outputs: {outputs_text[:500]}"
+            logger.error(f"[project_graph] synthesize failed: {exc}")
+            self._emit_progress("project_progress", {"node": "synthesize", "status": "error", "detail": str(exc)})
+            return {"synthesis": msg, "final_response": msg}
 
     # -----------------------------------------------------------------------
-    # Node 9: extract_memory_patch — stub (to be implemented in US-006c)
+    # Node 9: extract_memory_patch — 1 Haiku LLM call
     # -----------------------------------------------------------------------
 
     def extract_memory_patch(self, state: ProjectAnalysisState) -> dict:
-        """Stub: Memory patch extraction LLM call (to be implemented in US-006c)."""
-        logger.info("[project_graph] extract_memory_patch stub — pass-through")
-        return {}
+        """Haiku memory extraction: extract structured patch dict from synthesis."""
+        import anthropic
+        import json as _json
+
+        self._emit_progress("project_progress", {"node": "extract_memory_patch", "status": "started", "detail": "Extracting memory patch"})
+        synthesis: str = state.get("synthesis", "")
+
+        if not synthesis:
+            logger.warning("[project_graph] extract_memory_patch — empty synthesis, skipping")
+            return {"memory_patch": {}}
+
+        system_prompt = (
+            "You are a memory curator for an investment thesis workspace. "
+            "Read the synthesis and extract structured memory updates. "
+            "Respond ONLY with valid JSON (no markdown fences) matching this exact schema:\n"
+            '{"conclusions": ["string", ...], "violated_assumptions": ["string", ...], '
+            '"thesis_health": {"status": "STRONG|WEAKENING|CHALLENGED|INVALIDATED", "rationale": "string"}, '
+            '"open_questions": ["string", ...]}\n\n'
+            "Rules:\n"
+            "- conclusions: 1–3 concrete findings from this analysis (short bullet-style strings)\n"
+            "- violated_assumptions: list any thesis assumptions contradicted by findings (empty list if none)\n"
+            "- thesis_health: assess whether findings support or challenge the thesis\n"
+            "- open_questions: 1–2 questions raised by this analysis worth investigating next\n"
+            "All lists may be empty but must be present. Output ONLY the JSON object."
+        )
+
+        try:
+            client = anthropic.Anthropic()
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                system=system_prompt,
+                messages=[{"role": "user", "content": synthesis}],
+            )
+            raw = response.content[0].text.strip()
+            patch = _json.loads(raw)
+
+            # Validate expected keys exist
+            patch.setdefault("conclusions", [])
+            patch.setdefault("violated_assumptions", [])
+            patch.setdefault("thesis_health", {"status": "STRONG", "rationale": ""})
+            patch.setdefault("open_questions", [])
+
+            logger.info(f"[project_graph] extract_memory_patch complete: {list(patch.keys())}")
+            self._emit_progress("project_progress", {"node": "extract_memory_patch", "status": "completed"})
+            return {"memory_patch": patch}
+        except Exception as exc:
+            logger.error(f"[project_graph] extract_memory_patch failed: {exc}")
+            self._emit_progress("project_progress", {"node": "extract_memory_patch", "status": "error", "detail": str(exc)})
+            return {"memory_patch": {}}
 
     # -----------------------------------------------------------------------
     # Graph construction

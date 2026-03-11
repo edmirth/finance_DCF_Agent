@@ -90,6 +90,21 @@
   - _ensure_str() needed because ChatAnthropic returns list of content blocks, not plain string
 ---
 
+## Iteration 8 - US-006c: Synthesize + extract_memory_patch nodes + adapter
+- Replaced stub `synthesize` node with 1 Sonnet (claude-sonnet-4-6) LLM call
+- Replaced stub `extract_memory_patch` node with 1 Haiku (claude-haiku-4-5-20251001) LLM call
+- synthesize: builds agent_results section + thesis excerpt, calls Sonnet, writes synthesis + final_response
+- synthesize: graceful error message when agent_results is empty (references errors list)
+- extract_memory_patch: instructs Haiku to return JSON with conclusions, violated_assumptions, thesis_health, open_questions
+- Both use sync anthropic.Anthropic() client (LangGraph nodes are synchronous)
+- ProjectAnalysisGraph.run() and ProjectAnalysisGraphAdapter.invoke() were already implemented in US-006
+- Files changed: agents/project_agent.py, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - Use sync anthropic.Anthropic() (not AsyncAnthropic) in LangGraph nodes — they run in sync context
+  - setdefault() on parsed JSON dict ensures all required keys always present even if Haiku omits one
+  - Thesis extracted from <thesis>...</thesis> XML tags in context_block using string find() — same pattern as project_router.py
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`

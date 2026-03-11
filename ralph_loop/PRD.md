@@ -217,12 +217,12 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need the synthesis and memory extraction nodes plus the graph adapter so the graph produces a final response and a memory patch that the API handler can use.
 
 **Acceptance Criteria:**
-- [ ] In `agents/project_agent.py`, replace stub `synthesize` node: 1 Sonnet LLM call that receives all `agent_results` outputs and the thesis from `context_block`, produces a cohesive response grounded in the thesis, writes to `state["synthesis"]` and `state["final_response"]`
-- [ ] Replace stub `extract_memory_patch` node: 1 Haiku LLM call that reads `state["synthesis"]` and extracts a structured dict with keys `conclusions` (list of strings), `violated_assumptions` (list), `thesis_health` (dict with `status` and `rationale`), `open_questions` (list); writes to `state["memory_patch"]`
-- [ ] If `agent_results` is empty (all agents failed), `synthesize` writes a graceful error message referencing the `errors` list
-- [ ] `ProjectAnalysisGraph` class wrapping the compiled graph with a `run(query, project_id, context_block, routing_decision, callback_handler)` method
-- [ ] `ProjectAnalysisGraphAdapter` exposing `.invoke({"input": query, "project_id": id, "context_block": str, "routing_decision": dict})` — same adapter pattern as `EarningsAgentExecutorAdapter` in `agents/earnings_agent.py`
-- [ ] Typecheck passes
+- [x] In `agents/project_agent.py`, replace stub `synthesize` node: 1 Sonnet LLM call that receives all `agent_results` outputs and the thesis from `context_block`, produces a cohesive response grounded in the thesis, writes to `state["synthesis"]` and `state["final_response"]`
+- [x] Replace stub `extract_memory_patch` node: 1 Haiku LLM call that reads `state["synthesis"]` and extracts a structured dict with keys `conclusions` (list of strings), `violated_assumptions` (list), `thesis_health` (dict with `status` and `rationale`), `open_questions` (list); writes to `state["memory_patch"]`
+- [x] If `agent_results` is empty (all agents failed), `synthesize` writes a graceful error message referencing the `errors` list
+- [x] `ProjectAnalysisGraph` class wrapping the compiled graph with a `run(query, project_id, context_block, routing_decision, callback_handler)` method
+- [x] `ProjectAnalysisGraphAdapter` exposing `.invoke({"input": query, "project_id": id, "context_block": str, "routing_decision": dict})` — same adapter pattern as `EarningsAgentExecutorAdapter` in `agents/earnings_agent.py`
+- [x] Typecheck passes
 
 ---
 
