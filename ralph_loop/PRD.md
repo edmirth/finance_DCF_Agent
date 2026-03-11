@@ -302,7 +302,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need API client functions for all project endpoints so pages can fetch and mutate project data.
 
 **Acceptance Criteria:**
-- [ ] Add to `frontend/src/api.ts`:
+- [x] Add to `frontend/src/api.ts`:
   - `getProjects() → Promise<ProjectSummary[]>`
   - `getProject(id) → Promise<ProjectDetail>`
   - `createProject(title, thesis, tickers?) → Promise<ProjectDetail>`
@@ -314,8 +314,8 @@ Sections are patched individually via regex between `## Header` and next `##`. T
   - `getProjectMemory(id) → Promise<string>`
   - `patchProjectMemory(id, memoryDoc) → Promise<void>`
   - `getProjectSessions(id) → Promise<SessionSummary[]>`
-- [ ] `streamMessage()` passes `project_id` in request body when present
-- [ ] Typecheck passes
+- [x] `streamMessage()` passes `project_id` in request body when present
+- [x] Typecheck passes
 
 ---
 

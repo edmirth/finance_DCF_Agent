@@ -177,6 +177,19 @@
   - Stash test is a reliable way to confirm errors are pre-existing
 ---
 
+## Iteration 14 - US-012: Frontend API client functions for projects
+- Added project API functions to frontend/src/api.ts
+- Imported ProjectSummary, ProjectDetail, ProjectDocument from types.ts
+- Added 11 functions: getProjects, getProject, createProject, updateProject, deleteProject, uploadProjectDocument, getProjectDocuments, deleteProjectDocument, getProjectMemory, patchProjectMemory, getProjectSessions
+- streamMessage() already passes project_id (ChatRequest already has project_id?: string and body is JSON.stringify(request))
+- getProjectMemory returns response.data.memory_doc string (backend returns {memory_doc: string})
+- Files changed: frontend/src/api.ts, ralph_loop/PRD.md, ralph_loop/progress.txt
+- Learnings for future iterations:
+  - Pre-existing AgentChart.tsx TS error (type unknown not assignable to ReactNode) — don't count as failure
+  - uploadProjectDocument uses axios directly (not api instance) to set multipart/form-data header — same pattern as existing uploadDocument
+  - streamMessage already correct since ChatRequest has project_id?: string and full request serialized to JSON
+---
+
 ## Iteration 2 - US-002: ChromaDB dependency + ProjectChromaClient
 - Added `chromadb>=0.4.0,<0.6.0` to requirements.txt
 - Created `data/chroma_client.py` with singleton `ProjectChromaClient`
