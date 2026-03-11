@@ -48,7 +48,7 @@ asyncio.create_task(update_project_memory())  ← non-blocking
 - **Vector DB**: ChromaDB with local `all-MiniLM-L6-v2` embeddings (no API key, ~90MB download on first run)
 - **UI**: New `/projects` route + `/projects/:id` workspace, sidebar Projects section above Recent Chats
 - **Memory update**: `asyncio.create_task()` (same pattern as existing `_persist_conversation()`)
-- **Agents in scope**: All agents (dcf, analyst, earnings, market, research, portfolio), router-driven
+- **Agents in scope**: dcf, analyst, earnings, market, research — router-driven. Portfolio excluded (requires structured portfolio JSON input not applicable to a thesis workspace).
 
 ## SQLite Schema (3 new tables)
 
@@ -112,13 +112,13 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Description:** As a developer, I need the database schema for projects, project sessions, and project documents so the feature has a persistent storage foundation.
 
 **Acceptance Criteria:**
-- [ ] Add `Project`, `ProjectSession`, `ProjectDocument` ORM classes to `backend/models.py` using same `Mapped`/`mapped_column` pattern as existing tables
-- [ ] `Project`: id (UUID), title, thesis, config (JSON Text), memory_doc (Text, default empty init), status (default 'active'), created_at, updated_at
-- [ ] `ProjectSession`: id, project_id (FK→Project CASCADE), session_id (FK→Session CASCADE), created_at, UNIQUE(project_id, session_id)
-- [ ] `ProjectDocument`: id, project_id (FK→Project CASCADE), filename, file_type, raw_text (Text), chunk_count (int), chroma_ids (JSON Text), uploaded_at
-- [ ] Add idempotent `CREATE TABLE IF NOT EXISTS` migration in `backend/database.py` `init_db()` (same pattern as existing `chart_specs` column migration)
-- [ ] Add indexes on project_id FKs and project status
-- [ ] Typecheck passes
+- [x] Add `Project`, `ProjectSession`, `ProjectDocument` ORM classes to `backend/models.py` using same `Mapped`/`mapped_column` pattern as existing tables
+- [x] `Project`: id (UUID), title, thesis, config (JSON Text), memory_doc (Text, default empty init), status (default 'active'), created_at, updated_at
+- [x] `ProjectSession`: id, project_id (FK→Project CASCADE), session_id (FK→Session CASCADE), created_at, UNIQUE(project_id, session_id)
+- [x] `ProjectDocument`: id, project_id (FK→Project CASCADE), filename, file_type, raw_text (Text), chunk_count (int), chroma_ids (JSON Text), uploaded_at
+- [x] Add idempotent `CREATE TABLE IF NOT EXISTS` migration in `backend/database.py` `init_db()` (same pattern as existing `chart_specs` column migration)
+- [x] Add indexes on project_id FKs and project status
+- [x] Typecheck passes
 
 ---
 
@@ -148,6 +148,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 - [ ] `patch_memory_section(memory_doc: str, section_name: str, new_content: str, mode: str = "replace") -> str` locates section by `## {section_name}` header, replaces/prepends/appends content, returns updated doc string
 - [ ] `SECTION_HEADERS` list defines all valid sections (same as memory doc schema above)
 - [ ] `update_project_memory(project_id: str, memory_patch: dict, db: AsyncSession) -> None` applies full patch dict (conclusions, violated_assumptions, thesis_health, open_questions) to project.memory_doc in SQLite with optimistic `updated_at` locking
+- [ ] `trim_memory_doc(memory_doc: str, max_conclusions: int = 20, max_questions: int = 10) -> str` — truncates the `Accumulated Conclusions` section to the most recent `max_conclusions` bullet entries and `Open Questions` to `max_questions` entries; all other sections left untouched; called inside `update_project_memory()` after applying patch, before writing back to SQLite
 - [ ] `generate_document_summary(filename: str, raw_text: str, llm) -> str` calls LLM (Haiku) to produce ≤200-word summary
 - [ ] Typecheck passes
 
@@ -178,7 +179,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 - [ ] `ProjectRoutingDecision` dataclass: `agents: List[AgentTask]`, `reasoning: str`
 - [ ] `AgentTask` dataclass: `agent_type: str`, `task: str`
 - [ ] Uses Claude Haiku (same client pattern as existing `route_agent_for_message()` in `api_server.py`)
-- [ ] Router prompt selects 1–3 agents from: dcf, analyst, earnings, market, research, portfolio
+- [ ] Router prompt selects 1–3 agents from: dcf, analyst, earnings, market, research (portfolio excluded — incompatible input format)
 - [ ] Activation rules encoded in prompt: DCF/analyst for valuation, earnings for quarterly results, market for macro, research for default/follow-ups
 - [ ] Task string for each agent includes thesis excerpt for context grounding
 - [ ] Fallback to `[AgentTask(agent_type="research", task=query)]` if LLM call or JSON parse fails
@@ -186,20 +187,41 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 
 ---
 
-### US-006: ProjectAnalysisGraph — LangGraph 10-node graph
-**Description:** As a developer, I need a LangGraph graph that runs selected agents in parallel and synthesizes results against the project thesis so project queries produce grounded, multi-agent responses.
+### US-006: ProjectAnalysisState TypedDict + graph skeleton
+**Description:** As a developer, I need the LangGraph state definition and a compilable graph skeleton so the project graph has a verified foundation before agent nodes are added.
 
 **Acceptance Criteria:**
 - [ ] Create `agents/project_agent.py`
-- [ ] `ProjectAnalysisState` TypedDict with fields: query, project_id, context_block (pre-populated by API handler before graph invocation), routing_decision, agent_results (List, operator.add reducer), synthesis, memory_patch, final_response, errors (List, operator.add), start_time
-- [ ] 10 nodes: `route`, `run_agent_{dcf|analyst|earnings|market|research|portfolio}` (6 agent nodes), `sync_point`, `synthesize`, `extract_memory_patch`
-- [ ] `context_block` is passed as initial state by the API handler (via `assemble_project_context()` from US-004) — the graph does not re-assemble it
-- [ ] `route` is Node 1; `add_conditional_edges` returns list of `run_agent_*` node names based on routing_decision
-- [ ] All `run_agent_*` nodes append `{"agent_type", "task", "output"}` to `agent_results`
-- [ ] `synthesize` node: 1 Sonnet LLM call that ties all agent outputs back to project thesis
-- [ ] `extract_memory_patch` node: 1 Haiku LLM call that extracts conclusions, violated_assumptions, thesis_health, open_questions from synthesis
-- [ ] `ProjectAnalysisGraph` class with `ProjectAnalysisGraphAdapter` exposing `.invoke({"input": query, "project_id": id})` for backend compatibility
-- [ ] `_emit_progress()` SSE events for each node (same pattern as earnings_agent.py)
+- [ ] `ProjectAnalysisState` TypedDict with fields: `query` (str), `project_id` (str), `context_block` (str, pre-populated by API handler), `routing_decision` (dict), `agent_results` (Annotated[List, operator.add]), `synthesis` (str), `memory_patch` (dict), `final_response` (str), `errors` (Annotated[List, operator.add]), `start_time` (float)
+- [ ] Build compiled LangGraph graph with: `route` node (Node 1 — reads `routing_decision.agents`, uses `add_conditional_edges` to return list of selected `run_agent_*` node names), `sync_point` node (no-op aggregator — waits for all parallel agent nodes before proceeding), and stub no-op implementations for all 7 remaining nodes (`run_agent_dcf`, `run_agent_analyst`, `run_agent_earnings`, `run_agent_market`, `run_agent_research`, `synthesize`, `extract_memory_patch`) that pass state through unchanged
+- [ ] Edges: `START → route`, `route --conditional--> {run_agent_*}`, all `run_agent_*` → `sync_point`, `sync_point → synthesize`, `synthesize → extract_memory_patch`, `extract_memory_patch → END`
+- [ ] `graph.compile()` succeeds without error
+- [ ] If `routing_decision` is empty or missing agents list, `route` falls back to `["run_agent_research"]`
+- [ ] Typecheck passes
+
+---
+
+### US-006b: Agent runner nodes (dcf, analyst, earnings, market, research)
+**Description:** As a developer, I need the 5 agent runner nodes implemented in the project graph so parallel agent execution actually runs and returns results.
+
+**Acceptance Criteria:**
+- [ ] In `agents/project_agent.py`, replace the 5 stub `run_agent_*` nodes with real implementations: `run_agent_dcf`, `run_agent_analyst`, `run_agent_earnings`, `run_agent_market`, `run_agent_research`
+- [ ] Each node: finds its `AgentTask` from `state["routing_decision"].agents` by matching `agent_type`, prepends `state["context_block"]` to the task string, invokes the corresponding existing agent (DCFAnalysisAgent, EquityAnalystAgent, EarningsAgent, MarketAnalysisAgent, or research agent), appends `{"agent_type": str, "task": str, "output": str}` to `agent_results`
+- [ ] If the agent raises an exception, the node appends to `errors` and appends a `{"agent_type": ..., "output": "Error: ..."}` entry to `agent_results` — it never re-raises
+- [ ] `_emit_progress(event_type, data)` SSE helper emits a progress event at the start of each node (same pattern as `earnings_agent.py`)
+- [ ] Typecheck passes
+
+---
+
+### US-006c: Synthesize + extract_memory_patch nodes + adapter
+**Description:** As a developer, I need the synthesis and memory extraction nodes plus the graph adapter so the graph produces a final response and a memory patch that the API handler can use.
+
+**Acceptance Criteria:**
+- [ ] In `agents/project_agent.py`, replace stub `synthesize` node: 1 Sonnet LLM call that receives all `agent_results` outputs and the thesis from `context_block`, produces a cohesive response grounded in the thesis, writes to `state["synthesis"]` and `state["final_response"]`
+- [ ] Replace stub `extract_memory_patch` node: 1 Haiku LLM call that reads `state["synthesis"]` and extracts a structured dict with keys `conclusions` (list of strings), `violated_assumptions` (list), `thesis_health` (dict with `status` and `rationale`), `open_questions` (list); writes to `state["memory_patch"]`
+- [ ] If `agent_results` is empty (all agents failed), `synthesize` writes a graceful error message referencing the `errors` list
+- [ ] `ProjectAnalysisGraph` class wrapping the compiled graph with a `run(query, project_id, context_block, routing_decision, callback_handler)` method
+- [ ] `ProjectAnalysisGraphAdapter` exposing `.invoke({"input": query, "project_id": id, "context_block": str, "routing_decision": dict})` — same adapter pattern as `EarningsAgentExecutorAdapter` in `agents/earnings_agent.py`
 - [ ] Typecheck passes
 
 ---
@@ -242,7 +264,7 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 
 **Acceptance Criteria:**
 - [ ] Extend `ChatMessage` (or create `ProjectChatMessage`) with optional `project_id: Optional[str]` field in `api_server.py`
-- [ ] In `/chat/stream` handler: if `project_id` is present, call `assemble_project_context()` first, then pass the resulting `context_block` as part of the initial state when invoking `ProjectAnalysisGraph` — the graph receives `context_block` ready-made and does not call `assemble_project_context()` again
+- [ ] In `/chat/stream` handler: if `project_id` is present, (1) call `assemble_project_context(project_id, query, db, chroma_client)` to get `context_block`, (2) call `route_for_project(query, context_block, project.config)` to get `routing_decision`, (3) pass both `context_block` and `routing_decision` in the initial state dict when invoking `ProjectAnalysisGraph` — the graph receives both ready-made and does not re-assemble or re-route internally
 - [ ] Modify `_persist_conversation()` to accept optional `project_id` and create `ProjectSession` link if set
 - [ ] Pre-load `ProjectChromaClient` in FastAPI `on_startup` so embedding model downloads before first request
 - [ ] Non-project sessions (`project_id=None`) are completely unaffected
@@ -256,7 +278,8 @@ Sections are patched individually via regex between `## Header` and next `##`. T
 **Acceptance Criteria:**
 - [ ] After `ProjectAnalysisGraph` completes and `memory_patch` is populated, call `asyncio.create_task(update_project_memory(project_id, memory_patch, db))`
 - [ ] `update_project_memory()` applies patch: prepend to `Accumulated Conclusions`, append to `Violated or Revised Assumptions`, replace `Thesis Health`, append to `Open Questions`
-- [ ] Optimistic locking: load project row inside the task, apply patch, write back with `updated_at` timestamp check to avoid race conditions from concurrent sessions
+- [ ] After applying the patch, call `trim_memory_doc(memory_doc, max_conclusions=20, max_questions=10)` before writing back to SQLite, so the memory doc never grows unbounded
+- [ ] Optimistic locking: load project row inside the task, apply patch + trim, write back with `updated_at` timestamp check; if the write affects 0 rows (concurrent update detected), re-read the latest memory_doc, re-apply the same patch + trim, and retry once before logging and dropping
 - [ ] Task errors are logged (not raised) so a memory update failure never breaks the user response
 - [ ] Typecheck passes
 

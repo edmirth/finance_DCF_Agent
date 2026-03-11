@@ -7,12 +7,15 @@ Tables:
   analyses          — auto-saved analysis reports
   watchlists        — named ticker watchlists
   watchlist_tickers — individual tickers within a watchlist
+  projects          — investment thesis workspaces
+  project_sessions  — links sessions to a project
+  project_documents — uploaded files + chroma chunk references
 """
 from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, Text, DateTime, Integer, ForeignKey
+from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.database import Base
 
@@ -97,3 +100,57 @@ class WatchlistTicker(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     watchlist: Mapped["Watchlist"] = relationship("Watchlist", back_populates="tickers")
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(255))
+    thesis: Mapped[str] = mapped_column(Text, default="")
+    config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
+    memory_doc: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project_sessions: Mapped[List["ProjectSession"]] = relationship(
+        "ProjectSession", back_populates="project", cascade="all, delete-orphan"
+    )
+    documents: Mapped[List["ProjectDocument"]] = relationship(
+        "ProjectDocument", back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class ProjectSession(Base):
+    __tablename__ = "project_sessions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "session_id", name="uq_project_session"),
+        Index("ix_project_sessions_project_id", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"))
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    project: Mapped["Project"] = relationship("Project", back_populates="project_sessions")
+    session: Mapped["Session"] = relationship("Session")
+
+
+class ProjectDocument(Base):
+    __tablename__ = "project_documents"
+    __table_args__ = (
+        Index("ix_project_documents_project_id", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"))
+    filename: Mapped[str] = mapped_column(String(255))
+    file_type: Mapped[str] = mapped_column(String(50))
+    raw_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    chroma_ids: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    project: Mapped["Project"] = relationship("Project", back_populates="documents")

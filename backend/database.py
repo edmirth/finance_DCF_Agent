@@ -40,6 +40,53 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE messages ADD COLUMN chart_specs TEXT"))
         except Exception:
             pass
+        # Idempotent migration: create project tables if they don't exist yet
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                thesis TEXT NOT NULL DEFAULT '',
+                config TEXT,
+                memory_doc TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_projects_status ON projects (status)"))
+        except Exception:
+            pass
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS project_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                created_at DATETIME NOT NULL,
+                UNIQUE(project_id, session_id)
+            )
+        """))
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_project_sessions_project_id ON project_sessions (project_id)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_project_sessions_session_id ON project_sessions (session_id)"))
+        except Exception:
+            pass
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS project_documents (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                raw_text TEXT,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                chroma_ids TEXT,
+                uploaded_at DATETIME NOT NULL
+            )
+        """))
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_project_documents_project_id ON project_documents (project_id)"))
+        except Exception:
+            pass
 
 
 async def get_db() -> AsyncSession:
