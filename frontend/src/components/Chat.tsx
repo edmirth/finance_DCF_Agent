@@ -7,13 +7,6 @@ import FileUploadModal from './FileUploadModal';
 import { X } from 'lucide-react';
 
 const ANALYSIS_AGENT_TYPES = new Set(['dcf', 'analyst', 'earnings', 'graph']);
-const PROJECT_AGENT_LABELS: Record<string, string> = {
-  dcf: 'DCF',
-  analyst: 'Equity Analyst',
-  earnings: 'Earnings',
-  market: 'Market',
-  research: 'Research',
-};
 
 interface ChatProps {
   agent: Agent;
@@ -250,10 +243,6 @@ function Chat({
       (event) => {
         if (event.type === 'routing_decision' && event.agent) {
           resolvedAgentType = event.agent;
-          const routedAgents = event.routing?.agents?.map(agentTask =>
-            PROJECT_AGENT_LABELS[agentTask.agent_type] || agentTask.agent_type
-          ) || [];
-
           // Backend selected an agent via auto-routing — update the message
           setMessages(prev =>
             prev.map(msg =>
@@ -262,16 +251,6 @@ function Chat({
                 : msg
             )
           );
-          if (event.agent === 'project') {
-            addThinkingStep({
-              id: Date.now().toString() + Math.random(),
-              type: 'agent_thought',
-              content: routedAgents.length > 0
-                ? `Routing this workspace question across ${routedAgents.join(', ')}.`
-                : 'Preparing a project-grounded analysis.',
-              timestamp: new Date(),
-            });
-          }
         } else if (event.type === 'ticker_metadata' && event.ticker) {
           setMessages(prev =>
             prev.map(msg =>
@@ -280,14 +259,6 @@ function Chat({
                 : msg
             )
           );
-        } else if (event.type === 'project_progress') {
-          const detail = [event.node, event.status, event.detail].filter(Boolean).join(' - ');
-          addThinkingStep({
-            id: Date.now().toString() + Math.random(),
-            type: 'agent_thought',
-            content: detail,
-            timestamp: new Date(),
-          });
         } else if (event.type === 'thought' || event.type === 'agent_thought') {
           addThinkingStep({
             id: Date.now().toString() + Math.random(),

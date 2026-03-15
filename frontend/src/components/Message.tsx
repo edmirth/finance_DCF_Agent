@@ -11,7 +11,6 @@ import { Sparkles } from 'lucide-react';
 
 const AGENT_DISPLAY_NAMES: Record<string, string> = {
   auto: 'Auto',
-  project: 'Project Copilot',
   research: 'Finance Q&A',
   analyst: 'Equity Analyst',
   market: 'Market Analyst',

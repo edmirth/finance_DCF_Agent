@@ -1,28 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import {
-  ArrowLeft,
-  BrainCircuit,
-  Clock3,
-  FileStack,
-  MessagesSquare,
-  Orbit,
-  Sparkles,
-  Target,
-  UploadCloud,
-} from 'lucide-react';
 import Chat from '../components/Chat';
 import ToastNotification from '../components/ToastNotification';
 import { Agent, Message, ProjectDetail, ProjectDocument, SessionSummary } from '../types';
 import {
-  getProject,
-  getProjectSessions,
-  getSession,
-  getProjectMemory,
-  patchProjectMemory,
-  getProjectDocuments,
-  deleteProjectDocument,
-  uploadProjectDocument,
+  getAgents, getProject, getProjectSessions, getSession,
+  getProjectMemory, patchProjectMemory, getProjectDocuments,
+  deleteProjectDocument, uploadProjectDocument,
 } from '../api';
 
 const AUTO_AGENT: Agent = {
@@ -38,6 +22,7 @@ const ACCEPTED_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.xlsx', '.csv'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 type PanelTab = 'memory' | 'documents' | 'sessions';
+
 type ThesisStatus = 'STRONG' | 'WEAKENING' | 'CHALLENGED' | 'INVALIDATED' | 'Not assessed';
 
 interface ThesisHealth {
@@ -46,29 +31,11 @@ interface ThesisHealth {
 }
 
 const THESIS_STATUS_STYLES: Record<ThesisStatus, { bg: string; color: string; border: string }> = {
-  STRONG: { bg: '#DFF4E7', color: '#17603A', border: '#9FD2B4' },
-  WEAKENING: { bg: '#F8EFCB', color: '#8B660A', border: '#E8D06B' },
-  CHALLENGED: { bg: '#F9E3CF', color: '#9E4A17', border: '#F1BC8C' },
-  INVALIDATED: { bg: '#F6DCDC', color: '#962C2C', border: '#E8AFAF' },
-  'Not assessed': { bg: '#EFEEE8', color: '#6E6A61', border: '#D7D2C7' },
-};
-
-const PANEL_META: Record<PanelTab, { label: string; description: string; icon: React.ComponentType<any> }> = {
-  memory: {
-    label: 'Memory',
-    description: 'Track thesis health and accumulated learnings.',
-    icon: BrainCircuit,
-  },
-  documents: {
-    label: 'Documents',
-    description: 'Upload filings, research, and supporting material.',
-    icon: FileStack,
-  },
-  sessions: {
-    label: 'Sessions',
-    description: 'Jump between linked project conversations.',
-    icon: MessagesSquare,
-  },
+  STRONG: { bg: '#D1FAE5', color: '#065F46', border: '#6EE7B7' },
+  WEAKENING: { bg: '#FEF9C3', color: '#854D0E', border: '#FDE047' },
+  CHALLENGED: { bg: '#FFEDD5', color: '#9A3412', border: '#FED7AA' },
+  INVALIDATED: { bg: '#FEE2E2', color: '#991B1B', border: '#FECACA' },
+  'Not assessed': { bg: '#F3F4F6', color: '#6B7280', border: '#E5E7EB' },
 };
 
 function parseThesisHealth(memoryDoc: string): ThesisHealth {
@@ -91,24 +58,7 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function formatRelativeTime(iso: string): string {
-  const timestamp = new Date(iso).getTime();
-  if (Number.isNaN(timestamp)) return 'Updated recently';
-
-  const diffMs = Date.now() - timestamp;
-  const diffMinutes = Math.round(diffMs / (1000 * 60));
-
-  if (diffMinutes < 1) return 'Updated just now';
-  if (diffMinutes < 60) return `Updated ${diffMinutes}m ago`;
-
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return `Updated ${diffHours}h ago`;
-
-  const diffDays = Math.round(diffHours / 24);
-  if (diffDays < 7) return `Updated ${diffDays}d ago`;
-
-  return `Updated ${formatDate(iso)}`;
-}
+// ── Memory doc parsers ──────────────────────────────────────────────────────
 
 function parseSection(memoryDoc: string, header: string): string {
   const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -135,69 +85,45 @@ function parseTickers(content: string): Array<{ label: string; ticker: string }>
   });
 }
 
+// ── Memory section card ────────────────────────────────────────────────────
+
 const SECTION_ICON: Record<string, string> = {
-  Thesis: 'T',
-  'Key Assumptions': 'A',
-  'Violated or Revised Assumptions': 'R',
-  'Thesis Health': 'H',
-  'Key Companies & Tickers': 'C',
-  'Accumulated Conclusions': 'C',
-  'Open Questions': 'Q',
-  'Uploaded Document Summaries': 'D',
-  'Live Data Snapshots': 'S',
+  'Thesis': '💡',
+  'Key Assumptions': '✓',
+  'Violated or Revised Assumptions': '⚠',
+  'Thesis Health': '❤',
+  'Key Companies & Tickers': '🏢',
+  'Accumulated Conclusions': '📌',
+  'Open Questions': '?',
+  'Uploaded Document Summaries': '📄',
+  'Live Data Snapshots': '📊',
 };
 
 function SectionCard({ title, children, accent }: { title: string; children: React.ReactNode; accent?: string }) {
   return (
-    <div
-      style={{
-        border: '1px solid rgba(30, 24, 16, 0.08)',
-        borderRadius: '16px',
-        padding: '1rem',
-        marginBottom: '0.75rem',
-        background: '#FFFEFB',
-        boxShadow: '0 8px 24px rgba(32, 24, 14, 0.04)',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem',
-          marginBottom: '0.75rem',
-        }}
-      >
-        <div
-          style={{
-            width: '24px',
-            height: '24px',
-            borderRadius: '999px',
-            background: accent || '#EFE9DE',
-            color: accent ? '#FFFFFF' : '#6B675D',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '0.6875rem',
-            fontWeight: 700,
-            fontFamily: 'IBM Plex Mono, monospace',
-          }}
-        >
-          {SECTION_ICON[title]}
-        </div>
-        <div>
-          <div
-            style={{
-              fontFamily: 'IBM Plex Sans, sans-serif',
-              fontSize: '0.75rem',
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              color: '#8A8376',
-              fontWeight: 600,
-            }}
-          >
-            {title}
-          </div>
-        </div>
+    <div style={{
+      border: '1px solid #F0F0F0',
+      borderRadius: '10px',
+      padding: '0.875rem 1rem',
+      marginBottom: '0.5rem',
+      background: '#FFFFFF',
+      borderLeft: accent ? `3px solid ${accent}` : '1px solid #F0F0F0',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.375rem',
+        marginBottom: '0.625rem',
+      }}>
+        <span style={{ fontSize: '0.6875rem' }}>{SECTION_ICON[title]}</span>
+        <span style={{
+          fontFamily: 'Inter, sans-serif',
+          fontSize: '0.6875rem',
+          fontWeight: 600,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+          color: '#9CA3AF',
+        }}>{title}</span>
       </div>
       {children}
     </div>
@@ -206,16 +132,13 @@ function SectionCard({ title, children, accent }: { title: string; children: Rea
 
 function EmptyPlaceholder({ label }: { label: string }) {
   return (
-    <div
-      style={{
-        border: '1px dashed #DDD4C6',
-        borderRadius: '12px',
-        padding: '0.875rem 1rem',
-        textAlign: 'center',
-        background: '#FBF7EF',
-      }}
-    >
-      <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', color: '#A19788' }}>{label}</span>
+    <div style={{
+      border: '1.5px dashed #E5E7EB',
+      borderRadius: '6px',
+      padding: '0.625rem 0.875rem',
+      textAlign: 'center',
+    }}>
+      <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#D1D5DB' }}>{label}</span>
     </div>
   );
 }
@@ -234,52 +157,46 @@ function MemoryDashboard({ memoryDoc, thesisHealth }: { memoryDoc: string; thesi
 
   return (
     <div>
-      <SectionCard title="Thesis" accent="#1B5D4B">
+      {/* Thesis */}
+      <SectionCard title="Thesis" accent="#10B981">
         {thesis ? (
-          <div
-            style={{
-              fontFamily: 'IBM Plex Sans, sans-serif',
-              fontSize: '0.9375rem',
-              color: '#221E17',
-              lineHeight: 1.7,
-              fontStyle: 'italic',
-              padding: '0.25rem 0.25rem 0.25rem 0.85rem',
-              borderLeft: '3px solid #B9D7CC',
-            }}
-          >
-            {thesis}
-          </div>
+          <div style={{
+            fontFamily: 'Inter, sans-serif',
+            fontSize: '0.875rem',
+            color: '#1A1A1A',
+            lineHeight: 1.6,
+            fontStyle: 'italic',
+            borderLeft: '2px solid #D1FAE5',
+            paddingLeft: '0.75rem',
+          }}>{thesis}</div>
         ) : <EmptyPlaceholder label="No thesis defined yet" />}
       </SectionCard>
 
-      <SectionCard title="Thesis Health" accent="#242018">
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '0.75rem',
-            background: healthStyle.bg,
-            border: `1px solid ${healthStyle.border}`,
-            borderRadius: '12px',
-            padding: '0.875rem',
-          }}
-        >
-          <div
-            style={{
-              width: '10px',
-              height: '10px',
-              borderRadius: '50%',
-              background: healthStyle.color,
-              flexShrink: 0,
-              marginTop: '5px',
-            }}
-          />
+      {/* Thesis Health */}
+      <SectionCard title="Thesis Health">
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '0.75rem',
+          background: healthStyle.bg,
+          border: `1px solid ${healthStyle.border}`,
+          borderRadius: '8px',
+          padding: '0.75rem',
+        }}>
+          <div style={{
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            background: healthStyle.color,
+            flexShrink: 0,
+            marginTop: '5px',
+          }} />
           <div>
-            <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', fontWeight: 700, color: healthStyle.color }}>
+            <div style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', fontWeight: 700, color: healthStyle.color }}>
               {thesisHealth.status}
             </div>
             {thesisHealth.rationale && (
-              <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', color: healthStyle.color, marginTop: '0.25rem', lineHeight: 1.5 }}>
+              <div style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: healthStyle.color, marginTop: '0.25rem', opacity: 0.85 }}>
                 {thesisHealth.rationale}
               </div>
             )}
@@ -287,96 +204,89 @@ function MemoryDashboard({ memoryDoc, thesisHealth }: { memoryDoc: string; thesi
         </div>
       </SectionCard>
 
-      <SectionCard title="Key Companies & Tickers" accent="#3E6C80">
+      {/* Key Companies & Tickers */}
+      <SectionCard title="Key Companies & Tickers">
         {tickers.length > 0 ? (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
             {tickers.map((t, i) => (
-              <div
-                key={i}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.375rem',
-                  background: '#F4F7F8',
-                  border: '1px solid #D7E2E8',
-                  borderRadius: '999px',
-                  padding: '0.3125rem 0.75rem',
-                }}
-              >
+              <div key={i} style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                background: '#F9FAFB',
+                border: '1px solid #E5E7EB',
+                borderRadius: '999px',
+                padding: '0.25rem 0.625rem',
+              }}>
                 {t.ticker && (
-                  <span
-                    style={{
-                      fontFamily: 'IBM Plex Mono, monospace',
-                      fontSize: '0.6875rem',
-                      fontWeight: 600,
-                      color: '#25566A',
-                      background: '#DCEAF0',
-                      borderRadius: '999px',
-                      padding: '0.125rem 0.4rem',
-                    }}
-                  >
-                    {t.ticker}
-                  </span>
+                  <span style={{
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: '0.6875rem',
+                    fontWeight: 600,
+                    color: '#10B981',
+                    background: '#ECFDF5',
+                    borderRadius: '4px',
+                    padding: '0 0.25rem',
+                  }}>{t.ticker}</span>
                 )}
-                <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', color: '#3C3A34' }}>{t.label}</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#374151' }}>{t.label}</span>
               </div>
             ))}
           </div>
         ) : <EmptyPlaceholder label="Companies will appear after analysis" />}
       </SectionCard>
 
-      <SectionCard title="Key Assumptions" accent="#1B5D4B">
+      {/* Key Assumptions */}
+      <SectionCard title="Key Assumptions" accent="#10B981">
         {assumptions.length > 0 ? (
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
             {assumptions.map((a, i) => (
-              <li key={i} style={{ display: 'flex', gap: '0.625rem', alignItems: 'flex-start' }}>
-                <span style={{ color: '#1B5D4B', fontSize: '0.875rem', marginTop: '1px', flexShrink: 0 }}>+</span>
-                <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#403C34', lineHeight: 1.55 }}>{a}</span>
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: '#10B981', fontSize: '0.75rem', marginTop: '2px', flexShrink: 0 }}>✓</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.5 }}>{a}</span>
               </li>
             ))}
           </ul>
         ) : <EmptyPlaceholder label="Assumptions will populate after analysis" />}
       </SectionCard>
 
-      <SectionCard title="Violated or Revised Assumptions" accent="#B85D2B">
+      {/* Violated / Revised Assumptions */}
+      <SectionCard title="Violated or Revised Assumptions" accent="#F59E0B">
         {violated.length > 0 ? (
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
             {violated.map((v, i) => (
-              <li key={i} style={{ display: 'flex', gap: '0.625rem', alignItems: 'flex-start' }}>
-                <span style={{ color: '#B85D2B', fontSize: '0.875rem', marginTop: '1px', flexShrink: 0 }}>!</span>
-                <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#7E4723', lineHeight: 1.55 }}>{v}</span>
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: '#F59E0B', fontSize: '0.75rem', marginTop: '2px', flexShrink: 0 }}>⚠</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#92400E', lineHeight: 1.5 }}>{v}</span>
               </li>
             ))}
           </ul>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.875rem', color: '#1B5D4B' }}>+</span>
-            <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', color: '#6E6A61' }}>No violations detected</span>
+            <span style={{ fontSize: '0.75rem', color: '#10B981' }}>✓</span>
+            <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#6B7280' }}>No violations detected</span>
           </div>
         )}
       </SectionCard>
 
-      <SectionCard title="Accumulated Conclusions" accent="#5C4AB2">
+      {/* Accumulated Conclusions */}
+      <SectionCard title="Accumulated Conclusions" accent="#6366F1">
         {conclusions.length > 0 ? (
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {conclusions.map((c, i) => (
-              <li key={i} style={{ display: 'flex', gap: '0.625rem', alignItems: 'flex-start' }}>
-                <span style={{ color: '#5C4AB2', fontSize: '0.75rem', marginTop: '4px', flexShrink: 0 }}>o</span>
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: '#6366F1', fontSize: '0.625rem', marginTop: '4px', flexShrink: 0 }}>●</span>
                 <div style={{ minWidth: 0 }}>
                   {c.date && (
-                    <span
-                      style={{
-                        fontFamily: 'IBM Plex Mono, monospace',
-                        fontSize: '0.6875rem',
-                        color: '#9F9688',
-                        display: 'block',
-                        marginBottom: '2px',
-                      }}
-                    >
-                      {c.date}
-                    </span>
+                    <span style={{
+                      fontFamily: 'IBM Plex Mono, monospace',
+                      fontSize: '0.625rem',
+                      color: '#9CA3AF',
+                      display: 'block',
+                      marginBottom: '1px',
+                    }}>{c.date}</span>
                   )}
-                  <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#403C34', lineHeight: 1.55 }}>{c.content}</span>
+                  <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.5 }}>{c.content}</span>
                 </div>
               </li>
             ))}
@@ -384,71 +294,56 @@ function MemoryDashboard({ memoryDoc, thesisHealth }: { memoryDoc: string; thesi
         ) : <EmptyPlaceholder label="Conclusions accumulate after each session" />}
       </SectionCard>
 
-      <SectionCard title="Open Questions" accent="#2D4E76">
+      {/* Open Questions */}
+      <SectionCard title="Open Questions">
         {questions.length > 0 ? (
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
             {questions.map((q, i) => (
-              <li key={i} style={{ display: 'flex', gap: '0.625rem', alignItems: 'flex-start' }}>
-                <span
-                  style={{
-                    width: '18px',
-                    height: '18px',
-                    borderRadius: '50%',
-                    background: '#E8EFF6',
-                    border: '1px solid #C6D7E7',
-                    flexShrink: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '0.625rem',
-                    color: '#2D4E76',
-                    fontWeight: 700,
-                    marginTop: '1px',
-                  }}
-                >
-                  ?
-                </span>
-                <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#403C34', lineHeight: 1.55 }}>{q}</span>
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{
+                  width: '16px',
+                  height: '16px',
+                  borderRadius: '50%',
+                  background: '#F3F4F6',
+                  border: '1px solid #E5E7EB',
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '0.5625rem',
+                  color: '#9CA3AF',
+                  fontWeight: 700,
+                  marginTop: '1px',
+                }}>?</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.5 }}>{q}</span>
               </li>
             ))}
           </ul>
         ) : <EmptyPlaceholder label="Questions will surface during analysis" />}
       </SectionCard>
 
-      <SectionCard title="Uploaded Document Summaries" accent="#6A5A3A">
+      {/* Uploaded Document Summaries */}
+      <SectionCard title="Uploaded Document Summaries">
         {docSummaries ? (
-          <div
-            style={{
-              fontFamily: 'IBM Plex Sans, sans-serif',
-              fontSize: '0.875rem',
-              color: '#403C34',
-              lineHeight: 1.65,
-              whiteSpace: 'pre-wrap',
-            }}
-          >
+          <div style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.6 }}>
             {docSummaries}
           </div>
         ) : <EmptyPlaceholder label="Upload docs in the Documents tab" />}
       </SectionCard>
 
-      <SectionCard title="Live Data Snapshots" accent="#3E6C80">
+      {/* Live Data Snapshots */}
+      <SectionCard title="Live Data Snapshots">
         {snapshots.length > 0 ? (
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
             {snapshots.map((s, i) => (
-              <li
-                key={i}
-                style={{
-                  fontFamily: 'IBM Plex Mono, monospace',
-                  fontSize: '0.75rem',
-                  color: '#324452',
-                  background: '#F4F7F8',
-                  border: '1px solid #D7E2E8',
-                  borderRadius: '10px',
-                  padding: '0.5rem 0.625rem',
-                }}
-              >
-                {s}
-              </li>
+              <li key={i} style={{
+                fontFamily: 'IBM Plex Mono, monospace',
+                fontSize: '0.75rem',
+                color: '#374151',
+                background: '#F9FAFB',
+                borderRadius: '4px',
+                padding: '0.25rem 0.5rem',
+              }}>{s}</li>
             ))}
           </ul>
         ) : <EmptyPlaceholder label="Data snapshots appear after analysis runs" />}
@@ -457,42 +352,6 @@ function MemoryDashboard({ memoryDoc, thesisHealth }: { memoryDoc: string; thesi
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  hint,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  icon: React.ComponentType<any>;
-}) {
-  return (
-    <div
-      style={{
-        background: 'rgba(255, 252, 244, 0.82)',
-        border: '1px solid rgba(43, 35, 23, 0.08)',
-        borderRadius: '18px',
-        padding: '0.95rem 1rem',
-        minHeight: '116px',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.65rem' }}>
-        <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.75rem', color: '#8C8376', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          {label}
-        </span>
-        <Icon size={16} color="#575247" />
-      </div>
-      <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '1.4rem', fontWeight: 700, color: '#1E1A13', letterSpacing: '-0.03em' }}>
-        {value}
-      </div>
-      <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', color: '#70695E', marginTop: '0.25rem', lineHeight: 1.45 }}>
-        {hint}
-      </div>
-    </div>
-  );
-}
 
 function ProjectWorkspace() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -500,17 +359,23 @@ function ProjectWorkspace() {
   const navigate = useNavigate();
 
   const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<Agent>(AUTO_AGENT);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Session restore
   const [restoredSessionId, setRestoredSessionId] = useState<string | undefined>(undefined);
   const [restoredMessages, setRestoredMessages] = useState<Message[] | undefined>(undefined);
   const [chatKey, setChatKey] = useState(0);
 
+  // Project sessions list
   const [projectSessions, setProjectSessions] = useState<SessionSummary[]>([]);
+
+  // Right panel
   const [activeTab, setActiveTab] = useState<PanelTab>('memory');
 
+  // Memory tab state
   const [memoryDoc, setMemoryDoc] = useState<string>('');
   const [memoryUpdatedAt, setMemoryUpdatedAt] = useState<string>('');
   const [thesisHealth, setThesisHealth] = useState<ThesisHealth>({ status: 'Not assessed', rationale: '' });
@@ -519,20 +384,23 @@ function ProjectWorkspace() {
   const [savingMemory, setSavingMemory] = useState(false);
   const memoryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Documents tab state
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
   const [uploadingDoc, setUploadingDoc] = useState(false);
   const [docError, setDocError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Toast
   const [showToast, setShowToast] = useState(false);
-  const [toastMessage, setToastMessage] = useState('Workspace updated');
+  const [toastMessage, setToastMessage] = useState('Analysis saved to library');
 
   useEffect(() => {
     if (!projectId) return;
     loadData(projectId);
   }, [projectId]);
 
+  // Update URL when a new session is saved
   useEffect(() => {
     const handler = (e: Event) => {
       const sid = (e as CustomEvent).detail?.sessionId;
@@ -544,6 +412,7 @@ function ProjectWorkspace() {
     return () => window.removeEventListener('sessionSaved', handler);
   }, [searchParams, setSearchParams]);
 
+  // Session restore from URL
   useEffect(() => {
     const sessionId = searchParams.get('session');
     if (sessionId) {
@@ -551,6 +420,7 @@ function ProjectWorkspace() {
     }
   }, [searchParams]);
 
+  // Reload project sessions after a session is saved
   useEffect(() => {
     const handler = () => {
       if (projectId) loadProjectSessions(projectId);
@@ -559,10 +429,12 @@ function ProjectWorkspace() {
     return () => window.removeEventListener('sessionSaved', handler);
   }, [projectId]);
 
+  // Update thesis health badge whenever memory doc changes
   useEffect(() => {
     setThesisHealth(parseThesisHealth(memoryDoc));
   }, [memoryDoc]);
 
+  // Memory auto-refresh every 10s
   useEffect(() => {
     if (!projectId) return;
     memoryIntervalRef.current = setInterval(() => {
@@ -577,11 +449,15 @@ function ProjectWorkspace() {
 
   const loadData = async (id: string) => {
     try {
-      const proj = await getProject(id);
+      const [proj, fetchedAgents] = await Promise.all([
+        getProject(id),
+        getAgents(),
+      ]);
       setProject(proj);
-      setSelectedAgent(AUTO_AGENT);
       setMemoryDoc(proj.memory_doc || '');
       setMemoryUpdatedAt(proj.updated_at);
+      const chatAgents = [AUTO_AGENT, ...fetchedAgents.filter(a => a.id !== 'portfolio' && a.id !== 'dcf')];
+      setAgents(chatAgents);
       await Promise.all([
         loadProjectSessions(id),
         loadDocuments(id),
@@ -604,9 +480,9 @@ function ProjectWorkspace() {
 
   const loadMemory = async (id: string) => {
     try {
-      const response = await getProjectMemory(id);
-      setMemoryDoc(response.memory_doc);
-      setMemoryUpdatedAt(response.updated_at);
+      const doc = await getProjectMemory(id);
+      setMemoryDoc(doc);
+      setMemoryUpdatedAt(new Date().toISOString());
     } catch {
       // non-fatal
     }
@@ -652,16 +528,19 @@ function ProjectWorkspace() {
     setChatKey(k => k + 1);
   }, [setSearchParams]);
 
+  const handleAnalysisSaved = useCallback(() => {
+    setToastMessage('Analysis saved to library');
+    setShowToast(true);
+  }, []);
+
   const handleSaveMemory = async () => {
     if (!projectId) return;
     setSavingMemory(true);
     try {
-      const updated = await patchProjectMemory(projectId, editedMemoryDoc);
-      setMemoryDoc(updated.memory_doc);
-      setMemoryUpdatedAt(updated.updated_at);
+      await patchProjectMemory(projectId, editedMemoryDoc);
+      setMemoryDoc(editedMemoryDoc);
+      setMemoryUpdatedAt(new Date().toISOString());
       setEditingMemory(false);
-      setToastMessage('Project memory updated');
-      setShowToast(true);
     } catch {
       // non-fatal, stay in edit mode
     } finally {
@@ -674,8 +553,6 @@ function ProjectWorkspace() {
     try {
       await deleteProjectDocument(projectId, docId);
       setDocuments(docs => docs.filter(d => d.id !== docId));
-      setToastMessage('Document removed from workspace');
-      setShowToast(true);
     } catch {
       // non-fatal
     }
@@ -703,6 +580,7 @@ function ProjectWorkspace() {
       setDocuments(docs => [doc, ...docs]);
       setToastMessage('Document uploaded and embedded');
       setShowToast(true);
+      // Refresh memory after upload (summary gets added)
       loadMemory(projectId);
     } catch (err) {
       setDocError(err instanceof Error ? err.message : 'Upload failed');
@@ -720,8 +598,8 @@ function ProjectWorkspace() {
             <span className="loading-dot" />
             <span className="loading-dot" />
           </div>
-          <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', color: '#8E8679', fontSize: '0.95rem' }}>
-            Loading project workspace...
+          <p style={{ fontFamily: 'Inter, sans-serif', color: '#9CA3AF', fontSize: '0.875rem' }}>
+            Loading project...
           </p>
         </div>
       </div>
@@ -731,30 +609,21 @@ function ProjectWorkspace() {
   if (error || !project) {
     return (
       <div className="flex items-center justify-center h-screen pl-20">
-        <div
-          className="text-center max-w-md px-6 py-8"
-          style={{
-            background: '#FFFCF4',
-            border: '1px solid rgba(36, 30, 21, 0.08)',
-            borderRadius: '24px',
-            boxShadow: '0 18px 50px rgba(20, 16, 10, 0.06)',
-          }}
-        >
-          <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', color: '#635E55', margin: 0 }}>
+        <div className="text-center max-w-md px-6">
+          <p style={{ fontFamily: 'Inter, sans-serif', color: '#6B7280' }}>
             {error || 'Project not found'}
           </p>
           <button
             onClick={() => navigate('/projects')}
             style={{
               marginTop: '1rem',
-              fontFamily: 'IBM Plex Sans, sans-serif',
+              fontFamily: 'Inter, sans-serif',
               fontSize: '0.875rem',
-              fontWeight: 600,
-              color: '#201B14',
-              background: '#F3EBDD',
-              border: '1px solid #E2D8C8',
-              borderRadius: '999px',
-              padding: '0.625rem 1rem',
+              color: '#1A1A1A',
+              background: 'none',
+              border: '1px solid #E5E7EB',
+              borderRadius: '0.5rem',
+              padding: '0.5rem 1rem',
               cursor: 'pointer',
             }}
           >
@@ -765,729 +634,428 @@ function ProjectWorkspace() {
     );
   }
 
-  const projectTickers = project.config?.tickers || [];
-  const activeSessionId = searchParams.get('session');
-
   return (
-    <div
-      className="pl-20 min-h-screen"
-      style={{
-        background: 'linear-gradient(180deg, #F5EFE4 0%, #FBF8F1 28%, #FFFFFF 62%)',
-      }}
-    >
-      <div className="mx-auto max-w-[1480px] px-4 sm:px-6 lg:px-8 py-6">
-        <section
-          style={{
-            background: 'linear-gradient(135deg, rgba(255, 252, 245, 0.96) 0%, rgba(248, 241, 229, 0.94) 100%)',
-            border: '1px solid rgba(31, 24, 16, 0.08)',
-            borderRadius: '30px',
-            padding: '1.5rem',
-            boxShadow: '0 26px 80px rgba(32, 23, 12, 0.08)',
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              position: 'absolute',
-              inset: '-35% auto auto 68%',
-              width: '320px',
-              height: '320px',
-              borderRadius: '999px',
-              background: 'radial-gradient(circle, rgba(166, 136, 83, 0.18) 0%, rgba(166, 136, 83, 0) 70%)',
-              pointerEvents: 'none',
-            }}
-          />
-
-          <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
-            <div className="max-w-4xl">
+    <div className="pl-20 min-h-screen flex flex-col" style={{ background: '#FFFFFF' }}>
+      {/* Project header */}
+      <div
+        style={{
+          borderBottom: '1px solid #F3F4F6',
+          padding: '1rem 1.5rem',
+          background: '#FAFAFA',
+          flexShrink: 0,
+        }}
+      >
+        <div className="flex items-start justify-between max-w-[1400px] mx-auto">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
               <button
                 onClick={() => navigate('/projects')}
                 style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  background: 'rgba(255,255,255,0.7)',
-                  border: '1px solid rgba(35, 28, 20, 0.08)',
-                  borderRadius: '999px',
-                  padding: '0.45rem 0.85rem',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  fontFamily: 'Inter, sans-serif',
                   fontSize: '0.8125rem',
-                  color: '#665E51',
+                  color: '#9CA3AF',
+                  background: 'none',
+                  border: 'none',
                   cursor: 'pointer',
+                  padding: 0,
                 }}
               >
-                <ArrowLeft size={14} />
-                All projects
+                Projects
               </button>
-
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <div
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.45rem',
-                    background: '#1F1A14',
-                    color: '#FFF9F0',
-                    borderRadius: '999px',
-                    padding: '0.375rem 0.8rem',
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    letterSpacing: '0.04em',
-                    textTransform: 'uppercase',
-                  }}
-                >
-                  <Orbit size={14} />
-                  Auto-orchestrated workspace
-                </div>
-                <div
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.35rem',
-                    background: THESIS_STATUS_STYLES[thesisHealth.status].bg,
-                    color: THESIS_STATUS_STYLES[thesisHealth.status].color,
-                    border: `1px solid ${THESIS_STATUS_STYLES[thesisHealth.status].border}`,
-                    borderRadius: '999px',
-                    padding: '0.35rem 0.75rem',
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    letterSpacing: '0.04em',
-                    textTransform: 'uppercase',
-                  }}
-                >
-                  <Target size={13} />
-                  {thesisHealth.status}
-                </div>
-              </div>
-
-              <h1
-                style={{
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  fontSize: 'clamp(1.9rem, 3vw, 2.8rem)',
-                  lineHeight: 1,
-                  letterSpacing: '-0.05em',
-                  color: '#1F1A14',
-                  margin: '1rem 0 0.75rem',
-                }}
-              >
+              <span style={{ color: '#D1D5DB', fontSize: '0.8125rem' }}>/</span>
+              <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#6B7280' }}>
+                {project.title}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', flexWrap: 'wrap' }}>
+              <h1 style={{ fontFamily: 'Inter, sans-serif', fontSize: '1.125rem', fontWeight: 600, color: '#1A1A1A', margin: 0 }}>
                 {project.title}
               </h1>
-
-              <p
+              {/* Thesis health badge */}
+              <div
+                title={thesisHealth.rationale || thesisHealth.status}
                 style={{
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  fontSize: '1rem',
-                  color: '#675F54',
-                  lineHeight: 1.7,
-                  margin: 0,
-                  maxWidth: '860px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '0.1875rem 0.625rem',
+                  borderRadius: '999px',
+                  fontSize: '0.6875rem',
+                  fontFamily: 'Inter, sans-serif',
+                  fontWeight: 600,
+                  letterSpacing: '0.03em',
+                  background: THESIS_STATUS_STYLES[thesisHealth.status].bg,
+                  color: THESIS_STATUS_STYLES[thesisHealth.status].color,
+                  border: `1px solid ${THESIS_STATUS_STYLES[thesisHealth.status].border}`,
+                  cursor: thesisHealth.rationale ? 'help' : 'default',
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {project.thesis}
-              </p>
-
-              <div className="mt-5 flex flex-wrap gap-2">
-                {projectTickers.length > 0 ? projectTickers.map(ticker => (
-                  <span
-                    key={ticker}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      background: '#F2ECE2',
-                      border: '1px solid #DED4C4',
-                      borderRadius: '999px',
-                      padding: '0.4rem 0.8rem',
-                      fontFamily: 'IBM Plex Mono, monospace',
-                      fontSize: '0.75rem',
-                      color: '#3B362E',
-                    }}
-                  >
-                    {ticker}
-                  </span>
-                )) : (
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.4rem',
-                      background: '#F8F3E9',
-                      border: '1px dashed #DDD0BA',
-                      borderRadius: '999px',
-                      padding: '0.4rem 0.8rem',
-                      fontFamily: 'IBM Plex Sans, sans-serif',
-                      fontSize: '0.75rem',
-                      color: '#8A8376',
-                    }}
-                  >
-                    Add tickers to sharpen routing
-                  </span>
-                )}
-              </div>
-
-              <div className="mt-5 flex flex-wrap gap-3">
-                <div
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.45rem',
-                    background: 'rgba(255,255,255,0.75)',
-                    border: '1px solid rgba(36, 29, 21, 0.08)',
-                    borderRadius: '999px',
-                    padding: '0.5rem 0.85rem',
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    fontSize: '0.8125rem',
-                    color: '#60594D',
-                  }}
-                >
-                  <Sparkles size={14} />
-                  Every question uses thesis, memory, and uploaded materials.
-                </div>
-                {memoryUpdatedAt && (
-                  <div
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.45rem',
-                      background: 'rgba(255,255,255,0.75)',
-                      border: '1px solid rgba(36, 29, 21, 0.08)',
-                      borderRadius: '999px',
-                      padding: '0.5rem 0.85rem',
-                      fontFamily: 'IBM Plex Sans, sans-serif',
-                      fontSize: '0.8125rem',
-                      color: '#60594D',
-                    }}
-                  >
-                    <Clock3 size={14} />
-                    {formatRelativeTime(memoryUpdatedAt)}
-                  </div>
-                )}
+                {thesisHealth.status}
               </div>
             </div>
-
-            <div className="grid gap-3 sm:grid-cols-3 xl:w-[460px]">
-              <MetricCard
-                label="Sessions"
-                value={String(projectSessions.length)}
-                hint={activeSessionId ? 'Jumping between linked analysis threads.' : 'Start a thread and it stays attached here.'}
-                icon={MessagesSquare}
-              />
-              <MetricCard
-                label="Documents"
-                value={String(documents.length)}
-                hint={documents.length > 0 ? 'Embedded into project context for future questions.' : 'Upload filings, notes, or research to ground answers.'}
-                icon={FileStack}
-              />
-              <MetricCard
-                label="Memory"
-                value={thesisHealth.status === 'Not assessed' ? 'Cold' : thesisHealth.status}
-                hint={thesisHealth.rationale || 'The workspace will accumulate conclusions over time.'}
-                icon={BrainCircuit}
-              />
-            </div>
+            <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.875rem', color: '#6B7280', marginTop: '0.25rem', maxWidth: '600px' }}>
+              {project.thesis.length > 160 ? project.thesis.slice(0, 160) + '…' : project.thesis}
+            </p>
           </div>
-        </section>
+          <button
+            onClick={handleNewSession}
+            style={{
+              fontFamily: 'Inter, sans-serif',
+              fontSize: '0.8125rem',
+              fontWeight: 500,
+              color: '#FFFFFF',
+              background: '#1A1A1A',
+              border: 'none',
+              borderRadius: '0.5rem',
+              padding: '0.5rem 1rem',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            New session
+          </button>
+        </div>
 
-        <div className="mt-6 flex flex-col gap-6 xl:flex-row">
-          <div className="min-w-0 flex-1">
-            <section
-              style={{
-                background: '#FFFEFA',
-                border: '1px solid rgba(31, 24, 16, 0.08)',
-                borderRadius: '28px',
-                boxShadow: '0 24px 72px rgba(28, 22, 14, 0.06)',
-                overflow: 'hidden',
-              }}
-            >
-              <div
+        {/* Past sessions row */}
+        {projectSessions.length > 0 && (
+          <div className="max-w-[1400px] mx-auto" style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {projectSessions.slice(0, 8).map(s => (
+              <button
+                key={s.id}
+                onClick={() => setSearchParams({ session: s.id })}
                 style={{
-                  padding: '1rem 1.25rem 1.1rem',
-                  borderBottom: '1px solid rgba(31, 24, 16, 0.08)',
-                  background: 'linear-gradient(180deg, rgba(250, 245, 236, 0.9) 0%, rgba(255, 254, 250, 0.92) 100%)',
+                  fontFamily: 'Inter, sans-serif',
+                  fontSize: '0.75rem',
+                  color: '#6B7280',
+                  background: searchParams.get('session') === s.id ? '#F3F4F6' : '#FFFFFF',
+                  border: '1px solid #E5E7EB',
+                  borderRadius: '1rem',
+                  padding: '0.25rem 0.75rem',
+                  cursor: 'pointer',
+                  maxWidth: '200px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <div
-                      style={{
-                        fontFamily: 'IBM Plex Sans, sans-serif',
-                        fontSize: '0.75rem',
-                        letterSpacing: '0.08em',
-                        textTransform: 'uppercase',
-                        color: '#8E8477',
-                        fontWeight: 600,
-                      }}
-                    >
-                      Project Copilot
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'IBM Plex Sans, sans-serif',
-                        fontSize: '1.15rem',
-                        fontWeight: 700,
-                        color: '#1F1A14',
-                        marginTop: '0.2rem',
-                      }}
-                    >
-                      Ask, test, and evolve the thesis in one place
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'IBM Plex Sans, sans-serif',
-                        fontSize: '0.875rem',
-                        color: '#686155',
-                        marginTop: '0.35rem',
-                      }}
-                    >
-                      This workspace routes across the right finance agents automatically, then folds results back into project memory.
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleNewSession}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '0.5rem',
-                      fontFamily: 'IBM Plex Sans, sans-serif',
-                      fontSize: '0.875rem',
-                      fontWeight: 600,
-                      color: '#FFFAF2',
-                      background: '#1F1A14',
-                      border: 'none',
-                      borderRadius: '999px',
-                      padding: '0.7rem 1rem',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <Sparkles size={14} />
-                    New session
-                  </button>
-                </div>
-
-                {projectSessions.length > 0 && (
-                  <div className="mt-4">
-                    <div
-                      style={{
-                        fontFamily: 'IBM Plex Sans, sans-serif',
-                        fontSize: '0.75rem',
-                        letterSpacing: '0.08em',
-                        textTransform: 'uppercase',
-                        color: '#9B9182',
-                        fontWeight: 600,
-                        marginBottom: '0.65rem',
-                      }}
-                    >
-                      Recent sessions
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {projectSessions.slice(0, 6).map(s => (
-                        <button
-                          key={s.id}
-                          onClick={() => setSearchParams({ session: s.id })}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.45rem',
-                            maxWidth: '240px',
-                            background: activeSessionId === s.id ? '#1F1A14' : '#FFFFFF',
-                            color: activeSessionId === s.id ? '#FFF8ED' : '#5E574C',
-                            border: activeSessionId === s.id ? '1px solid #1F1A14' : '1px solid #E4DAC9',
-                            borderRadius: '999px',
-                            padding: '0.5rem 0.8rem',
-                            cursor: 'pointer',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            fontFamily: 'IBM Plex Sans, sans-serif',
-                            fontSize: '0.8125rem',
-                          }}
-                        >
-                          <MessagesSquare size={14} />
-                          {s.title || new Date(s.created_at).toLocaleDateString()}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="px-2 sm:px-4">
-                <Chat
-                  key={chatKey}
-                  agent={selectedAgent}
-                  agents={[AUTO_AGENT]}
-                  onSelectAgent={setSelectedAgent}
-                  sessionId={restoredSessionId}
-                  initialMessages={restoredMessages}
-                  projectId={projectId}
-                />
-              </div>
-            </section>
+                {s.title || new Date(s.created_at).toLocaleDateString()}
+              </button>
+            ))}
           </div>
+        )}
+      </div>
 
-          <aside className="w-full xl:w-[390px] xl:flex-shrink-0">
-            <section
-              style={{
-                background: '#FFFEFA',
-                border: '1px solid rgba(31, 24, 16, 0.08)',
-                borderRadius: '28px',
-                boxShadow: '0 24px 72px rgba(28, 22, 14, 0.06)',
-                overflow: 'hidden',
-              }}
-            >
-              <div
+      {/* Main content: chat (2/3) + right panel (1/3) */}
+      <div className="flex flex-1 max-w-[1400px] mx-auto w-full" style={{ minHeight: 0 }}>
+        {/* Chat panel */}
+        <div className="flex-1 flex justify-center items-start" style={{ minWidth: 0 }}>
+          <div className="w-full max-w-[720px] px-6 mx-auto">
+            <Chat
+              key={chatKey}
+              agent={selectedAgent}
+              agents={agents}
+              onSelectAgent={setSelectedAgent}
+              sessionId={restoredSessionId}
+              initialMessages={restoredMessages}
+              onAnalysisSaved={handleAnalysisSaved}
+              projectId={projectId}
+            />
+          </div>
+        </div>
+
+        {/* Right panel */}
+        <div
+          style={{
+            width: '360px',
+            flexShrink: 0,
+            borderLeft: '1px solid #F3F4F6',
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 'calc(100vh - 120px)',
+          }}
+        >
+          {/* Tabs */}
+          <div style={{ display: 'flex', borderBottom: '1px solid #F3F4F6', flexShrink: 0 }}>
+            {(['memory', 'documents', 'sessions'] as PanelTab[]).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
                 style={{
-                  padding: '1rem 1rem 0.9rem',
-                  borderBottom: '1px solid rgba(31, 24, 16, 0.08)',
-                  background: 'linear-gradient(180deg, rgba(250, 245, 236, 0.9) 0%, rgba(255, 254, 250, 0.92) 100%)',
+                  flex: 1,
+                  padding: '0.625rem 0.5rem',
+                  fontFamily: 'Inter, sans-serif',
+                  fontSize: '0.8125rem',
+                  fontWeight: activeTab === tab ? 600 : 400,
+                  color: activeTab === tab ? '#1A1A1A' : '#9CA3AF',
+                  background: 'none',
+                  border: 'none',
+                  borderBottom: activeTab === tab ? '2px solid #1A1A1A' : '2px solid transparent',
+                  cursor: 'pointer',
+                  textTransform: 'capitalize',
                 }}
               >
-                <div
-                  style={{
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    fontSize: '0.75rem',
-                    letterSpacing: '0.08em',
-                    textTransform: 'uppercase',
-                    color: '#8E8477',
-                    fontWeight: 600,
-                  }}
-                >
-                  Workspace sidecar
-                </div>
-                <div
-                  style={{
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    fontSize: '1.1rem',
-                    fontWeight: 700,
-                    color: '#1F1A14',
-                    marginTop: '0.2rem',
-                  }}
-                >
-                  Memory, materials, and threads
-                </div>
-                <p
-                  style={{
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    fontSize: '0.875rem',
-                    color: '#686155',
-                    margin: '0.35rem 0 0',
-                    lineHeight: 1.6,
-                  }}
-                >
-                  Keep the thesis state visible while you work so every answer compounds.
-                </p>
+                {tab}
+              </button>
+            ))}
+          </div>
 
-                <div className="grid grid-cols-3 gap-2 mt-4">
-                  {(['memory', 'documents', 'sessions'] as PanelTab[]).map(tab => {
-                    const meta = PANEL_META[tab];
-                    const Icon = meta.icon;
-                    const active = activeTab === tab;
-                    return (
+          {/* Tab content */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
+
+            {/* ── Memory Tab ── */}
+            {activeTab === 'memory' && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                  <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#9CA3AF' }}>
+                    {memoryUpdatedAt ? `Updated ${formatDate(memoryUpdatedAt)}` : 'Not yet updated'}
+                  </span>
+                  {editingMemory ? (
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
                       <button
-                        key={tab}
-                        onClick={() => setActiveTab(tab)}
+                        onClick={() => setEditingMemory(false)}
                         style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'flex-start',
-                          gap: '0.45rem',
-                          padding: '0.75rem 0.8rem',
-                          borderRadius: '16px',
-                          textAlign: 'left',
-                          border: active ? '1px solid #1F1A14' : '1px solid #E6DCCB',
-                          background: active ? '#1F1A14' : '#FFFFFF',
-                          color: active ? '#FFF8ED' : '#2C261E',
+                          fontFamily: 'Inter, sans-serif',
+                          fontSize: '0.75rem',
+                          color: '#6B7280',
+                          background: 'none',
+                          border: '1px solid #E5E7EB',
+                          borderRadius: '0.375rem',
+                          padding: '0.25rem 0.625rem',
                           cursor: 'pointer',
                         }}
                       >
-                        <Icon size={16} />
-                        <div>
-                          <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', fontWeight: 600 }}>
-                            {meta.label}
-                          </div>
-                          <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.6875rem', lineHeight: 1.4, opacity: active ? 0.82 : 0.72 }}>
-                            {meta.description}
-                          </div>
-                        </div>
+                        Cancel
                       </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div style={{ padding: '1rem' }}>
-                {activeTab === 'memory' && (
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.9rem' }}>
-                      <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.8125rem', color: '#8E8679' }}>
-                        {memoryUpdatedAt ? formatRelativeTime(memoryUpdatedAt) : 'Not yet updated'}
-                      </span>
-                      {editingMemory ? (
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button
-                            onClick={() => setEditingMemory(false)}
-                            style={{
-                              fontFamily: 'IBM Plex Sans, sans-serif',
-                              fontSize: '0.75rem',
-                              color: '#615A4E',
-                              background: '#F4EEE3',
-                              border: '1px solid #E3D8C8',
-                              borderRadius: '999px',
-                              padding: '0.38rem 0.8rem',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            onClick={handleSaveMemory}
-                            disabled={savingMemory}
-                            style={{
-                              fontFamily: 'IBM Plex Sans, sans-serif',
-                              fontSize: '0.75rem',
-                              color: '#FFF9F0',
-                              background: savingMemory ? '#928B80' : '#1F1A14',
-                              border: 'none',
-                              borderRadius: '999px',
-                              padding: '0.38rem 0.8rem',
-                              cursor: savingMemory ? 'default' : 'pointer',
-                            }}
-                          >
-                            {savingMemory ? 'Saving...' : 'Save'}
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setEditedMemoryDoc(memoryDoc);
-                            setEditingMemory(true);
-                          }}
-                          style={{
-                            fontFamily: 'IBM Plex Sans, sans-serif',
-                            fontSize: '0.75rem',
-                            fontWeight: 600,
-                            color: '#1F1A14',
-                            background: '#F4EEE3',
-                            border: '1px solid #E3D8C8',
-                            borderRadius: '999px',
-                            padding: '0.38rem 0.8rem',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Edit memory
-                        </button>
-                      )}
-                    </div>
-
-                    {editingMemory ? (
-                      <textarea
-                        value={editedMemoryDoc}
-                        onChange={e => setEditedMemoryDoc(e.target.value)}
+                      <button
+                        onClick={handleSaveMemory}
+                        disabled={savingMemory}
                         style={{
-                          width: '100%',
-                          minHeight: '65vh',
-                          fontFamily: 'IBM Plex Mono, monospace',
+                          fontFamily: 'Inter, sans-serif',
                           fontSize: '0.75rem',
-                          color: '#1F1A14',
-                          border: '1px solid #E3D8C8',
-                          borderRadius: '18px',
-                          padding: '0.9rem',
-                          resize: 'vertical',
-                          lineHeight: 1.65,
-                          background: '#FBF7EF',
+                          color: '#FFFFFF',
+                          background: savingMemory ? '#9CA3AF' : '#1A1A1A',
+                          border: 'none',
+                          borderRadius: '0.375rem',
+                          padding: '0.25rem 0.625rem',
+                          cursor: savingMemory ? 'default' : 'pointer',
                         }}
-                      />
-                    ) : memoryDoc ? (
-                      <MemoryDashboard memoryDoc={memoryDoc} thesisHealth={thesisHealth} />
-                    ) : (
-                      <div style={{ textAlign: 'center', marginTop: '3rem' }}>
-                        <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>[]</div>
-                        <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#958C7E', margin: 0 }}>
-                          Memory builds automatically after your first analysis session.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {activeTab === 'documents' && (
-                  <div>
-                    <div
-                      onClick={() => fileInputRef.current?.click()}
-                      onDragOver={e => e.preventDefault()}
-                      onDrop={e => {
-                        e.preventDefault();
-                        handleFileSelect(e.dataTransfer.files);
+                      >
+                        {savingMemory ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setEditedMemoryDoc(memoryDoc);
+                        setEditingMemory(true);
                       }}
                       style={{
-                        border: '1.5px dashed #D7CCBA',
-                        borderRadius: '18px',
-                        padding: '1.35rem',
-                        textAlign: 'center',
-                        cursor: uploadingDoc ? 'default' : 'pointer',
-                        background: uploadingDoc ? '#F7F2E8' : '#FBF7EF',
-                        marginBottom: '1rem',
-                        transition: 'border-color 0.15s',
+                        fontFamily: 'Inter, sans-serif',
+                        fontSize: '0.75rem',
+                        color: '#6B7280',
+                        background: 'none',
+                        border: '1px solid #E5E7EB',
+                        borderRadius: '0.375rem',
+                        padding: '0.25rem 0.625rem',
+                        cursor: 'pointer',
                       }}
                     >
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept={ACCEPTED_EXTENSIONS.join(',')}
-                        style={{ display: 'none' }}
-                        onChange={e => handleFileSelect(e.target.files)}
-                      />
-                      <UploadCloud size={24} color="#7F7567" style={{ margin: '0 auto 0.7rem' }} />
-                      {uploadingDoc ? (
-                        <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#8E8679', margin: 0 }}>
-                          Uploading...
-                        </p>
-                      ) : (
-                        <>
-                          <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#625B4F', margin: 0 }}>
-                            Drop a file or click to upload
-                          </p>
-                          <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.75rem', color: '#9A9081', marginTop: '0.35rem', marginBottom: 0 }}>
-                            PDF, DOCX, XLSX, PPTX, CSV - max 10 MB
-                          </p>
-                        </>
-                      )}
-                    </div>
+                      Edit
+                    </button>
+                  )}
+                </div>
 
-                    {docError && (
-                      <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.75rem', color: '#B14545', marginBottom: '0.9rem' }}>
-                        {docError}
-                      </p>
-                    )}
-
-                    {docsLoading ? (
-                      <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#8E8679', textAlign: 'center' }}>Loading...</p>
-                    ) : documents.length === 0 ? (
-                      <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#958C7E', textAlign: 'center', marginTop: '1rem', lineHeight: 1.6 }}>
-                        No documents yet. Upload 10-Ks, notes, research reports, or expert transcripts to ground the workspace.
-                      </p>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                        {documents.map(doc => (
-                          <div
-                            key={doc.id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: '0.75rem',
-                              padding: '0.8rem 0.9rem',
-                              border: '1px solid #E6DCCB',
-                              borderRadius: '16px',
-                              background: '#FFFEFA',
-                            }}
-                          >
-                            <div style={{ minWidth: 0 }}>
-                              <p
-                                style={{
-                                  fontFamily: 'IBM Plex Sans, sans-serif',
-                                  fontSize: '0.875rem',
-                                  color: '#1F1A14',
-                                  fontWeight: 600,
-                                  margin: 0,
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                  maxWidth: '220px',
-                                }}
-                              >
-                                {doc.filename}
-                              </p>
-                              <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.75rem', color: '#948A7B', margin: '0.25rem 0 0' }}>
-                                {doc.chunk_count} chunks - {formatDate(doc.uploaded_at)}
-                              </p>
-                            </div>
-                            <button
-                              onClick={() => handleDeleteDocument(doc.id)}
-                              style={{
-                                fontFamily: 'IBM Plex Sans, sans-serif',
-                                fontSize: '0.75rem',
-                                fontWeight: 600,
-                                color: '#B14545',
-                                background: '#F8ECEC',
-                                border: '1px solid #E9CACA',
-                                borderRadius: '999px',
-                                cursor: 'pointer',
-                                padding: '0.38rem 0.8rem',
-                                flexShrink: 0,
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {activeTab === 'sessions' && (
-                  <div>
-                    {projectSessions.length === 0 ? (
-                      <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.875rem', color: '#958C7E', textAlign: 'center', marginTop: '1rem' }}>
-                        No sessions yet. Start a chat to create your first linked thread.
-                      </p>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                        {projectSessions.map(s => (
-                          <button
-                            key={s.id}
-                            onClick={() => setSearchParams({ session: s.id })}
-                            style={{
-                              display: 'block',
-                              width: '100%',
-                              textAlign: 'left',
-                              padding: '0.85rem 0.95rem',
-                              border: activeSessionId === s.id ? '1px solid #1F1A14' : '1px solid #E6DCCB',
-                              borderRadius: '16px',
-                              background: activeSessionId === s.id ? '#1F1A14' : '#FFFEFA',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            <p
-                              style={{
-                                fontFamily: 'IBM Plex Sans, sans-serif',
-                                fontSize: '0.875rem',
-                                color: activeSessionId === s.id ? '#FFF8ED' : '#1F1A14',
-                                fontWeight: 600,
-                                margin: 0,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {s.title || 'Untitled session'}
-                            </p>
-                            <p
-                              style={{
-                                fontFamily: 'IBM Plex Sans, sans-serif',
-                                fontSize: '0.75rem',
-                                color: activeSessionId === s.id ? 'rgba(255, 248, 237, 0.72)' : '#948A7B',
-                                margin: '0.25rem 0 0',
-                              }}
-                            >
-                              {formatDate(s.created_at)}
-                            </p>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                {editingMemory ? (
+                  <textarea
+                    value={editedMemoryDoc}
+                    onChange={e => setEditedMemoryDoc(e.target.value)}
+                    style={{
+                      width: '100%',
+                      minHeight: '60vh',
+                      fontFamily: 'IBM Plex Mono, monospace',
+                      fontSize: '0.75rem',
+                      color: '#1A1A1A',
+                      border: '1px solid #E5E7EB',
+                      borderRadius: '0.5rem',
+                      padding: '0.75rem',
+                      resize: 'vertical',
+                      lineHeight: 1.6,
+                      background: '#FAFAFA',
+                    }}
+                  />
+                ) : memoryDoc ? (
+                  <MemoryDashboard memoryDoc={memoryDoc} thesisHealth={thesisHealth} />
+                ) : (
+                  <div style={{ textAlign: 'center', marginTop: '3rem' }}>
+                    <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>🧠</div>
+                    <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', margin: 0 }}>
+                      Memory builds automatically after your first analysis session.
+                    </p>
                   </div>
                 )}
               </div>
-            </section>
-          </aside>
+            )}
+
+            {/* ── Documents Tab ── */}
+            {activeTab === 'documents' && (
+              <div>
+                {/* Upload area */}
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => {
+                    e.preventDefault();
+                    handleFileSelect(e.dataTransfer.files);
+                  }}
+                  style={{
+                    border: '1.5px dashed #D1D5DB',
+                    borderRadius: '0.625rem',
+                    padding: '1.25rem',
+                    textAlign: 'center',
+                    cursor: uploadingDoc ? 'default' : 'pointer',
+                    background: uploadingDoc ? '#F9FAFB' : '#FFFFFF',
+                    marginBottom: '1rem',
+                    transition: 'border-color 0.15s',
+                  }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={ACCEPTED_EXTENSIONS.join(',')}
+                    style={{ display: 'none' }}
+                    onChange={e => handleFileSelect(e.target.files)}
+                  />
+                  {uploadingDoc ? (
+                    <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF' }}>
+                      Uploading…
+                    </p>
+                  ) : (
+                    <>
+                      <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#6B7280', margin: 0 }}>
+                        Drop a file or click to upload
+                      </p>
+                      <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#9CA3AF', marginTop: '0.25rem', marginBottom: 0 }}>
+                        PDF, DOCX, XLSX, PPTX, CSV · max 10 MB
+                      </p>
+                    </>
+                  )}
+                </div>
+
+                {docError && (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#EF4444', marginBottom: '0.75rem' }}>
+                    {docError}
+                  </p>
+                )}
+
+                {docsLoading ? (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center' }}>Loading…</p>
+                ) : documents.length === 0 ? (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '1rem' }}>
+                    No documents yet. Upload 10-Ks, research reports, or news articles.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {documents.map(doc => (
+                      <div
+                        key={doc.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.625rem 0.75rem',
+                          border: '1px solid #F3F4F6',
+                          borderRadius: '0.5rem',
+                          background: '#FAFAFA',
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <p style={{
+                            fontFamily: 'Inter, sans-serif',
+                            fontSize: '0.8125rem',
+                            color: '#1A1A1A',
+                            fontWeight: 500,
+                            margin: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            maxWidth: '200px',
+                          }}>
+                            {doc.filename}
+                          </p>
+                          <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.6875rem', color: '#9CA3AF', margin: 0, marginTop: '0.125rem' }}>
+                            {doc.chunk_count} chunks · {formatDate(doc.uploaded_at)}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          style={{
+                            fontFamily: 'Inter, sans-serif',
+                            fontSize: '0.75rem',
+                            color: '#EF4444',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '0.25rem 0.5rem',
+                            flexShrink: 0,
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Sessions Tab ── */}
+            {activeTab === 'sessions' && (
+              <div>
+                {projectSessions.length === 0 ? (
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '1rem' }}>
+                    No sessions yet. Start a chat to create your first session.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {projectSessions.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => navigate(`/?session=${s.id}`)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '0.625rem 0.75rem',
+                          border: '1px solid #F3F4F6',
+                          borderRadius: '0.5rem',
+                          background: '#FAFAFA',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <p style={{
+                          fontFamily: 'Inter, sans-serif',
+                          fontSize: '0.8125rem',
+                          color: '#1A1A1A',
+                          fontWeight: 500,
+                          margin: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {s.title || 'Untitled session'}
+                        </p>
+                        <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.6875rem', color: '#9CA3AF', margin: 0, marginTop: '0.125rem' }}>
+                          {formatDate(s.created_at)}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
         </div>
       </div>
 

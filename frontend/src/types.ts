@@ -109,8 +109,6 @@ export interface StreamEvent {
     | 'reflection_start' | 'reflection_chunk' | 'reflection_end'
     // Earnings progress events
     | 'earnings_progress'
-    // Project workspace progress events
-    | 'project_progress'
     // Follow-up questions
     | 'follow_ups'
     // Auto-routing decision
@@ -160,15 +158,6 @@ export interface StreamEvent {
 
   // Follow-up questions
   questions?: string[];
-
-  // Project routing details
-  routing?: {
-    agents?: Array<{
-      agent_type: string;
-      task: string;
-    }>;
-    reasoning?: string;
-  };
 }
 
 export interface UploadedFile {
@@ -266,7 +255,6 @@ export interface ProjectSummary {
   updated_at: string;
   session_count: number;
   document_count: number;
-  config?: ProjectConfig;
 }
 
 export interface ProjectConfig {
@@ -286,9 +274,4 @@ export interface ProjectDocument {
   file_type: string;
   chunk_count: number;
   uploaded_at: string;
-}
-
-export interface ProjectMemoryResponse {
-  memory_doc: string;
-  updated_at: string;
 }

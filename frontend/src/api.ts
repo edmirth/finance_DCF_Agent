@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Agent, ChatRequest, StreamEvent, SessionSummary, SessionDetail, AnalysisSummary, AnalysisDetail, WatchlistDetail, ProjectSummary, ProjectDetail, ProjectDocument, ProjectMemoryResponse } from './types';
+import { Agent, ChatRequest, StreamEvent, SessionSummary, SessionDetail, AnalysisSummary, AnalysisDetail, WatchlistDetail, ProjectSummary, ProjectDetail, ProjectDocument } from './types';
 
 const API_BASE_URL = '/api';
 
@@ -338,14 +338,13 @@ export const deleteProjectDocument = async (
   await api.delete(`/projects/${projectId}/documents/${docId}`);
 };
 
-export const getProjectMemory = async (id: string): Promise<ProjectMemoryResponse> => {
+export const getProjectMemory = async (id: string): Promise<string> => {
   const response = await api.get(`/projects/${id}/memory`);
-  return response.data;
+  return response.data.memory_doc;
 };
 
-export const patchProjectMemory = async (id: string, memoryDoc: string): Promise<ProjectMemoryResponse> => {
-  const response = await api.patch(`/projects/${id}/memory`, { memory_doc: memoryDoc });
-  return response.data;
+export const patchProjectMemory = async (id: string, memoryDoc: string): Promise<void> => {
+  await api.patch(`/projects/${id}/memory`, { memory_doc: memoryDoc });
 };
 
 export const getProjectSessions = async (id: string): Promise<SessionSummary[]> => {

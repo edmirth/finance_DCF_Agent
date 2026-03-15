@@ -1,15 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Archive,
-  Calendar,
-  FileText,
-  FolderOpenDot,
-  MessageSquare,
-  Plus,
-  Search,
-  Sparkles,
-} from 'lucide-react';
+import { Folder, Plus, Archive, ChevronRight, FileText, MessageSquare, Calendar } from 'lucide-react';
 import { getProjects, createProject, deleteProject } from '../api';
 import { ProjectSummary } from '../types';
 
@@ -25,153 +16,118 @@ function ProjectCard({
   onArchive: (id: string) => void;
 }) {
   const navigate = useNavigate();
-  const tickers = project.config?.tickers || [];
 
   return (
     <div
-      role="button"
-      tabIndex={0}
       onClick={() => navigate(`/projects/${project.id}`)}
-      onKeyDown={e => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          navigate(`/projects/${project.id}`);
-        }
-      }}
       style={{
-        width: '100%',
-        textAlign: 'left',
-        background: 'rgba(255, 254, 250, 0.92)',
-        border: '1px solid rgba(34, 27, 19, 0.08)',
-        borderRadius: '24px',
-        padding: '1.15rem 1.15rem 1.1rem',
+        background: '#FFFFFF',
+        border: '1px solid #E5E7EB',
+        borderRadius: '12px',
+        padding: '20px',
         cursor: 'pointer',
-        transition: 'transform 0.2s, box-shadow 0.2s, border-color 0.2s',
-        boxShadow: '0 18px 48px rgba(28, 22, 14, 0.06)',
+        transition: 'box-shadow 0.2s, border-color 0.2s',
       }}
       onMouseEnter={e => {
-        e.currentTarget.style.transform = 'translateY(-2px)';
-        e.currentTarget.style.boxShadow = '0 22px 56px rgba(28, 22, 14, 0.09)';
-        e.currentTarget.style.borderColor = '#C9B897';
+        e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.08)';
+        e.currentTarget.style.borderColor = '#10B981';
       }}
       onMouseLeave={e => {
-        e.currentTarget.style.transform = 'translateY(0)';
-        e.currentTarget.style.boxShadow = '0 18px 48px rgba(28, 22, 14, 0.06)';
-        e.currentTarget.style.borderColor = 'rgba(34, 27, 19, 0.08)';
+        e.currentTarget.style.boxShadow = 'none';
+        e.currentTarget.style.borderColor = '#E5E7EB';
       }}
     >
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <div
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <div
+            style={{
+              width: '36px',
+              height: '36px',
+              borderRadius: '8px',
+              background: '#F0FDF4',
+              border: '1px solid #BBF7D0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              marginTop: '2px',
+            }}
+          >
+            <Folder size={16} color="#10B981" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.45rem',
-                background: '#1F1A14',
-                color: '#FFF8ED',
-                borderRadius: '999px',
-                padding: '0.35rem 0.75rem',
-                fontFamily: 'IBM Plex Sans, sans-serif',
-                fontSize: '0.72rem',
-                fontWeight: 600,
-                letterSpacing: '0.04em',
-                textTransform: 'uppercase',
+                fontSize: '1rem',
+                fontWeight: 700,
+                color: '#1A1A1A',
+                fontFamily: 'Inter, sans-serif',
+                letterSpacing: '-0.01em',
+                margin: '0 0 6px',
               }}
             >
-              <FolderOpenDot size={13} />
-              Active workspace
-            </div>
-            {tickers.slice(0, 3).map(ticker => (
+              {project.title}
+            </h3>
+            <p
+              style={{
+                fontSize: '0.8125rem',
+                color: '#6B7280',
+                fontFamily: 'Inter, sans-serif',
+                lineHeight: 1.55,
+                margin: '0 0 12px',
+                overflow: 'hidden',
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+              }}
+            >
+              {project.thesis.slice(0, 120)}{project.thesis.length > 120 ? '…' : ''}
+            </p>
+            <div className="flex items-center gap-4 flex-wrap">
               <span
-                key={ticker}
                 style={{
-                  display: 'inline-flex',
+                  display: 'flex',
                   alignItems: 'center',
-                  background: '#F2ECE2',
-                  border: '1px solid #DED4C4',
-                  borderRadius: '999px',
-                  padding: '0.3rem 0.65rem',
-                  fontFamily: 'IBM Plex Mono, monospace',
-                  fontSize: '0.72rem',
-                  color: '#3A342C',
+                  gap: '4px',
+                  fontSize: '0.75rem',
+                  color: '#9CA3AF',
+                  fontFamily: 'Inter, sans-serif',
                 }}
               >
-                {ticker}
+                <MessageSquare size={11} />
+                {project.session_count} session{project.session_count !== 1 ? 's' : ''}
               </span>
-            ))}
-          </div>
-
-          <h3
-            style={{
-              fontSize: '1.1rem',
-              fontWeight: 700,
-              color: '#1F1A14',
-              fontFamily: 'IBM Plex Sans, sans-serif',
-              letterSpacing: '-0.03em',
-              margin: '0.85rem 0 0.45rem',
-            }}
-          >
-            {project.title}
-          </h3>
-
-          <p
-            style={{
-              fontSize: '0.9rem',
-              color: '#655E53',
-              fontFamily: 'IBM Plex Sans, sans-serif',
-              lineHeight: 1.65,
-              margin: 0,
-              maxWidth: '760px',
-            }}
-          >
-            {project.thesis}
-          </p>
-
-          <div className="flex flex-wrap items-center gap-4 mt-4">
-            <span
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                fontSize: '0.78rem',
-                color: '#8F8577',
-                fontFamily: 'IBM Plex Sans, sans-serif',
-              }}
-            >
-              <MessageSquare size={13} />
-              {project.session_count} session{project.session_count !== 1 ? 's' : ''}
-            </span>
-            <span
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                fontSize: '0.78rem',
-                color: '#8F8577',
-                fontFamily: 'IBM Plex Sans, sans-serif',
-              }}
-            >
-              <FileText size={13} />
-              {project.document_count} doc{project.document_count !== 1 ? 's' : ''}
-            </span>
-            <span
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                fontSize: '0.78rem',
-                color: '#8F8577',
-                fontFamily: 'IBM Plex Sans, sans-serif',
-              }}
-            >
-              <Calendar size={13} />
-              Updated {formatDate(project.updated_at)}
-            </span>
+              <span
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '0.75rem',
+                  color: '#9CA3AF',
+                  fontFamily: 'Inter, sans-serif',
+                }}
+              >
+                <FileText size={11} />
+                {project.document_count} doc{project.document_count !== 1 ? 's' : ''}
+              </span>
+              <span
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '0.75rem',
+                  color: '#9CA3AF',
+                  fontFamily: 'Inter, sans-serif',
+                }}
+              >
+                <Calendar size={11} />
+                Updated {formatDate(project.updated_at)}
+              </span>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           <button
             onClick={e => {
               e.stopPropagation();
@@ -179,21 +135,42 @@ function ProjectCard({
             }}
             title="Archive project"
             style={{
-              display: 'inline-flex',
+              display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              width: '38px',
-              height: '38px',
-              borderRadius: '999px',
-              border: '1px solid #E6DCCB',
-              background: '#FBF7EF',
-              color: '#8E8679',
+              width: '32px',
+              height: '32px',
+              borderRadius: '8px',
+              border: '1px solid #E5E7EB',
+              background: '#F9FAFB',
+              color: '#9CA3AF',
               cursor: 'pointer',
-              flexShrink: 0,
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = '#FCA5A5';
+              e.currentTarget.style.color = '#EF4444';
+              e.currentTarget.style.background = '#FFF5F5';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = '#E5E7EB';
+              e.currentTarget.style.color = '#9CA3AF';
+              e.currentTarget.style.background = '#F9FAFB';
             }}
           >
-            <Archive size={15} />
+            <Archive size={14} />
           </button>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '32px',
+              height: '32px',
+              color: '#D1D5DB',
+            }}
+          >
+            <ChevronRight size={16} />
+          </div>
         </div>
       </div>
     </div>
@@ -232,133 +209,112 @@ function NewProjectForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
     <form
       onSubmit={handleSubmit}
       style={{
-        background: 'rgba(255, 254, 250, 0.94)',
-        border: '1px solid rgba(34, 27, 19, 0.08)',
-        borderRadius: '28px',
-        padding: '1.4rem',
-        marginBottom: '1.5rem',
-        boxShadow: '0 22px 56px rgba(28, 22, 14, 0.07)',
+        background: '#FFFFFF',
+        border: '1px solid #10B981',
+        borderRadius: '12px',
+        padding: '24px',
+        marginBottom: '24px',
+        boxShadow: '0 4px 16px rgba(16, 185, 129, 0.08)',
       }}
     >
-      <div className="flex items-center gap-2 mb-6">
-        <div
-          style={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '999px',
-            background: '#1F1A14',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Sparkles size={16} color="#FFF8ED" />
-        </div>
-        <div>
-          <h2
-            style={{
-              fontSize: '1.05rem',
-              fontWeight: 700,
-              color: '#1F1A14',
-              fontFamily: 'IBM Plex Sans, sans-serif',
-              letterSpacing: '-0.03em',
-              margin: 0,
-            }}
-          >
-            Create a new project workspace
-          </h2>
-          <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.82rem', color: '#847B6E', margin: '0.2rem 0 0' }}>
-            Define the thesis once, then let the workspace build memory over time.
-          </p>
-        </div>
-      </div>
+      <h2
+        style={{
+          fontSize: '1rem',
+          fontWeight: 700,
+          color: '#1A1A1A',
+          fontFamily: 'Inter, sans-serif',
+          letterSpacing: '-0.01em',
+          margin: '0 0 20px',
+        }}
+      >
+        New Investment Project
+      </h2>
 
-      <div style={{ marginBottom: '0.95rem' }}>
+      <div style={{ marginBottom: '14px' }}>
         <label
           style={{
             display: 'block',
             fontSize: '0.8125rem',
             fontWeight: 600,
-            color: '#464137',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            marginBottom: '0.45rem',
+            color: '#374151',
+            fontFamily: 'Inter, sans-serif',
+            marginBottom: '6px',
           }}
         >
-          Project title
+          Project Title
         </label>
         <input
           type="text"
           value={title}
           onChange={e => setTitle(e.target.value)}
-          placeholder="e.g. European utilities rerating thesis"
+          placeholder="e.g. Equinor Oil Cycle Analysis"
           disabled={loading}
           style={{
             width: '100%',
-            padding: '0.8rem 0.95rem',
-            border: '1px solid #E2D8C8',
-            borderRadius: '16px',
-            fontSize: '0.92rem',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            color: '#1F1A14',
+            padding: '9px 12px',
+            border: '1px solid #E5E7EB',
+            borderRadius: '8px',
+            fontSize: '0.875rem',
+            fontFamily: 'Inter, sans-serif',
+            color: '#1A1A1A',
             outline: 'none',
             boxSizing: 'border-box',
-            background: '#FFFCF6',
           }}
-          onFocus={e => (e.target.style.borderColor = '#BEA777')}
-          onBlur={e => (e.target.style.borderColor = '#E2D8C8')}
+          onFocus={e => (e.target.style.borderColor = '#10B981')}
+          onBlur={e => (e.target.style.borderColor = '#E5E7EB')}
         />
       </div>
 
-      <div style={{ marginBottom: '0.95rem' }}>
+      <div style={{ marginBottom: '14px' }}>
         <label
           style={{
             display: 'block',
             fontSize: '0.8125rem',
             fontWeight: 600,
-            color: '#464137',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            marginBottom: '0.45rem',
+            color: '#374151',
+            fontFamily: 'Inter, sans-serif',
+            marginBottom: '6px',
           }}
         >
-          Investment thesis
+          Investment Thesis
         </label>
         <textarea
           value={thesis}
           onChange={e => setThesis(e.target.value)}
-          placeholder="e.g. Rate cuts and balance-sheet repair should re-rate the sector over the next 12-18 months."
-          rows={4}
+          placeholder="e.g. Equinor is overvalued given the oil cycle; Brent crude will fall below $70 in H2 2026 as OPEC+ discipline breaks down."
+          rows={3}
           disabled={loading}
           style={{
             width: '100%',
-            padding: '0.8rem 0.95rem',
-            border: '1px solid #E2D8C8',
-            borderRadius: '16px',
-            fontSize: '0.92rem',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            color: '#1F1A14',
+            padding: '9px 12px',
+            border: '1px solid #E5E7EB',
+            borderRadius: '8px',
+            fontSize: '0.875rem',
+            fontFamily: 'Inter, sans-serif',
+            color: '#1A1A1A',
             outline: 'none',
             resize: 'vertical',
             boxSizing: 'border-box',
-            lineHeight: 1.65,
-            background: '#FFFCF6',
+            lineHeight: 1.55,
           }}
-          onFocus={e => (e.target.style.borderColor = '#BEA777')}
-          onBlur={e => (e.target.style.borderColor = '#E2D8C8')}
+          onFocus={e => (e.target.style.borderColor = '#10B981')}
+          onBlur={e => (e.target.style.borderColor = '#E5E7EB')}
         />
       </div>
 
-      <div style={{ marginBottom: '1.15rem' }}>
+      <div style={{ marginBottom: '20px' }}>
         <label
           style={{
             display: 'block',
             fontSize: '0.8125rem',
             fontWeight: 600,
-            color: '#464137',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            marginBottom: '0.45rem',
+            color: '#374151',
+            fontFamily: 'Inter, sans-serif',
+            marginBottom: '6px',
           }}
         >
-          Tickers <span style={{ fontWeight: 400, color: '#8B8275' }}>(optional, comma-separated)</span>
+          Tickers{' '}
+          <span style={{ fontWeight: 400, color: '#9CA3AF' }}>(optional, comma-separated)</span>
         </label>
         <input
           type="text"
@@ -368,18 +324,17 @@ function NewProjectForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
           disabled={loading}
           style={{
             width: '100%',
-            padding: '0.8rem 0.95rem',
-            border: '1px solid #E2D8C8',
-            borderRadius: '16px',
-            fontSize: '0.92rem',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            color: '#1F1A14',
+            padding: '9px 12px',
+            border: '1px solid #E5E7EB',
+            borderRadius: '8px',
+            fontSize: '0.875rem',
+            fontFamily: 'Inter, sans-serif',
+            color: '#1A1A1A',
             outline: 'none',
             boxSizing: 'border-box',
-            background: '#FFFCF6',
           }}
-          onFocus={e => (e.target.style.borderColor = '#BEA777')}
-          onBlur={e => (e.target.style.borderColor = '#E2D8C8')}
+          onFocus={e => (e.target.style.borderColor = '#10B981')}
+          onBlur={e => (e.target.style.borderColor = '#E5E7EB')}
         />
       </div>
 
@@ -387,9 +342,9 @@ function NewProjectForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
         <p
           style={{
             fontSize: '0.8125rem',
-            color: '#B14545',
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            marginBottom: '0.9rem',
+            color: '#EF4444',
+            fontFamily: 'Inter, sans-serif',
+            marginBottom: '14px',
           }}
         >
           {error}
@@ -401,33 +356,33 @@ function NewProjectForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
           type="submit"
           disabled={loading}
           style={{
-            padding: '0.75rem 1.1rem',
-            borderRadius: '999px',
+            padding: '9px 20px',
+            borderRadius: '8px',
             fontSize: '0.875rem',
             fontWeight: 600,
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            background: '#1F1A14',
-            color: '#FFF8ED',
+            fontFamily: 'Inter, sans-serif',
+            background: '#1A1A1A',
+            color: '#FFFFFF',
             border: 'none',
             cursor: loading ? 'not-allowed' : 'pointer',
-            opacity: loading ? 0.7 : 1,
+            opacity: loading ? 0.6 : 1,
           }}
         >
-          {loading ? 'Creating...' : 'Create Project'}
+          {loading ? 'Creating…' : 'Create Project'}
         </button>
         <button
           type="button"
           onClick={onCancel}
           disabled={loading}
           style={{
-            padding: '0.75rem 1.1rem',
-            borderRadius: '999px',
+            padding: '9px 20px',
+            borderRadius: '8px',
             fontSize: '0.875rem',
             fontWeight: 600,
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            background: '#F2ECE2',
-            color: '#615A4E',
-            border: '1px solid #E2D8C8',
+            fontFamily: 'Inter, sans-serif',
+            background: '#F3F4F6',
+            color: '#6B7280',
+            border: 'none',
             cursor: 'pointer',
           }}
         >
@@ -443,7 +398,6 @@ export default function ProjectsListPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [query, setQuery] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -458,19 +412,6 @@ export default function ProjectsListPage() {
     })();
   }, []);
 
-  const filteredProjects = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return projects;
-    return projects.filter(project => {
-      const tickers = (project.config?.tickers || []).join(' ').toLowerCase();
-      return (
-        project.title.toLowerCase().includes(needle) ||
-        project.thesis.toLowerCase().includes(needle) ||
-        tickers.includes(needle)
-      );
-    });
-  }, [projects, query]);
-
   const handleArchive = async (id: string) => {
     try {
       await deleteProject(id);
@@ -484,103 +425,142 @@ export default function ProjectsListPage() {
     navigate(`/projects/${id}`);
   };
 
-  const totalSessions = projects.reduce((sum, project) => sum + project.session_count, 0);
-  const totalDocs = projects.reduce((sum, project) => sum + project.document_count, 0);
-
   return (
     <div
       style={{
         minHeight: '100vh',
-        background: 'linear-gradient(180deg, #F5EFE4 0%, #FBF8F1 32%, #FFFFFF 68%)',
+        background: '#FAFAFA',
         paddingLeft: '80px',
       }}
     >
-      <div className="mx-auto max-w-[1180px] px-4 sm:px-6 lg:px-8 py-8">
-        <section
-          style={{
-            background: 'linear-gradient(135deg, rgba(255, 252, 245, 0.96) 0%, rgba(248, 241, 229, 0.94) 100%)',
-            border: '1px solid rgba(31, 24, 16, 0.08)',
-            borderRadius: '30px',
-            padding: '1.5rem',
-            boxShadow: '0 26px 80px rgba(32, 23, 12, 0.08)',
-            overflow: 'hidden',
-            position: 'relative',
-          }}
-        >
-          <div
-            style={{
-              position: 'absolute',
-              inset: '-40% auto auto 74%',
-              width: '280px',
-              height: '280px',
-              borderRadius: '999px',
-              background: 'radial-gradient(circle, rgba(166, 136, 83, 0.18) 0%, rgba(166, 136, 83, 0) 70%)',
-              pointerEvents: 'none',
-            }}
-          />
-
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-3xl">
-              <div
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.45rem',
-                  background: '#1F1A14',
-                  color: '#FFF8ED',
-                  borderRadius: '999px',
-                  padding: '0.35rem 0.75rem',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  fontSize: '0.72rem',
-                  fontWeight: 600,
-                  letterSpacing: '0.04em',
-                  textTransform: 'uppercase',
-                }}
-              >
-                <Sparkles size={13} />
-                Project workspaces
-              </div>
+      <div style={{ maxWidth: '800px', margin: '0 auto', padding: '40px 24px' }}>
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '10px',
+                background: '#1A1A1A',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Folder size={18} color="#FFFFFF" />
+            </div>
+            <div>
               <h1
                 style={{
-                  fontSize: 'clamp(2rem, 3vw, 2.8rem)',
+                  fontSize: '1.25rem',
                   fontWeight: 700,
-                  color: '#1F1A14',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  letterSpacing: '-0.05em',
-                  margin: '0.9rem 0 0.7rem',
-                  lineHeight: 1,
+                  color: '#1A1A1A',
+                  fontFamily: 'Inter, sans-serif',
+                  letterSpacing: '-0.02em',
+                  margin: 0,
                 }}
               >
-                Build thesis-driven analysis that compounds
+                Investment Projects
               </h1>
               <p
                 style={{
-                  fontSize: '1rem',
-                  color: '#655E53',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  lineHeight: 1.7,
+                  fontSize: '0.8125rem',
+                  color: '#9CA3AF',
+                  fontFamily: 'Inter, sans-serif',
                   margin: 0,
-                  maxWidth: '760px',
                 }}
               >
-                Projects ground every conversation in an explicit investment view, then accumulate memory, uploaded evidence, and linked sessions around it.
+                {projects.length} active {projects.length === 1 ? 'project' : 'projects'}
               </p>
             </div>
+          </div>
 
+          {!showForm && (
+            <button
+              onClick={() => setShowForm(true)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '9px 16px',
+                borderRadius: '8px',
+                fontSize: '0.875rem',
+                fontWeight: 600,
+                fontFamily: 'Inter, sans-serif',
+                background: '#1A1A1A',
+                color: '#FFFFFF',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <Plus size={15} />
+              New Project
+            </button>
+          )}
+        </div>
+
+        {/* New project form */}
+        {showForm && (
+          <NewProjectForm
+            onCancel={() => setShowForm(false)}
+            onCreated={handleCreated}
+          />
+        )}
+
+        {/* Content */}
+        {loading ? (
+          <div className="text-center py-16">
+            <p style={{ color: '#9CA3AF', fontFamily: 'Inter, sans-serif', fontSize: '0.875rem' }}>
+              Loading…
+            </p>
+          </div>
+        ) : projects.length === 0 ? (
+          <div
+            style={{
+              textAlign: 'center',
+              padding: '64px 24px',
+              border: '1px dashed #E5E7EB',
+              borderRadius: '12px',
+              background: '#FFFFFF',
+            }}
+          >
+            <Folder size={40} style={{ color: '#D1D5DB', margin: '0 auto 16px' }} />
+            <p
+              style={{
+                fontSize: '1rem',
+                fontWeight: 600,
+                color: '#374151',
+                fontFamily: 'Inter, sans-serif',
+                marginBottom: '8px',
+              }}
+            >
+              No projects yet — create your first investment thesis
+            </p>
+            <p
+              style={{
+                fontSize: '0.8125rem',
+                color: '#9CA3AF',
+                fontFamily: 'Inter, sans-serif',
+                marginBottom: '20px',
+              }}
+            >
+              Projects ground every analysis session in your thesis and accumulate memory across sessions.
+            </p>
             {!showForm && (
               <button
                 onClick={() => setShowForm(true)}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '0.5rem',
-                  padding: '0.8rem 1.1rem',
-                  borderRadius: '999px',
-                  fontSize: '0.9rem',
+                  gap: '6px',
+                  padding: '9px 20px',
+                  borderRadius: '8px',
+                  fontSize: '0.875rem',
                   fontWeight: 600,
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  background: '#1F1A14',
-                  color: '#FFF8ED',
+                  fontFamily: 'Inter, sans-serif',
+                  background: '#1A1A1A',
+                  color: '#FFFFFF',
                   border: 'none',
                   cursor: 'pointer',
                 }}
@@ -590,166 +570,13 @@ export default function ProjectsListPage() {
               </button>
             )}
           </div>
-
-          <div className="grid gap-3 mt-6 sm:grid-cols-3">
-            {[
-              { label: 'Active projects', value: String(projects.length), hint: 'Live thesis workspaces' },
-              { label: 'Linked sessions', value: String(totalSessions), hint: 'Conversation trails inside projects' },
-              { label: 'Stored documents', value: String(totalDocs), hint: 'Embedded project materials' },
-            ].map(stat => (
-              <div
-                key={stat.label}
-                style={{
-                  background: 'rgba(255, 252, 244, 0.82)',
-                  border: '1px solid rgba(43, 35, 23, 0.08)',
-                  borderRadius: '18px',
-                  padding: '0.95rem 1rem',
-                }}
-              >
-                <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.75rem', color: '#8C8376', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
-                  {stat.label}
-                </div>
-                <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '1.45rem', fontWeight: 700, color: '#1F1A14', marginTop: '0.35rem', letterSpacing: '-0.04em' }}>
-                  {stat.value}
-                </div>
-                <div style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.82rem', color: '#70695E', marginTop: '0.2rem' }}>
-                  {stat.hint}
-                </div>
-              </div>
+        ) : (
+          <div className="space-y-3">
+            {projects.map(project => (
+              <ProjectCard key={project.id} project={project} onArchive={handleArchive} />
             ))}
           </div>
-        </section>
-
-        {showForm && (
-          <div className="mt-6">
-            <NewProjectForm
-              onCancel={() => setShowForm(false)}
-              onCreated={handleCreated}
-            />
-          </div>
         )}
-
-        <section className="mt-6">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-4">
-            <div>
-              <h2
-                style={{
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  fontSize: '1.05rem',
-                  fontWeight: 700,
-                  color: '#1F1A14',
-                  letterSpacing: '-0.03em',
-                  margin: 0,
-                }}
-              >
-                Active workspaces
-              </h2>
-              <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.82rem', color: '#8A8174', margin: '0.25rem 0 0' }}>
-                Search by title, thesis, or ticker.
-              </p>
-            </div>
-
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.6rem',
-                background: 'rgba(255, 254, 250, 0.92)',
-                border: '1px solid rgba(34, 27, 19, 0.08)',
-                borderRadius: '999px',
-                padding: '0.7rem 0.95rem',
-                minWidth: 'min(100%, 340px)',
-              }}
-            >
-              <Search size={16} color="#8E8679" />
-              <input
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                placeholder="Search projects..."
-                style={{
-                  width: '100%',
-                  border: 'none',
-                  outline: 'none',
-                  background: 'transparent',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  fontSize: '0.9rem',
-                  color: '#1F1A14',
-                }}
-              />
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="text-center py-16">
-              <p style={{ color: '#9A9081', fontFamily: 'IBM Plex Sans, sans-serif', fontSize: '0.9rem' }}>
-                Loading...
-              </p>
-            </div>
-          ) : filteredProjects.length === 0 ? (
-            <div
-              style={{
-                textAlign: 'center',
-                padding: '72px 24px',
-                border: '1px dashed #DACFBE',
-                borderRadius: '28px',
-                background: 'rgba(255, 254, 250, 0.86)',
-              }}
-            >
-              <FolderOpenDot size={42} style={{ color: '#C2B7A6', margin: '0 auto 16px' }} />
-              <p
-                style={{
-                  fontSize: '1rem',
-                  fontWeight: 600,
-                  color: '#403A32',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  marginBottom: '0.4rem',
-                }}
-              >
-                {projects.length === 0 ? 'No projects yet - create your first thesis workspace' : 'No matching projects'}
-              </p>
-              <p
-                style={{
-                  fontSize: '0.84rem',
-                  color: '#978D7F',
-                  fontFamily: 'IBM Plex Sans, sans-serif',
-                  marginBottom: '1.1rem',
-                }}
-              >
-                {projects.length === 0
-                  ? 'Projects help every analysis session stay grounded in your evolving investment view.'
-                  : 'Try a different title, thesis phrase, or ticker.'}
-              </p>
-              {!showForm && projects.length === 0 && (
-                <button
-                  onClick={() => setShowForm(true)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.45rem',
-                    padding: '0.8rem 1.1rem',
-                    borderRadius: '999px',
-                    fontSize: '0.875rem',
-                    fontWeight: 600,
-                    fontFamily: 'IBM Plex Sans, sans-serif',
-                    background: '#1F1A14',
-                    color: '#FFF8ED',
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Plus size={15} />
-                  New Project
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {filteredProjects.map(project => (
-                <ProjectCard key={project.id} project={project} onArchive={handleArchive} />
-              ))}
-            </div>
-          )}
-        </section>
       </div>
     </div>
   );
