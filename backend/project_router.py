@@ -77,9 +77,17 @@ async def route_for_project(
 
     tickers = project_config.get("tickers", []) if isinstance(project_config, dict) else []
     ticker_hint = f" Key tickers: {', '.join(tickers)}." if tickers else ""
+    preferred_agents = project_config.get("preferred_agents", []) if isinstance(project_config, dict) else []
+    preferred_hint = (
+        " Preferred analytical angles for this project: "
+        + ", ".join(preferred_agents)
+        + ". Use them as a bias when the query is ambiguous, but do not force them when clearly irrelevant."
+        if preferred_agents
+        else ""
+    )
 
     user_message = (
-        f"Thesis excerpt: {thesis_excerpt}{ticker_hint}\n\n"
+        f"Thesis excerpt: {thesis_excerpt}{ticker_hint}{preferred_hint}\n\n"
         f"User query: {query}\n\n"
         "Select the appropriate agent(s) and write grounded task strings that include the thesis context."
     )

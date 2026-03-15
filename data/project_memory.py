@@ -1,7 +1,7 @@
 """
 Project memory document management.
 
-Provides functions to initialize, patch, trim, and persist the
+Provides functions to initialize, patch, trim, synchronize, and persist the
 structured markdown memory document stored in projects.memory_doc.
 """
 from __future__ import annotations
@@ -32,13 +32,31 @@ SECTION_HEADERS = [
     "Live Data Snapshots",
 ]
 
+SECTION_PLACEHOLDERS = {
+    "Key Assumptions": "- (to be populated)",
+    "Violated or Revised Assumptions": "- (none yet)",
+    "Key Companies & Tickers": "- (to be populated)",
+    "Accumulated Conclusions": "- (none yet)",
+    "Open Questions": "- (to be populated)",
+    "Uploaded Document Summaries": "(none yet)",
+    "Live Data Snapshots": "- (none yet)",
+}
+
+_PLACEHOLDER_LINES = {
+    "(to be populated)",
+    "(none yet)",
+    "- (to be populated)",
+    "- (none yet)",
+}
+
 # ---------------------------------------------------------------------------
 # initialize_memory_doc
 # ---------------------------------------------------------------------------
 
-def initialize_memory_doc(title: str, thesis: str) -> str:
+def initialize_memory_doc(title: str, thesis: str, tickers: Optional[list[str]] = None) -> str:
     """Return a freshly initialised memory document for a new project."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ticker_lines = "\n".join(f"- {ticker}" for ticker in (tickers or [])) or SECTION_PLACEHOLDERS["Key Companies & Tickers"]
     return f"""# Project Memory: {title}
 _Last updated: {now}_
 
@@ -56,7 +74,7 @@ _Last updated: {now}_
 **Rationale**: No analysis sessions completed yet.
 
 ## Key Companies & Tickers
-- (to be populated)
+{ticker_lines}
 
 ## Accumulated Conclusions
 - (none yet)
@@ -65,11 +83,103 @@ _Last updated: {now}_
 - (to be populated)
 
 ## Uploaded Document Summaries
-(none yet)
+{SECTION_PLACEHOLDERS["Uploaded Document Summaries"]}
 
 ## Live Data Snapshots
-- (none yet)
+{SECTION_PLACEHOLDERS["Live Data Snapshots"]}
 """
+
+
+def _extract_section_body(memory_doc: str, section_name: str) -> str:
+    """Return the raw body for a ``## section`` or an empty string if missing."""
+    pattern = re.compile(
+        r"(## " + re.escape(section_name) + r"\n)(.*?)(?=\n## |\Z)",
+        re.DOTALL,
+    )
+    match = pattern.search(memory_doc)
+    return match.group(2) if match else ""
+
+
+def _clean_section_body(body: str) -> str:
+    """Strip placeholder lines while preserving meaningful content order."""
+    cleaned_lines = [line for line in body.splitlines() if line.strip() not in _PLACEHOLDER_LINES]
+    return "\n".join(cleaned_lines).strip()
+
+
+def _normalise_text_list(values: Optional[list[Any]]) -> list[str]:
+    """Normalize arbitrary list-like values to non-empty stripped strings."""
+    out: list[str] = []
+    for value in values or []:
+        text = str(value).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    """Remove duplicates case-insensitively while preserving order."""
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped
+
+
+def _extract_section_bullets(memory_doc: str, section_name: str) -> list[str]:
+    """Return bullet content for the named section without placeholders."""
+    body = _clean_section_body(_extract_section_body(memory_doc, section_name))
+    bullets: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            bullets.append(stripped[2:].strip())
+    return bullets
+
+
+def _replace_section_with_bullets(
+    memory_doc: str,
+    section_name: str,
+    items: list[str],
+) -> str:
+    """Replace a section with bullet lines or its default placeholder."""
+    deduped = _dedupe_preserve_order(_normalise_text_list(items))
+    if deduped:
+        body = "\n".join(f"- {item}" for item in deduped)
+    else:
+        body = SECTION_PLACEHOLDERS.get(section_name, "")
+    return patch_memory_section(memory_doc, section_name, body, mode="replace")
+
+
+def _merge_section_bullets(
+    memory_doc: str,
+    section_name: str,
+    new_items: list[str],
+    *,
+    prepend: bool = False,
+    max_items: Optional[int] = None,
+) -> str:
+    """Merge bullet items into a section, preserving order and removing duplicates."""
+    existing_items = _extract_section_bullets(memory_doc, section_name)
+    combined = list(new_items) + existing_items if prepend else existing_items + list(new_items)
+    deduped = _dedupe_preserve_order(_normalise_text_list(combined))
+    if max_items is not None:
+        deduped = deduped[:max_items]
+    return _replace_section_with_bullets(memory_doc, section_name, deduped)
+
+
+def _touch_last_updated(memory_doc: str, now_iso: Optional[str] = None) -> str:
+    """Update the document header timestamp."""
+    now_iso = now_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return re.sub(
+        r"_Last updated: .*?_",
+        f"_Last updated: {now_iso}_",
+        memory_doc,
+        count=1,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +216,14 @@ def patch_memory_section(
 
     heading = match.group(1)       # e.g. "## Thesis\n"
     existing = match.group(2)      # current section body
+    cleaned_existing = _clean_section_body(existing)
 
     if mode == "replace":
         body = new_content
     elif mode == "prepend":
-        body = new_content + "\n" + existing.rstrip("\n")
+        body = new_content if not cleaned_existing else new_content + "\n" + cleaned_existing
     elif mode == "append":
-        body = existing.rstrip("\n") + "\n" + new_content
+        body = new_content if not cleaned_existing else cleaned_existing + "\n" + new_content
     else:
         raise ValueError(f"Unknown mode: {mode!r}. Use 'replace', 'prepend', or 'append'.")
 
@@ -131,6 +242,8 @@ def trim_memory_doc(
     memory_doc: str,
     max_conclusions: int = 20,
     max_questions: int = 10,
+    max_snapshots: int = 10,
+    max_companies: int = 15,
 ) -> str:
     """Truncate overlong sections to keep the memory doc within token budget.
 
@@ -162,7 +275,161 @@ def trim_memory_doc(
 
     memory_doc = _trim_section_bullets(memory_doc, "Accumulated Conclusions", max_conclusions)
     memory_doc = _trim_section_bullets(memory_doc, "Open Questions", max_questions)
+    memory_doc = _trim_section_bullets(memory_doc, "Live Data Snapshots", max_snapshots)
+    memory_doc = _trim_section_bullets(memory_doc, "Key Companies & Tickers", max_companies)
     return memory_doc
+
+
+def sync_project_memory(
+    memory_doc: str,
+    *,
+    title: Optional[str] = None,
+    thesis: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    now_iso: Optional[str] = None,
+) -> str:
+    """Keep memory_doc aligned with canonical project fields."""
+    if title is not None:
+        memory_doc = re.sub(
+            r"^# Project Memory: .*$",
+            f"# Project Memory: {title}",
+            memory_doc,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+    if thesis is not None:
+        memory_doc = patch_memory_section(memory_doc, "Thesis", thesis.strip(), mode="replace")
+
+    if tickers is not None:
+        normalized_tickers = [ticker.upper() for ticker in _normalise_text_list(tickers)]
+        memory_doc = _replace_section_with_bullets(memory_doc, "Key Companies & Tickers", normalized_tickers)
+
+    return _touch_last_updated(memory_doc, now_iso=now_iso)
+
+
+def format_document_summary_entry(
+    filename: str,
+    summary: str,
+    *,
+    document_id: Optional[str] = None,
+) -> str:
+    """Format one uploaded-document summary block for insertion into memory_doc."""
+    lines = [f"### {filename}"]
+    if document_id:
+        lines.append(f"<!-- project_doc:{document_id} -->")
+    lines.append(summary.strip())
+    return "\n".join(line for line in lines if line)
+
+
+def remove_document_summary(
+    memory_doc: str,
+    filename: str,
+    *,
+    document_id: Optional[str] = None,
+) -> str:
+    """Remove one uploaded-document summary block from memory_doc."""
+    section_name = "Uploaded Document Summaries"
+    body = _extract_section_body(memory_doc, section_name)
+    if not body:
+        return memory_doc
+
+    cleaned_body = _clean_section_body(body)
+    updated_body = cleaned_body
+
+    if document_id:
+        exact_pattern = re.compile(
+            r"(?:^|\n)### "
+            + re.escape(filename)
+            + r"\n<!-- project_doc:"
+            + re.escape(document_id)
+            + r" -->\n.*?(?=\n### |\Z)",
+            re.DOTALL,
+        )
+        updated_body, exact_count = exact_pattern.subn("", updated_body, count=1)
+        if exact_count == 0:
+            legacy_exact_pattern = re.compile(
+                r"(?:^|\n)### "
+                + re.escape(filename)
+                + r"\n.*?(?=\n### |\Z)",
+                re.DOTALL,
+            )
+            updated_body = legacy_exact_pattern.sub("", updated_body, count=1)
+    else:
+        filename_pattern = re.compile(
+            r"(?:^|\n)### " + re.escape(filename) + r"\n.*?(?=\n### |\Z)",
+            re.DOTALL,
+        )
+        updated_body = filename_pattern.sub("", updated_body, count=1)
+
+    updated_body = updated_body.strip()
+    updated_body = re.sub(r"\n{3,}", "\n\n", updated_body)
+    replacement = updated_body or SECTION_PLACEHOLDERS[section_name]
+    return patch_memory_section(memory_doc, section_name, replacement, mode="replace")
+
+
+def apply_memory_patch(
+    memory_doc: str,
+    memory_patch: dict,
+    *,
+    today: Optional[str] = None,
+    now_iso: Optional[str] = None,
+) -> str:
+    """Apply a structured memory patch to a memory_doc and return the updated text."""
+    today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    conclusions = _normalise_text_list(memory_patch.get("conclusions"))
+    if conclusions:
+        dated = [f"[{today} - agent] {item}" for item in conclusions]
+        memory_doc = _merge_section_bullets(
+            memory_doc,
+            "Accumulated Conclusions",
+            dated,
+            prepend=True,
+        )
+
+    violated = _normalise_text_list(memory_patch.get("violated_assumptions"))
+    if violated:
+        dated = [f"{today}: {item}" for item in violated]
+        memory_doc = _merge_section_bullets(
+            memory_doc,
+            "Violated or Revised Assumptions",
+            dated,
+        )
+
+    thesis_health: Optional[dict] = memory_patch.get("thesis_health")
+    if thesis_health:
+        status = thesis_health.get("status", "Not assessed")
+        rationale = thesis_health.get("rationale", "")
+        health_content = f"**Status**: {status}\n**Rationale**: {rationale}"
+        memory_doc = patch_memory_section(
+            memory_doc, "Thesis Health", health_content, mode="replace"
+        )
+
+    assumptions = _normalise_text_list(memory_patch.get("assumptions"))
+    if assumptions:
+        memory_doc = _merge_section_bullets(memory_doc, "Key Assumptions", assumptions)
+
+    questions = _normalise_text_list(memory_patch.get("open_questions"))
+    if questions:
+        memory_doc = _merge_section_bullets(memory_doc, "Open Questions", questions)
+
+    companies = [item.upper() if re.fullmatch(r"[A-Za-z]{1,6}", item) else item for item in _normalise_text_list(memory_patch.get("key_companies"))]
+    if companies:
+        memory_doc = _merge_section_bullets(memory_doc, "Key Companies & Tickers", companies)
+
+    snapshots = _normalise_text_list(memory_patch.get("live_data_snapshots"))
+    if snapshots:
+        memory_doc = _merge_section_bullets(
+            memory_doc,
+            "Live Data Snapshots",
+            snapshots,
+            prepend=True,
+            max_items=10,
+        )
+
+    memory_doc = trim_memory_doc(memory_doc)
+    return _touch_last_updated(memory_doc, now_iso=now_iso)
 
 
 # ---------------------------------------------------------------------------
@@ -219,15 +486,16 @@ async def update_project_memory(
         conclusions          (list[str])   — prepend to Accumulated Conclusions
         violated_assumptions (list[str])   — append to Violated or Revised Assumptions
         thesis_health        (dict)        — replace Thesis Health (keys: status, rationale)
-        open_questions       (list[str])   — append to Open Questions
+        assumptions          (list[str])   — merge into Key Assumptions
+        open_questions       (list[str])   — merge into Open Questions
+        key_companies        (list[str])   — merge into Key Companies & Tickers
+        live_data_snapshots  (list[str])   — prepend into Live Data Snapshots
 
     Implements single-retry optimistic locking: if another writer updated
     ``updated_at`` between our read and write we re-read, re-apply, and retry
     once before logging and dropping.
     """
     from backend.models import Project  # avoid circular import at module level
-
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     for attempt in range(2):
         try:
@@ -242,52 +510,11 @@ async def update_project_memory(
             snapshot_updated_at = project.updated_at
             memory_doc: str = project.memory_doc or ""
 
-            # --- Apply patch ---
-
-            conclusions: list = memory_patch.get("conclusions") or []
-            if conclusions:
-                bullet_block = "\n".join(
-                    f"- [{today} — agent] {c}" for c in conclusions
-                )
-                memory_doc = patch_memory_section(
-                    memory_doc, "Accumulated Conclusions", bullet_block, mode="prepend"
-                )
-
-            violated: list = memory_patch.get("violated_assumptions") or []
-            if violated:
-                bullet_block = "\n".join(
-                    f"- {today}: {v}" for v in violated
-                )
-                memory_doc = patch_memory_section(
-                    memory_doc, "Violated or Revised Assumptions", bullet_block, mode="append"
-                )
-
-            thesis_health: Optional[dict] = memory_patch.get("thesis_health")
-            if thesis_health:
-                status = thesis_health.get("status", "Not assessed")
-                rationale = thesis_health.get("rationale", "")
-                health_content = f"**Status**: {status}\n**Rationale**: {rationale}"
-                memory_doc = patch_memory_section(
-                    memory_doc, "Thesis Health", health_content, mode="replace"
-                )
-
-            questions: list = memory_patch.get("open_questions") or []
-            if questions:
-                bullet_block = "\n".join(f"- {q}" for q in questions)
-                memory_doc = patch_memory_section(
-                    memory_doc, "Open Questions", bullet_block, mode="append"
-                )
-
-            # --- Trim ---
-            memory_doc = trim_memory_doc(memory_doc)
-
-            # --- Update last-updated timestamp in header ---
             now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            memory_doc = re.sub(
-                r"_Last updated: .*?_",
-                f"_Last updated: {now_iso}_",
+            memory_doc = apply_memory_patch(
                 memory_doc,
-                count=1,
+                memory_patch,
+                now_iso=now_iso,
             )
 
             # --- Optimistic write (check updated_at hasn't changed) ---
