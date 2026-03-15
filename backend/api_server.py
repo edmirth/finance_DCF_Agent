@@ -7,9 +7,12 @@ import os
 import json
 import asyncio
 import logging
+import threading
+import uuid as uuid_mod
 from typing import Optional, AsyncGenerator, Any, Dict, List
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
@@ -88,6 +91,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Store active agents (in production, use proper session management)
 agents_cache = {}
+agents_cache_lock = threading.Lock()
+SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "earnings"})
 
 # Map agent types to their fallback methods (when agent_executor is not available)
 AGENT_FALLBACK_METHODS = {
@@ -161,32 +166,48 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
-def get_or_create_agent(agent_type: str, model: str):
-    """Get cached agent or create new one"""
-    cache_key = f"{agent_type}_{model}"
+def _build_agent_cache_key(agent_type: str, model: str, session_id: Optional[str]) -> Optional[str]:
+    """Use session-scoped cache keys for stateful agents to prevent context leakage."""
+    if agent_type in SESSION_SCOPED_AGENT_TYPES:
+        if not session_id:
+            return None
+        return f"{agent_type}_{model}_{session_id}"
+    return f"{agent_type}_{model}"
 
-    if cache_key not in agents_cache:
-        try:
-            if agent_type == "dcf":
-                agents_cache[cache_key] = create_dcf_agent(model=model)
-            elif agent_type == "analyst":
-                agents_cache[cache_key] = create_equity_analyst_agent(model=model)
-            elif agent_type == "graph":
-                agents_cache[cache_key] = create_equity_analyst_graph(model=model)
-            elif agent_type == "research":
-                agents_cache[cache_key] = create_finance_qa_agent(model=model)
-            elif agent_type == "market":
-                agents_cache[cache_key] = create_market_agent(model=model)
-            elif agent_type == "portfolio":
-                agents_cache[cache_key] = create_portfolio_agent(model=model)
-            elif agent_type == "earnings":
-                agents_cache[cache_key] = create_earnings_agent(model=model)
-            else:
-                raise ValueError(f"Unknown agent type: {agent_type}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
-    return agents_cache[cache_key]
+def _create_agent_instance(agent_type: str, model: str):
+    """Create a single agent instance for the requested type."""
+    if agent_type == "dcf":
+        return create_dcf_agent(model=model)
+    if agent_type == "analyst":
+        return create_equity_analyst_agent(model=model)
+    if agent_type == "graph":
+        return create_equity_analyst_graph(model=model)
+    if agent_type == "research":
+        return create_finance_qa_agent(model=model)
+    if agent_type == "market":
+        return create_market_agent(model=model)
+    if agent_type == "portfolio":
+        return create_portfolio_agent(model=model)
+    if agent_type == "earnings":
+        return create_earnings_agent(model=model)
+    raise ValueError(f"Unknown agent type: {agent_type}")
+
+
+def get_or_create_agent(agent_type: str, model: str, session_id: Optional[str] = None):
+    """Get cached agent or create a fresh instance when session scoping is required."""
+    cache_key = _build_agent_cache_key(agent_type, model, session_id)
+
+    try:
+        if cache_key is None:
+            return _create_agent_instance(agent_type, model)
+
+        with agents_cache_lock:
+            if cache_key not in agents_cache:
+                agents_cache[cache_key] = _create_agent_instance(agent_type, model)
+            return agents_cache[cache_key]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
 
 def _ensure_str_response(value) -> str:
@@ -271,7 +292,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
 
     except Exception as e:
         # Clean up progress queue on error too
-        if agent_type == "earnings":
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = None
             agent._progress_loop = None
         await queue.put({"type": "error", "error": str(e)})
@@ -348,6 +369,18 @@ async def route_agent_for_message(message: str) -> str:
     except Exception as e:
         logger.warning(f"Auto-routing failed, defaulting to research: {e}")
         return "research"
+
+
+def _requests_get_json(url: str, *, params: Dict[str, Any], timeout: int = 10) -> Any:
+    """Synchronous helper for requests-based APIs."""
+    response = requests.get(url, params=params, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+async def _fetch_json(url: str, *, params: Dict[str, Any], timeout: int = 10) -> Any:
+    """Run blocking HTTP requests in a threadpool so async endpoints stay responsive."""
+    return await run_in_threadpool(_requests_get_json, url, params=params, timeout=timeout)
 
 
 async def generate_follow_up_questions(message: str, response: str, agent_type: str) -> list[str]:
@@ -516,7 +549,7 @@ async def stream_agent_response(
             logger.info(f"[AUTO-ROUTE] '{message[:60]}...' → {resolved_agent_type}")
             yield f"data: {json.dumps({'type': 'routing_decision', 'agent': resolved_agent_type})}\n\n"
 
-        agent = get_or_create_agent(resolved_agent_type, model)
+        agent = get_or_create_agent(resolved_agent_type, model, session_id=session_id)
 
         # Send start event
         yield f"data: {json.dumps({'type': 'start', 'agent': resolved_agent_type})}\n\n"
@@ -802,19 +835,25 @@ async def chat_stream(chat_message: ChatMessage):
 async def chat(chat_message: ChatMessage):
     """Non-streaming chat endpoint (for simple requests)"""
     try:
-        agent = get_or_create_agent(chat_message.agent_type, chat_message.model)
+        session_id = chat_message.session_id
+        if chat_message.agent_type in SESSION_SCOPED_AGENT_TYPES and not session_id:
+            session_id = str(uuid_mod.uuid4())
+
+        agent = get_or_create_agent(chat_message.agent_type, chat_message.model, session_id=session_id)
 
         # Get response synchronously - research agent uses 'chat' method, others use 'analyze'
         if chat_message.agent_type == "research":
-            response = agent.chat(chat_message.message)
+            response = await run_in_threadpool(agent.chat, chat_message.message)
         else:
-            response = agent.analyze(chat_message.message)
+            response = await run_in_threadpool(agent.analyze, chat_message.message)
+
+        response = _ensure_str_response(response)
 
         return ChatResponse(
             response=response,
             agent_type=chat_message.agent_type,
             timestamp=datetime.now().isoformat(),
-            session_id=chat_message.session_id or "default"
+            session_id=session_id or "default"
         )
 
     except Exception as e:
@@ -842,26 +881,31 @@ async def get_stock_chart_compare(tickers: str, period: str = "1M"):
         if len(ticker_list) == 0 or len(ticker_list) > 2:
             raise HTTPException(status_code=400, detail="Provide 1-2 comma-separated tickers")
 
-        quotes = {}
-        historical = {}
+        quote_url = "https://financialmodelingprep.com/stable/quote"
+        hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 
-        for tkr in ticker_list:
-            # Fetch quote
-            quote_url = "https://financialmodelingprep.com/stable/quote"
-            quote_params = {"symbol": tkr, "apikey": fmp_key}
+        async def load_compare_ticker(tkr: str) -> tuple[str, dict, List[Dict]]:
             try:
-                quote_response = requests.get(quote_url, params=quote_params, timeout=10)
-                quote_response.raise_for_status()
-                quote_data_list = quote_response.json()
+                quote_data_list, hist_result = await asyncio.gather(
+                    _fetch_json(quote_url, params={"symbol": tkr, "apikey": fmp_key}),
+                    _fetch_json(hist_url, params={"symbol": tkr, "apikey": fmp_key}),
+                    return_exceptions=True,
+                )
             except requests.exceptions.RequestException as e:
-                logger.error(f"Failed to fetch quote for {tkr}: {e}")
-                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}")
+                logger.error(f"Failed to fetch compare chart data for {tkr}: {e}")
+                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}") from e
 
             if not quote_data_list:
                 raise HTTPException(status_code=404, detail=f"No quote data found for {tkr}")
 
+            if isinstance(hist_result, Exception):
+                logger.warning(f"Historical compare chart fetch failed for {tkr}: {hist_result}")
+                hist_data = []
+            else:
+                hist_data = hist_result
+
             qd = quote_data_list[0]
-            quotes[tkr] = {
+            quote_payload = {
                 "symbol": qd.get("symbol", tkr),
                 "name": qd.get("name", ""),
                 "exchange": qd.get("exchange", ""),
@@ -878,18 +922,11 @@ async def get_stock_chart_compare(tickers: str, period: str = "1M"):
                 "yearLow": qd.get("yearLow", 0),
                 "avgVolume": qd.get("avgVolume", 0),
             }
+            return tkr, quote_payload, filter_chart_data_by_period(hist_data, period)
 
-            # Fetch historical
-            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-            hist_params = {"symbol": tkr, "apikey": fmp_key}
-            try:
-                hist_response = requests.get(hist_url, params=hist_params, timeout=10)
-                hist_response.raise_for_status()
-                hist_data = hist_response.json()
-            except requests.exceptions.RequestException:
-                hist_data = []
-
-            historical[tkr] = filter_chart_data_by_period(hist_data, period)
+        results = await asyncio.gather(*(load_compare_ticker(tkr) for tkr in ticker_list))
+        quotes = {ticker: quote for ticker, quote, _ in results}
+        historical = {ticker: history for ticker, _, history in results}
 
         return {
             "tickers": ticker_list,
@@ -957,14 +994,18 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
 
         ticker = ticker.upper()
 
-        # Get current quote
         quote_url = "https://financialmodelingprep.com/stable/quote"
-        quote_params = {"symbol": ticker, "apikey": fmp_key}
+        if period == "1D":
+            hist_url = "https://financialmodelingprep.com/stable/historical-chart/5min"
+        else:
+            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 
         try:
-            quote_response = requests.get(quote_url, params=quote_params, timeout=10)
-            quote_response.raise_for_status()
-            quote_data_list = quote_response.json()
+            quote_data_list, hist_result = await asyncio.gather(
+                _fetch_json(quote_url, params={"symbol": ticker, "apikey": fmp_key}),
+                _fetch_json(hist_url, params={"symbol": ticker, "apikey": fmp_key}),
+                return_exceptions=True,
+            )
         except requests.exceptions.RequestException as e:
             print(f"[ERROR] Failed to fetch quote for {ticker}: {e}")
             raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {ticker}")
@@ -977,6 +1018,12 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
 
         # Log the quote data structure for debugging
         print(f"[DEBUG] FMP Quote Response for {ticker}: {quote_data}")
+
+        if isinstance(hist_result, Exception):
+            print(f"[ERROR] Failed to fetch historical data for {ticker}: {hist_result}")
+            hist_data = []
+        else:
+            hist_data = hist_result
 
         # Ensure required fields exist with fallbacks
         quote_data = {
@@ -996,25 +1043,6 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
             "yearLow": quote_data.get("yearLow", 0),
             "avgVolume": quote_data.get("avgVolume", 0)
         }
-
-        # Get historical data based on period
-        if period == "1D":
-            # Intraday 5-minute data for 1-day chart
-            hist_url = "https://financialmodelingprep.com/stable/historical-chart/5min"
-            hist_params = {"symbol": ticker, "apikey": fmp_key}
-        else:
-            # Daily data for other periods
-            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-            hist_params = {"symbol": ticker, "apikey": fmp_key}
-
-        try:
-            hist_response = requests.get(hist_url, params=hist_params, timeout=10)
-            hist_response.raise_for_status()
-            hist_data = hist_response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to fetch historical data for {ticker}: {e}")
-            # Return quote data even if historical fails
-            hist_data = []
 
         # Log sample of historical data for debugging
         if isinstance(hist_data, list) and len(hist_data) > 0:
