@@ -180,7 +180,7 @@ function ChatInput({ value, onChange, onSend, isLoading, placeholder, agents, se
         {/* Right side: agent selector + send */}
         <div className="rogo-toolbar-right">
           {/* Agent selector dropdown */}
-          {agents && selectedAgent && onSelectAgent && (
+          {agents && selectedAgent && onSelectAgent && agents.length > 1 && (
             <div className="relative" ref={dropdownRef}>
               <button
                 className={`agent-selector ${selectedAgent.id === 'auto' ? 'agent-selector-auto' : ''}`}

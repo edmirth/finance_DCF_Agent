@@ -347,7 +347,9 @@ function ChartScatter({
             const d = payload[0]?.payload as Record<string, unknown>;
             return (
               <div style={TOOLTIP_STYLE}>
-                {d.label && <div style={{ fontWeight: 600, color: '#111827', marginBottom: 4 }}>{String(d.label)}</div>}
+                {(typeof d.label === 'string' || typeof d.label === 'number') ? (
+                  <div style={{ fontWeight: 600, color: '#111827', marginBottom: 4 }}>{String(d.label)}</div>
+                ) : null}
                 <div style={{ color: '#6B7280' }}>{x_label}: <span style={{ color: '#111827' }}>{String(d.x)}</span></div>
                 <div style={{ color: '#6B7280' }}>{y_label}: <span style={{ color: '#111827' }}>{fmt(Number(d.y))}</span></div>
               </div>
