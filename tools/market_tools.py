@@ -54,24 +54,23 @@ class GetMarketOverviewTool(BaseTool):
             result = ""
             if is_placeholder:
                 result += "**WARNING: FMP_API_KEY not configured. All market data below is STATIC PLACEHOLDER data and does NOT reflect current market conditions. Do not use for investment decisions.**\n\n"
-            result += "📊 **MARKET OVERVIEW**\n\n"
+            result += "## Market Overview\n\n"
 
             # Indices
             result += "**Major Indices:**\n"
             for symbol, data in indices.items():
                 if symbol.startswith("_"):
                     continue
-                direction = "🟢" if data["change_pct"] > 0 else "🔴"
-                result += f"  {direction} **{data['name']}**: {data['price']:.2f} ({data['change_pct']:+.2f}%)\n"
+                result += f"  **{data['name']}**: {data['price']:.2f} ({data['change_pct']:+.2f}%)\n"
 
             # Market regime
             result += f"\n**Market Regime:** "
             if regime["regime"] == "BULL":
-                result += "🐂 **BULLISH**"
+                result += "**BULLISH**"
             elif regime["regime"] == "BEAR":
-                result += "🐻 **BEARISH**"
+                result += "**BEARISH**"
             else:
-                result += "😐 **NEUTRAL**"
+                result += "**NEUTRAL**"
 
             result += f" | **Risk Mode:** {regime['risk_mode']}\n"
             result += f"**Confidence:** {regime['confidence']}%\n"
@@ -150,7 +149,7 @@ class GetSectorRotationTool(BaseTool):
             result = ""
             if is_placeholder:
                 result += "**WARNING: FMP_API_KEY not configured. Sector data below is STATIC PLACEHOLDER data and does NOT reflect current market conditions.**\n\n"
-            result += f"📈 **SECTOR ROTATION ANALYSIS** ({timeframe})\n\n"
+            result += f"## Sector Rotation Analysis ({timeframe})\n\n"
 
             # Sort sectors by performance (skip metadata keys)
             # Filter out sectors with None for the requested timeframe
@@ -194,8 +193,7 @@ class GetSectorRotationTool(BaseTool):
             # All sectors
             result += "\n**All Sectors:**\n"
             for symbol, name, perf in sector_list:
-                direction = "🟢" if perf > 0 else "🔴" if perf < 0 else "⚪"
-                result += f"  {direction} {name:20s} {perf:+6.1f}%\n"
+                result += f"  {name:20s} {perf:+6.1f}%\n"
 
             if unavailable:
                 result += f"\n_Note: {len(unavailable)} sectors had no data for {timeframe} (aggregate bars unavailable)._\n"
@@ -328,20 +326,9 @@ class ClassifyMarketRegimeTool(BaseTool):
             fetcher = MarketDataFetcher()
             regime = fetcher.calculate_market_regime()
 
-            result = "🎯 **MARKET REGIME CLASSIFICATION**\n\n"
+            result = "## Market Regime Classification\n\n"
 
-            # Main classification
-            if regime["regime"] == "BULL":
-                emoji = "🐂"
-                color = "🟢"
-            elif regime["regime"] == "BEAR":
-                emoji = "🐻"
-                color = "🔴"
-            else:
-                emoji = "😐"
-                color = "🟡"
-
-            result += f"{emoji} **{regime['regime']} MARKET** {color}\n"
+            result += f"**{regime['regime']} MARKET**\n"
             result += f"**Risk Mode:** {regime['risk_mode']}\n"
             result += f"**Confidence:** {regime['confidence']}%\n\n"
 
@@ -455,7 +442,7 @@ class ScreenStocksTool(BaseTool):
                 filters.append({"field": "revenue", "operator": "gte", "value": 0})
 
             if not filters:
-                return "❌ No screening criteria provided. Please specify at least one filter (revenue_min, net_income_min, pe_ratio_max, industry, etc.)"
+                return "No screening criteria provided. Please specify at least one filter (revenue_min, net_income_min, pe_ratio_max, industry, etc.)"
 
             # Execute screening with higher limit if filtering by industry (need more results to filter)
             fetcher = FinancialDataFetcher()
@@ -472,7 +459,7 @@ class ScreenStocksTool(BaseTool):
                 results = filtered_results[:limit]  # Limit to requested count
 
             if not results:
-                error_msg = "❌ No stocks matched your screening criteria.\n\n"
+                error_msg = "No stocks matched your screening criteria.\n\n"
                 if industry:
                     # Try to find similar industries from the unfiltered results
                     unfiltered_results = fetcher.screen_stocks(filters, limit=100)
@@ -501,7 +488,7 @@ class ScreenStocksTool(BaseTool):
                 return error_msg
 
             # Format results
-            output = f"📊 **STOCK SCREENER RESULTS** ({len(results)} stocks found)\n\n"
+            output = f"## Stock Screener Results ({len(results)} stocks found)\n\n"
             output += "**Screening Criteria:**\n"
             if industry:
                 output += f"  • Industry: {industry}\n"
@@ -585,9 +572,9 @@ class GetValueStocksTool(BaseTool):
             results = fetcher.screen_stocks(filters, limit=limit, sort_by='pe_ratio')
 
             if not results:
-                return "❌ No value stocks found matching criteria (P/E < 15, profitable, revenue > $1B)"
+                return "No value stocks found matching criteria (P/E < 15, profitable, revenue > $1B)"
 
-            output = f"💎 **VALUE STOCKS** ({len(results)} found, sorted by P/E ratio)\n\n"
+            output = f"## Value Stocks ({len(results)} found, sorted by P/E ratio)\n\n"
             output += "**Criteria:** P/E < 15, Profitable, Revenue > $1B\n\n"
             output += "| Ticker | Industry | Revenue | Net Income | P/E |\n"
             output += "|--------|----------|---------|------------|-----|\n"
@@ -652,9 +639,9 @@ class GetGrowthStocksTool(BaseTool):
             results = fetcher.screen_stocks(filters, limit=limit, sort_by='revenue')
 
             if not results:
-                return "❌ No growth stocks found matching criteria (revenue > $500M, profitable)"
+                return "No growth stocks found matching criteria (revenue > $500M, profitable)"
 
-            output = f"🚀 **GROWTH STOCKS** ({len(results)} found, sorted by revenue)\n\n"
+            output = f"## Growth Stocks ({len(results)} found, sorted by revenue)\n\n"
             output += "**Criteria:** Revenue > $500M, Profitable\n\n"
             output += "| Ticker | Industry | Revenue | Net Income | P/E |\n"
             output += "|--------|----------|---------|------------|-----|\n"
@@ -721,9 +708,9 @@ class GetDividendStocksTool(BaseTool):
             results = fetcher.screen_stocks(filters, limit=limit)
 
             if not results:
-                return "❌ No dividend stocks found matching criteria (DPS > 0, profitable, revenue > $1B)"
+                return "No dividend stocks found matching criteria (DPS > 0, profitable, revenue > $1B)"
 
-            output = f"💰 **DIVIDEND STOCKS** ({len(results)} found)\n\n"
+            output = f"## Dividend Stocks ({len(results)} found)\n\n"
             output += "**Criteria:** Pays Dividends, Profitable, Revenue > $1B\n\n"
             output += "| Ticker | Industry | Revenue | Net Income | DPS | P/E |\n"
             output += "|--------|----------|---------|------------|-----|-----|\n"

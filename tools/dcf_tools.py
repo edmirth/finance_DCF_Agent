@@ -1074,7 +1074,7 @@ class GetMarketParametersTool(BaseTool):
             if results['warnings']:
                 output.append("**Warnings:**")
                 for warning in results['warnings']:
-                    output.append(f"- ⚠ {warning}")
+                    output.append(f"- {warning}")
                 output.append("")
 
             output.append(f"```json")
@@ -1179,9 +1179,7 @@ Your custom UFCF-based DCF is still the primary valuation method."""
 
             # Build comparison output
             output = []
-            output.append("=" * 70)
-            output.append(f"FMP DCF COMPARISON FOR {ticker_clean}")
-            output.append("=" * 70)
+            output.append(f"## FMP DCF Comparison: {ticker_clean}")
             output.append("")
 
             output.append(f"Current Stock Price: ${current_price:.2f}")

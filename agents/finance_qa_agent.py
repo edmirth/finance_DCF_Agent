@@ -252,10 +252,14 @@ When you have all the data needed, provide a clear, well-structured response:
 3. Relevant context or caveats
 4. [Optional] Proactive suggestion for next analysis
 
-Use markdown formatting for readability:
-- **Bold** for key metrics
-- Tables for comparisons
-- Bullet points for lists
+**ABSOLUTE OUTPUT RULES — NEVER VIOLATE:**
+1. NO EMOJIS — Do not use any emoji characters anywhere in your response.
+2. NO ASCII BORDERS — Never output lines like `========`, `--------`. These are not markdown and render as garbage.
+3. NO ALL-CAPS SECTION LABELS — Use `##` and `###` markdown headers only.
+4. PROSE REQUIRED — Every section needs at least 1-2 sentences of analytical explanation, not just raw numbers.
+5. CONTEXTUALIZE EVERY NUMBER — Do not write "Revenue: $96B." Write "Revenue of $96B grew 19% year-over-year, driven by..."
+
+Use markdown for structure: **bold** for key metrics, tables for comparisons, `##` headers for sections.
 
 Remember to be helpful, accurate with dates, and stay within your scope of quick research."""
 

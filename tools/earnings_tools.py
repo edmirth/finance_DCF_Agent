@@ -158,13 +158,12 @@ class GetQuarterlyEarningsTool(BaseTool):
             return f"No income statement data available for {ticker}"
 
         # Build earnings table
-        output = [f"QUARTERLY EARNINGS DATA: {ticker} (Last {quarters} Quarters)\n"]
-        output.append("=" * 80)
+        output = [f"## Quarterly Earnings Data: {ticker} (Last {quarters} Quarters)\n"]
         output.append("")
 
         # Header
         output.append(f"{'Quarter':<12} {'Revenue ($M)':<15} {'YoY%':<10} {'Net Income':<15} {'EPS':<10} {'Op Margin%':<12}")
-        output.append("-" * 80)
+        output.append("-" * 70)
 
         # Process each quarter
         for i, stmt in enumerate(income_statements[:quarters]):
@@ -216,7 +215,7 @@ class GetQuarterlyEarningsTool(BaseTool):
 
             if four_q_ago:
                 yoy_avg = ((recent_q - four_q_ago) / four_q_ago) * 100
-                output.append(f"✓ Average YoY Revenue Growth: {yoy_avg:.1f}%")
+                output.append(f"Average YoY Revenue Growth: {yoy_avg:.1f}%")
 
         # Margin trend
         if len(income_statements) >= 2:
@@ -225,7 +224,7 @@ class GetQuarterlyEarningsTool(BaseTool):
             margin_change = recent_margin - older_margin
 
             trend = "expanding" if margin_change > 0 else "contracting"
-            output.append(f"✓ Operating Margin Trend: {trend} ({margin_change:+.1f} percentage points)")
+            output.append(f"Operating Margin Trend: {trend} ({margin_change:+.1f} percentage points)")
 
         return "\n".join(output)
 
@@ -295,12 +294,11 @@ class GetAnalystEstimatesTool(BaseTool):
 
     def _format_analyst_estimates(self, data: List[Dict], ticker: str) -> str:
         """Format FMP analyst estimates data (legacy format)"""
-        output = [f"ANALYST CONSENSUS ESTIMATES: {ticker}\n"]
-        output.append("=" * 80)
+        output = [f"## Analyst Consensus Estimates: {ticker}\n"]
         output.append("")
 
-        output.append("FORWARD QUARTERLY ESTIMATES:")
-        output.append("-" * 80)
+        output.append("**Forward Quarterly Estimates:**")
+        output.append("-" * 70)
         output.append(f"{'Period':<15} {'Revenue Est ($M)':<20} {'EPS Est':<15} {'# Analysts':<12}")
         output.append("-" * 80)
 
@@ -327,13 +325,12 @@ class GetAnalystEstimatesTool(BaseTool):
 
     def _format_fmp_estimates(self, quarterly: List[Dict], annual: List[Dict], ticker: str) -> str:
         """Format FMP /stable/analyst-estimates data (new field names)"""
-        output = [f"ANALYST CONSENSUS ESTIMATES: {ticker}\n"]
-        output.append("=" * 80)
+        output = [f"## Analyst Consensus Estimates: {ticker}\n"]
         output.append("")
 
         # Quarterly estimates
         if quarterly:
-            output.append("FORWARD QUARTERLY ESTIMATES:")
+            output.append("**Forward Quarterly Estimates:**")
             output.append("-" * 90)
             output.append(f"{'Period':<15} {'Revenue Avg ($M)':<20} {'Rev High ($M)':<18} {'EPS Avg':<12} {'EPS High':<12} {'# Analysts':<10}")
             output.append("-" * 90)
@@ -536,14 +533,13 @@ class GetEarningsSurprisesTool(BaseTool):
 
     def _format_earnings_surprises_from_calendar(self, data: List[Dict], ticker: str) -> str:
         """Format earnings surprises from earnings calendar data"""
-        output = [f"EARNINGS SURPRISES HISTORY: {ticker}\n"]
-        output.append("=" * 80)
+        output = [f"## Earnings Surprises History: {ticker}\n"]
         output.append("")
         output.append("Note: Limited historical data available from FMP. Showing available quarters.")
         output.append("")
 
         output.append(f"{'Date':<12} {'Actual EPS':<15} {'Est EPS':<15} {'Surprise':<15} {'Surprise %':<12}")
-        output.append("-" * 80)
+        output.append("-" * 70)
 
         beats = 0
         misses = 0
@@ -581,32 +577,29 @@ class GetEarningsSurprisesTool(BaseTool):
         total = beats + misses + meets
         if total > 0:
             output.append("")
-            output.append("SURPRISE PATTERN:")
-            output.append("-" * 80)
+            output.append("**Surprise Pattern:**")
             output.append(f"Beats: {beats}/{total} ({beats/total*100:.1f}%)")
             output.append(f"Meets: {meets}/{total} ({meets/total*100:.1f}%)")
             output.append(f"Misses: {misses}/{total} ({misses/total*100:.1f}%)")
 
             if beats >= total * 0.75:
-                output.append("\n✓ Strong track record: Consistently beats expectations")
+                output.append("\nStrong track record: Consistently beats expectations")
             elif misses >= total * 0.5:
-                output.append("\n⚠ Weak track record: Frequently misses expectations")
+                output.append("\nNote: Weak track record — frequently misses expectations")
 
         # Note about limited data
         if total < 4:
             output.append("")
-            output.append("⚠ Limited historical data. Recommend using web search for complete history.")
+            output.append("Note: Limited historical data. Recommend using web search for complete history.")
 
         return "\n".join(output)
 
     def _format_earnings_surprises(self, data: List[Dict], ticker: str) -> str:
         """Format earnings surprises data"""
-        output = [f"EARNINGS SURPRISES HISTORY: {ticker}\n"]
-        output.append("=" * 80)
+        output = [f"## Earnings Surprises: {ticker}\n"]
         output.append("")
-
         output.append(f"{'Date':<12} {'Actual EPS':<15} {'Est EPS':<15} {'Surprise':<15} {'Surprise %':<12}")
-        output.append("-" * 80)
+        output.append("-" * 60)
 
         beats = 0
         misses = 0
@@ -637,16 +630,15 @@ class GetEarningsSurprisesTool(BaseTool):
         total = beats + misses + meets
         if total > 0:
             output.append("")
-            output.append("SURPRISE PATTERN:")
-            output.append("-" * 80)
+            output.append("**Surprise Pattern:**")
             output.append(f"Beats: {beats}/{total} ({beats/total*100:.1f}%)")
             output.append(f"Meets: {meets}/{total} ({meets/total*100:.1f}%)")
             output.append(f"Misses: {misses}/{total} ({misses/total*100:.1f}%)")
 
             if beats >= total * 0.75:
-                output.append("\n✓ Strong track record: Consistently beats expectations")
+                output.append("\nStrong track record: Consistently beats expectations")
             elif misses >= total * 0.5:
-                output.append("\n⚠ Weak track record: Frequently misses expectations")
+                output.append("\nNote: Weak track record — frequently misses expectations")
 
         return "\n".join(output)
 
@@ -704,8 +696,7 @@ class AnalyzeEarningsGuidanceTool(BaseTool):
                 include_domains=EARNINGS_DOMAINS,
             )
 
-            output = [f"EARNINGS GUIDANCE ANALYSIS: {ticker}\n"]
-            output.append("=" * 80)
+            output = [f"## Earnings Guidance Analysis: {ticker}\n"]
             output.append("")
             output.append(result)
 
@@ -756,8 +747,7 @@ class ComparePeerEarningsTool(BaseTool):
                 include_domains=EARNINGS_DOMAINS,
             )
 
-            output = [f"PEER EARNINGS COMPARISON: {ticker}\n"]
-            output.append("=" * 80)
+            output = [f"## Peer Earnings Comparison: {ticker}\n"]
             output.append("")
             output.append(result)
 
@@ -814,7 +804,7 @@ class GetPriceTargetTool(BaseTool):
                 max_results=5,
             )
             if result and "No results" not in result:
-                return f"ANALYST PRICE TARGETS: {ticker} (via web search)\n{'=' * 80}\n\n{result}\n\nNote: Data sourced from web search. Verify with primary sources."
+                return f"## Analyst Price Targets: {ticker} (via web search)\n\n{result}\n\nNote: Data sourced from web search. Verify with primary sources."
             return f"No price target data available for {ticker}"
 
         except Exception as e:
@@ -823,8 +813,7 @@ class GetPriceTargetTool(BaseTool):
 
     def _format_price_targets(self, data: Dict, ticker: str) -> str:
         """Format price target data"""
-        output = [f"ANALYST PRICE TARGETS: {ticker}\n"]
-        output.append("=" * 80)
+        output = [f"## Analyst Price Targets: {ticker}\n"]
         output.append("")
 
         target_high = data.get("targetHigh", 0)
@@ -901,7 +890,7 @@ class GetAnalystRatingsTool(BaseTool):
                 max_results=5,
             )
             if result and "No results" not in result:
-                return f"RECENT ANALYST RATINGS: {ticker} (via web search)\n{'=' * 80}\n\n{result}\n\nNote: Data sourced from web search. Verify with primary sources."
+                return f"## Recent Analyst Ratings: {ticker} (via web search)\n\n{result}\n\nNote: Data sourced from web search. Verify with primary sources."
             return f"No analyst ratings available for {ticker}"
 
         except Exception as e:
@@ -910,12 +899,11 @@ class GetAnalystRatingsTool(BaseTool):
 
     def _format_analyst_ratings(self, data: List[Dict], ticker: str) -> str:
         """Format analyst ratings data"""
-        output = [f"RECENT ANALYST RATINGS: {ticker}\n"]
-        output.append("=" * 80)
+        output = [f"## Recent Analyst Ratings: {ticker}\n"]
         output.append("")
 
         output.append(f"{'Date':<12} {'Firm':<25} {'Previous':<15} {'New Grade':<15} {'Action':<10}")
-        output.append("-" * 80)
+        output.append("-" * 70)
 
         upgrades = 0
         downgrades = 0
@@ -931,13 +919,13 @@ class GetAnalystRatingsTool(BaseTool):
             # Count actions
             if action and "up" in action.lower():
                 upgrades += 1
-                action_symbol = "⬆"
+                action_symbol = "UP"
             elif action and "down" in action.lower():
                 downgrades += 1
-                action_symbol = "⬇"
+                action_symbol = "DOWN"
             else:
                 maintains += 1
-                action_symbol = "→"
+                action_symbol = "--"
 
             output.append(f"{date:<12} {firm:<25} {previous:<15} {new_grade:<15} {action_symbol} {action}")
 
@@ -954,15 +942,15 @@ class GetAnalystRatingsTool(BaseTool):
 
             # Sentiment analysis
             if upgrades > downgrades * 2:
-                output.append("✓ BULLISH SENTIMENT: Recent ratings show strong positive momentum")
+                output.append("**Bullish Sentiment:** Recent ratings show strong positive momentum")
             elif downgrades > upgrades * 2:
-                output.append("⚠ BEARISH SENTIMENT: Recent ratings show negative momentum")
+                output.append("**Bearish Sentiment:** Recent ratings show negative momentum")
             elif upgrades > downgrades:
-                output.append("→ MODERATELY BULLISH: More upgrades than downgrades")
+                output.append("**Moderately Bullish:** More upgrades than downgrades")
             elif downgrades > upgrades:
-                output.append("→ MODERATELY BEARISH: More downgrades than upgrades")
+                output.append("**Moderately Bearish:** More downgrades than upgrades")
             else:
-                output.append("→ NEUTRAL SENTIMENT: Balanced rating activity")
+                output.append("**Neutral Sentiment:** Balanced rating activity")
 
         return "\n".join(output)
 
@@ -1270,7 +1258,7 @@ class EarningsCallInsightsTool(BaseTool):
                     q = t.get('quarter', 'Unknown')
                     y = t.get('year', 'Unknown')
                     content = t.get('content', '')
-                    transcript_parts.append(f"\n\n{'='*80}\n{q} {y} EARNINGS CALL\n{'='*80}\n\n{content[:25000]}")
+                    transcript_parts.append(f"\n\n## {q} {y} Earnings Call\n\n{content[:25000]}")
 
                 transcript_text = "\n".join(transcript_parts)
                 context = f"{company_name} ({ticker}) - Last {quarters} Quarters"

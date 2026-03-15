@@ -79,7 +79,7 @@ class CalculatePortfolioMetricsTool(BaseTool):
             # Parse portfolio
             holdings = json.loads(portfolio_json)
             if not holdings:
-                return "❌ Portfolio is empty. Please provide holdings in format: [{'ticker': 'AAPL', 'shares': 100, 'cost_basis': 150.00}, ...]"
+                return "Portfolio is empty. Please provide holdings in format: [{'ticker': 'AAPL', 'shares': 100, 'cost_basis': 150.00}, ...]"
 
             fetcher = FinancialDataFetcher()
 
@@ -157,7 +157,7 @@ class CalculatePortfolioMetricsTool(BaseTool):
             top3_weight = sum(pos['weight'] for pos in positions[:3])
 
             # Format output
-            output = f"📊 **PORTFOLIO METRICS**\n\n"
+            output = "## Portfolio Metrics\n\n"
             output += f"**Portfolio Summary:**\n"
             output += f"  • Total Value: ${total_value:,.2f}\n"
             output += f"  • Total Cost Basis: ${total_cost:,.2f}\n"
@@ -169,11 +169,11 @@ class CalculatePortfolioMetricsTool(BaseTool):
 
             # Simple risk classification
             if top3_weight > 60:
-                risk_level = "🔴 HIGH (concentrated)"
+                risk_level = "HIGH (concentrated)"
             elif top3_weight > 40:
-                risk_level = "🟡 MEDIUM"
+                risk_level = "MEDIUM"
             else:
-                risk_level = "🟢 LOW (diversified)"
+                risk_level = "LOW (diversified)"
             output += f"  • Concentration Risk: {risk_level}\n\n"
 
             output += f"**Top 5 Holdings:**\n\n"
@@ -189,12 +189,12 @@ class CalculatePortfolioMetricsTool(BaseTool):
             losers = sorted([p for p in positions if p['pnl'] < 0], key=lambda x: x['pnl_pct'])[:3]
 
             if winners:
-                output += f"\n**🏆 Top Winners:**\n"
+                output += "\n**Top Winners:**\n"
                 for pos in winners:
                     output += f"  • {pos['ticker']}: ${pos['pnl']:,.0f} ({pos['pnl_pct']:+.1f}%)\n"
 
             if losers:
-                output += f"\n**📉 Top Losers:**\n"
+                output += "\n**Top Losers:**\n"
                 for pos in losers:
                     output += f"  • {pos['ticker']}: ${pos['pnl']:,.0f} ({pos['pnl_pct']:+.1f}%)\n"
 
@@ -203,7 +203,7 @@ class CalculatePortfolioMetricsTool(BaseTool):
             return output
 
         except json.JSONDecodeError:
-            return "❌ Invalid portfolio JSON format. Expected: [{'ticker': 'AAPL', 'shares': 100, 'cost_basis': 150.00}, ...]"
+            return "Invalid portfolio JSON format. Expected: [{'ticker': 'AAPL', 'shares': 100, 'cost_basis': 150.00}, ...]"
         except Exception as e:
             logger.error(f"Error calculating portfolio metrics: {e}")
             return f"Error calculating portfolio metrics: {str(e)}"
@@ -241,7 +241,7 @@ class AnalyzeDiversificationTool(BaseTool):
             # Parse portfolio
             holdings = json.loads(portfolio_json)
             if not holdings:
-                return "❌ Portfolio is empty. Please provide holdings."
+                return "Portfolio is empty. Please provide holdings."
 
             fetcher = FinancialDataFetcher()
 
@@ -294,15 +294,15 @@ class AnalyzeDiversificationTool(BaseTool):
             diversification_score = (1 - herfindahl) * 100
 
             # Format output
-            output = f"🎯 **DIVERSIFICATION ANALYSIS**\n\n"
+            output = "## Diversification Analysis\n\n"
             output += f"**Diversification Score:** {diversification_score:.1f}/100 "
 
             if diversification_score > 75:
-                output += "🟢 (Well Diversified)\n\n"
+                output += "(Well Diversified)\n\n"
             elif diversification_score > 50:
-                output += "🟡 (Moderately Diversified)\n\n"
+                output += "(Moderately Diversified)\n\n"
             else:
-                output += "🔴 (Concentrated)\n\n"
+                output += "(Concentrated)\n\n"
 
             output += "**Sector Allocation:**\n\n"
             output += "| Sector | Value | Weight |\n"
@@ -316,15 +316,15 @@ class AnalyzeDiversificationTool(BaseTool):
 
             max_sector = sector_allocation[0] if sector_allocation else None
             if max_sector and max_sector['weight'] > 40:
-                output += f"  ⚠️  High concentration in {max_sector['sector']} ({max_sector['weight']:.1f}%)\n"
-                output += f"     → Consider reducing exposure or diversifying into other sectors\n"
+                output += f"  **Note:** High concentration in {max_sector['sector']} ({max_sector['weight']:.1f}%)\n"
+                output += f"     Consider reducing exposure or diversifying into other sectors\n"
 
             if len(sector_allocation) < 3:
-                output += f"  ⚠️  Only {len(sector_allocation)} sector(s) represented\n"
-                output += f"     → Consider adding positions in different sectors for better diversification\n"
+                output += f"  **Note:** Only {len(sector_allocation)} sector(s) represented\n"
+                output += f"     Consider adding positions in different sectors for better diversification\n"
 
             if diversification_score > 75:
-                output += f"  ✅ Portfolio is well-diversified across sectors\n"
+                output += "  Portfolio is well-diversified across sectors\n"
 
             # Emit pie chart for sector allocation
             if sector_allocation:
@@ -343,7 +343,7 @@ class AnalyzeDiversificationTool(BaseTool):
             return output
 
         except json.JSONDecodeError:
-            return "❌ Invalid portfolio JSON format"
+            return "Invalid portfolio JSON format"
         except Exception as e:
             logger.error(f"Error analyzing diversification: {e}")
             return f"Error analyzing diversification: {str(e)}"
@@ -376,7 +376,7 @@ class IdentifyTaxLossHarvestingTool(BaseTool):
             # Parse portfolio
             holdings = json.loads(portfolio_json)
             if not holdings:
-                return "❌ Portfolio is empty"
+                return "Portfolio is empty"
 
             fetcher = FinancialDataFetcher()
 
@@ -428,9 +428,9 @@ class IdentifyTaxLossHarvestingTool(BaseTool):
 
             # Format output
             if not loss_opportunities:
-                return f"✅ No tax loss harvesting opportunities found (losses > ${min_loss_threshold:,.0f})\n\nAll positions are either profitable or have losses below the threshold."
+                return f"No tax loss harvesting opportunities found (minimum loss threshold: ${min_loss_threshold:,.0f}). All positions are either profitable or have losses below the threshold."
 
-            output = f"💸 **TAX LOSS HARVESTING OPPORTUNITIES**\n\n"
+            output = "## Tax Loss Harvesting Opportunities\n\n"
             output += f"**Summary:**\n"
             output += f"  • Total Harvestable Losses: ${abs(total_harvestable_loss):,.2f}\n"
             output += f"  • Number of Opportunities: {len(loss_opportunities)}\n"
@@ -445,7 +445,7 @@ class IdentifyTaxLossHarvestingTool(BaseTool):
                 output += f"${opp['current_price']:.2f} | ${opp['unrealized_loss']:,.0f} | {opp['loss_pct']:.1f}% |\n"
 
             output += f"\n**Important Notes:**\n"
-            output += f"  • ⚠️  Wash Sale Rule: Don't repurchase same security within 30 days\n"
+            output += "  • **Wash Sale Rule:** Do not repurchase the same security within 30 days of the sale\n"
             output += f"  • Consider selling and buying a similar (but not identical) security\n"
             output += f"  • Losses can offset capital gains and up to $3,000 of ordinary income\n"
             output += f"  • Consult a tax professional before executing trades\n"
@@ -453,7 +453,7 @@ class IdentifyTaxLossHarvestingTool(BaseTool):
             return output
 
         except json.JSONDecodeError:
-            return "❌ Invalid portfolio JSON format"
+            return "Invalid portfolio JSON format"
         except Exception as e:
             logger.error(f"Error identifying tax loss harvesting: {e}")
             return f"Error: {str(e)}"
