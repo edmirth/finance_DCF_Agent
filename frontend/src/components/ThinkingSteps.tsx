@@ -1,5 +1,6 @@
 import { ThinkingStep } from '../types';
 import { Wrench, CheckCircle2, MessageSquare } from 'lucide-react';
+import { cleanLabel } from './ReasoningDisplay';
 
 interface ThinkingStepsProps {
   steps: ThinkingStep[];
@@ -29,8 +30,7 @@ function ThinkingSteps({ steps }: ThinkingStepsProps) {
               <div className="flex items-start gap-2 text-blue-600 opacity-70">
                 <Wrench className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
                 <div className="text-xs">
-                  <span className="font-medium">{step.tool}</span>
-                  {step.input && <span className="text-gray-500 ml-2">({step.input})</span>}
+                  <span className="font-medium">{cleanLabel(step.tool || '')}</span>
                 </div>
               </div>
             )}

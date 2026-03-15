@@ -26,13 +26,164 @@ function cleanText(text: string): string {
     .trim();
 }
 
-/** Clean tool labels — remove bracket notation and emojis */
-function cleanLabel(text: string): string {
+/**
+ * Inline replacements for tool names that appear inside LLM thought sentences.
+ * These are short noun phrases that read naturally mid-sentence,
+ * e.g. "I should use the recent news tool" instead of "I should use the get_recent_news tool".
+ */
+const TOOL_INLINE: Record<string, string> = {
+  get_stock_info:              'company overview tool',
+  get_financial_metrics:       'financial metrics tool',
+  search_web:                  'web search',
+  perform_dcf_analysis:        'DCF valuation model',
+  get_market_parameters:       'market parameters tool',
+  get_dcf_comparison:          'DCF comparison tool',
+  perform_multiples_valuation: 'multiples valuation model',
+  format_dcf_report:           'report formatter',
+  analyze_industry:            'industry analysis tool',
+  analyze_competitors:         'competitor analysis tool',
+  analyze_moat:                'moat analysis tool',
+  analyze_management:          'management analysis tool',
+  calculate_portfolio_metrics: 'portfolio metrics tool',
+  analyze_diversification:     'diversification tool',
+  identify_tax_loss_harvesting:'tax-loss harvesting tool',
+  get_market_overview:         'market overview tool',
+  get_sector_rotation:         'sector rotation tool',
+  classify_market_regime:      'market regime classifier',
+  get_market_news:             'market news tool',
+  screen_stocks:               'stock screener',
+  get_value_stocks:            'value stock finder',
+  get_growth_stocks:           'growth stock finder',
+  get_dividend_stocks:         'dividend stock finder',
+  get_quarterly_earnings:      'quarterly earnings tool',
+  get_analyst_estimates:       'analyst estimates tool',
+  get_earnings_surprises:      'earnings surprises tool',
+  analyze_earnings_guidance:   'earnings guidance tool',
+  compare_peer_earnings:       'peer earnings comparison tool',
+  get_price_targets:           'price targets tool',
+  get_analyst_ratings:         'analyst ratings tool',
+  get_earnings_call_insights:  'earnings call tool',
+  get_sec_filings:             'SEC filings tool',
+  analyze_sec_filing:          'SEC filing analyzer',
+  get_sec_financials:          'SEC financials tool',
+  get_quick_data:              'quick data tool',
+  get_date_context:            'date context tool',
+  calculate:                   'calculator',
+  get_recent_news:             'recent news tool',
+  compare_companies:           'company comparison tool',
+  get_revenue_segments:        'revenue segments tool',
+  compare_multiple_companies:  'multi-company comparison tool',
+  get_company_context:         'company context tool',
+};
+
+/**
+ * Replace any raw snake_case tool names embedded in LLM thought text with
+ * natural inline phrases, so "I should use the get_recent_news tool" becomes
+ * "I should use the recent news tool".
+ */
+function humanizeThought(text: string): string {
+  if (!text) return text;
+  let result = text;
+  for (const [toolName, phrase] of Object.entries(TOOL_INLINE)) {
+    // Match the tool name as a whole word (not part of a larger identifier)
+    result = result.replace(new RegExp(`\\b${toolName}\\b`, 'g'), phrase);
+  }
+  return result;
+}
+
+/**
+ * Human-readable labels for every tool the agents can call.
+ * Used by cleanLabel() to produce natural sentences instead of snake_case names.
+ */
+const TOOL_LABELS: Record<string, string> = {
+  // DCF / valuation
+  get_stock_info:              'Looking up company overview',
+  get_financial_metrics:       'Pulling historical financials',
+  search_web:                  'Searching the web for current data',
+  perform_dcf_analysis:        'Running DCF valuation model',
+  get_market_parameters:       'Fetching market parameters',
+  get_dcf_comparison:          'Comparing DCF scenarios',
+  perform_multiples_valuation: 'Running multiples-based valuation',
+  format_dcf_report:           'Formatting valuation report',
+  // Equity analyst
+  analyze_industry:    'Analyzing industry dynamics',
+  analyze_competitors: 'Mapping the competitive landscape',
+  analyze_moat:        'Evaluating the competitive moat',
+  analyze_management:  'Assessing management quality',
+  // Portfolio
+  calculate_portfolio_metrics:   'Calculating portfolio performance',
+  analyze_diversification:       'Reviewing portfolio diversification',
+  identify_tax_loss_harvesting:  'Scanning for tax-loss opportunities',
+  // Market
+  get_market_overview:     'Pulling market overview',
+  get_sector_rotation:     'Analyzing sector rotation',
+  classify_market_regime:  'Classifying market regime',
+  get_market_news:         'Fetching market news',
+  screen_stocks:           'Screening stocks by criteria',
+  get_value_stocks:        'Identifying value opportunities',
+  get_growth_stocks:       'Identifying growth candidates',
+  get_dividend_stocks:     'Finding dividend opportunities',
+  // Earnings
+  get_quarterly_earnings:      'Pulling quarterly earnings history',
+  get_analyst_estimates:       'Fetching analyst consensus estimates',
+  get_earnings_surprises:      'Reviewing earnings surprises',
+  analyze_earnings_guidance:   'Reviewing management guidance',
+  compare_peer_earnings:       'Comparing peer earnings results',
+  get_price_targets:           'Fetching analyst price targets',
+  get_analyst_ratings:         'Checking analyst rating changes',
+  get_earnings_call_insights:  'Analyzing earnings call transcript',
+  // SEC / EDGAR
+  get_sec_filings:    'Fetching SEC EDGAR filings',
+  analyze_sec_filing: 'Reading SEC filing content',
+  get_sec_financials: 'Pulling SEC XBRL financials',
+  // Research assistant
+  get_quick_data:             'Fetching quick financial snapshot',
+  get_date_context:           'Checking time period context',
+  calculate:                  'Running calculation',
+  get_recent_news:            'Fetching recent news',
+  compare_companies:          'Comparing companies',
+  get_revenue_segments:       'Analyzing revenue breakdown',
+  compare_multiple_companies: 'Running multi-company comparison',
+  // Context / misc
+  get_company_context: 'Loading company context',
+};
+
+/** Convert snake_case to Title Case as a last-resort fallback */
+function snakeToNatural(name: string): string {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/** Return a natural-language label for a tool event, no matter how it arrives */
+export function cleanLabel(text: string): string {
   if (!text) return 'Processing';
-  return text
-    .replace(/\[([^\]]+)\]/g, '$1')
+
+  // 1. Direct exact-match against known tool names (backend may send raw name)
+  if (TOOL_LABELS[text.trim()]) return TOOL_LABELS[text.trim()];
+
+  // 2. Extract raw tool name from "Using get_stock_info" or "🔍 Using get_stock_info"
+  const usingMatch = text.match(/Using\s+([a-z][a-z_]+)/);
+  if (usingMatch) {
+    const toolName = usingMatch[1];
+    return TOOL_LABELS[toolName] ?? snakeToNatural(toolName);
+  }
+
+  // 3. Strip [Action] bracket prefix that the backend adds (e.g. "[Getting] company info")
+  //    and return just the description part, capitalized.
+  const bracketMatch = text.match(/^\[([^\]]+)\]\s+(.+)/);
+  if (bracketMatch) {
+    const description = bracketMatch[2].trim();
+    return description.charAt(0).toUpperCase() + description.slice(1);
+  }
+
+  // 4. Strip any leading emojis and return what remains
+  const stripped = text
     .replace(/^[\u{1F300}-\u{1FAD6}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{FE0F}\u{E0020}-\u{E007F}]+\s*/gu, '')
-    .trim() || 'Processing';
+    .trim();
+
+  // 5. If what remains looks like a raw snake_case tool name, humanize it
+  if (/^[a-z][a-z_]+$/.test(stripped)) return snakeToNatural(stripped);
+
+  return stripped || 'Processing';
 }
 
 /** Extract ticker/query tags from tool input strings */
@@ -116,13 +267,13 @@ function buildTimeline(steps: ThinkingStep[], isStreaming: boolean): TimelineIte
       case 'thinking_start':
         flushSearch(); flushSources();
         if (step.thinkingText && step.thinkingText.length > 0 && !looksLikeFinalAnswer(step.thinkingText)) {
-          timeline.push({ kind: 'thinking', text: truncate(cleanText(step.thinkingText), 300), isLive: !!step.isStreaming });
+          timeline.push({ kind: 'thinking', text: truncate(humanizeThought(cleanText(step.thinkingText)), 300), isLive: !!step.isStreaming });
         }
         break;
       case 'agent_thought':
         flushSearch(); flushSources();
         if (step.content && step.content.length > 5 && !looksLikeFinalAnswer(step.content)) {
-          timeline.push({ kind: 'thinking', text: truncate(cleanText(step.content), 300), isLive: false });
+          timeline.push({ kind: 'thinking', text: truncate(humanizeThought(cleanText(step.content)), 300), isLive: false });
         }
         break;
       case 'phase_start':
@@ -167,13 +318,13 @@ function buildTimeline(steps: ThinkingStep[], isStreaming: boolean): TimelineIte
       case 'reflection':
         flushSearch(); flushSources();
         if (step.content && !looksLikeFinalAnswer(step.content)) {
-          timeline.push({ kind: 'reflection', text: truncate(cleanText(step.content), 200) });
+          timeline.push({ kind: 'reflection', text: truncate(humanizeThought(cleanText(step.content)), 200) });
         }
         break;
       case 'reflection_start':
         flushSearch(); flushSources();
         if (step.reflectionText && !looksLikeFinalAnswer(step.reflectionText)) {
-          timeline.push({ kind: 'reflection', text: truncate(cleanText(step.reflectionText), 200) });
+          timeline.push({ kind: 'reflection', text: truncate(humanizeThought(cleanText(step.reflectionText)), 200) });
         }
         break;
     }

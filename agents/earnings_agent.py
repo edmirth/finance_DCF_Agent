@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import time
 import logging
 import re
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class EarningsAgentExecutorAdapter:
         self.graph = graph
         self.agent_owner = agent_owner
         self.ticker_pattern = re.compile(r'\b[A-Z]{1,5}\b')
+        self._state_lock = threading.Lock()
         self.last_state = None
         self.last_ticker = None
 
@@ -95,8 +97,11 @@ class EarningsAgentExecutorAdapter:
             is_followup = input_dict.get("followup", False)
 
             # Follow-up mode: use cached state, 1 LLM call
-            if is_followup and self.last_state:
-                return self._answer_followup(query, config)
+            if is_followup:
+                with self._state_lock:
+                    cached_state = dict(self.last_state) if self.last_state else None
+                if cached_state:
+                    return self._answer_followup(query, config)
 
             ticker = self._extract_ticker(query)
 
@@ -133,9 +138,10 @@ class EarningsAgentExecutorAdapter:
 
             result = self.graph.invoke(initial_state, config=config)
 
-            # Cache state for follow-ups
-            self.last_state = result
-            self.last_ticker = ticker
+            # Cache state for follow-ups (thread-safe)
+            with self._state_lock:
+                self.last_state = result
+                self.last_ticker = ticker
 
             execution_time = time.time() - result["start_time"]
             logger.info(f"Earnings analysis completed in {execution_time:.1f} seconds")
@@ -204,6 +210,11 @@ Be concise (2-4 paragraphs). If the question requires data you don't have, say s
         Uses a strict precedence to avoid picking up common English words as tickers.
         Only returns a ticker when there is a strong explicit signal.
         """
+        # --- Signal 0 (highest confidence): $BRK.B or $BRK-B format ---
+        dollar_dot_match = re.search(r'\$([A-Za-z]{1,5})[.\-]([A-Za-z]{1,2})\b', query)
+        if dollar_dot_match:
+            return f"{dollar_dot_match.group(1).upper()}.{dollar_dot_match.group(2).upper()}"
+
         # --- Signal 1 (highest confidence): $AAPL format ---
         dollar_match = re.search(r'\$([A-Za-z]{1,5})\b', query)
         if dollar_match:
@@ -254,6 +265,14 @@ Be concise (2-4 paragraphs). If the question requires data you don't have, say s
             'BRK', 'BRKB', 'JPM', 'C', 'AXP', 'BLK', 'SCHW',
             'PLTR', 'ABNB', 'RBLX', 'DASH', 'RIVN', 'LCID',
         }
+        # Also check for dotted tickers like BRK.B, BF.B
+        DOTTED_TICKERS = {
+            'BRK.A': 'BRK.A', 'BRK.B': 'BRK.B', 'BF.A': 'BF.A', 'BF.B': 'BF.B',
+        }
+        for word in query_upper.split():
+            clean = re.sub(r'[^\w.]', '', word)  # keep dots for multi-part tickers
+            if clean in DOTTED_TICKERS:
+                return DOTTED_TICKERS[clean]
         for word in query_upper.split():
             clean = re.sub(r'[^\w]', '', word)
             if clean in KNOWN_TICKERS:

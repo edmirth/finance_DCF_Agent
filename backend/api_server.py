@@ -7,9 +7,12 @@ import os
 import json
 import asyncio
 import logging
+import threading
+import uuid as uuid_mod
 from typing import Optional, AsyncGenerator, Any, Dict, List
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
@@ -34,7 +37,7 @@ from backend.config import (
 )
 from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db
-from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker
+from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
 from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
@@ -55,6 +58,13 @@ async def on_startup():
     """Initialize the database on startup."""
     await init_db()
     logger.info("Database initialized")
+    # Pre-load Chroma embedding model so the ~90MB download happens before first request
+    try:
+        from data.chroma_client import ProjectChromaClient
+        _ = ProjectChromaClient()
+        logger.info("ProjectChromaClient initialised")
+    except Exception as _e:
+        logger.warning(f"ProjectChromaClient pre-load failed (non-fatal): {_e}")
 
 
 # Configure CORS
@@ -81,6 +91,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Store active agents (in production, use proper session management)
 agents_cache = {}
+agents_cache_lock = threading.Lock()
+SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "earnings"})
 
 # Map agent types to their fallback methods (when agent_executor is not available)
 AGENT_FALLBACK_METHODS = {
@@ -143,6 +155,7 @@ class ChatMessage(BaseModel):
     is_followup: bool = False
     # Persistence metadata (populated by frontend after receiving session_id)
     persist: bool = True   # set False to skip DB write (e.g. health checks)
+    project_id: Optional[str] = None  # Set when chat is inside a project workspace
 
 
 class ChatResponse(BaseModel):
@@ -153,32 +166,48 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
-def get_or_create_agent(agent_type: str, model: str):
-    """Get cached agent or create new one"""
-    cache_key = f"{agent_type}_{model}"
+def _build_agent_cache_key(agent_type: str, model: str, session_id: Optional[str]) -> Optional[str]:
+    """Use session-scoped cache keys for stateful agents to prevent context leakage."""
+    if agent_type in SESSION_SCOPED_AGENT_TYPES:
+        if not session_id:
+            return None
+        return f"{agent_type}_{model}_{session_id}"
+    return f"{agent_type}_{model}"
 
-    if cache_key not in agents_cache:
-        try:
-            if agent_type == "dcf":
-                agents_cache[cache_key] = create_dcf_agent(model=model)
-            elif agent_type == "analyst":
-                agents_cache[cache_key] = create_equity_analyst_agent(model=model)
-            elif agent_type == "graph":
-                agents_cache[cache_key] = create_equity_analyst_graph(model=model)
-            elif agent_type == "research":
-                agents_cache[cache_key] = create_finance_qa_agent(model=model)
-            elif agent_type == "market":
-                agents_cache[cache_key] = create_market_agent(model=model)
-            elif agent_type == "portfolio":
-                agents_cache[cache_key] = create_portfolio_agent(model=model)
-            elif agent_type == "earnings":
-                agents_cache[cache_key] = create_earnings_agent(model=model)
-            else:
-                raise ValueError(f"Unknown agent type: {agent_type}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
-    return agents_cache[cache_key]
+def _create_agent_instance(agent_type: str, model: str):
+    """Create a single agent instance for the requested type."""
+    if agent_type == "dcf":
+        return create_dcf_agent(model=model)
+    if agent_type == "analyst":
+        return create_equity_analyst_agent(model=model)
+    if agent_type == "graph":
+        return create_equity_analyst_graph(model=model)
+    if agent_type == "research":
+        return create_finance_qa_agent(model=model)
+    if agent_type == "market":
+        return create_market_agent(model=model)
+    if agent_type == "portfolio":
+        return create_portfolio_agent(model=model)
+    if agent_type == "earnings":
+        return create_earnings_agent(model=model)
+    raise ValueError(f"Unknown agent type: {agent_type}")
+
+
+def get_or_create_agent(agent_type: str, model: str, session_id: Optional[str] = None):
+    """Get cached agent or create a fresh instance when session scoping is required."""
+    cache_key = _build_agent_cache_key(agent_type, model, session_id)
+
+    try:
+        if cache_key is None:
+            return _create_agent_instance(agent_type, model)
+
+        with agents_cache_lock:
+            if cache_key not in agents_cache:
+                agents_cache[cache_key] = _create_agent_instance(agent_type, model)
+            return agents_cache[cache_key]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
 
 def _ensure_str_response(value) -> str:
@@ -263,10 +292,40 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
 
     except Exception as e:
         # Clean up progress queue on error too
-        if agent_type == "earnings":
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = None
             agent._progress_loop = None
         await queue.put({"type": "error", "error": str(e)})
+
+
+async def run_project_graph_with_callbacks(
+    adapter,
+    input_dict: dict,
+    queue: asyncio.Queue,
+    state_container: dict,
+) -> None:
+    """Run ProjectAnalysisGraph in executor, stream progress events via queue.
+
+    Final response is placed in queue as {"type": "response", "content": ...}.
+    Extracted state (including memory_patch) is written to state_container["state"].
+    """
+    loop = asyncio.get_event_loop()
+    graph_instance = adapter.graph_instance
+    graph_instance._progress_queue = queue
+    graph_instance._progress_loop = loop
+
+    try:
+        result = await loop.run_in_executor(None, lambda: adapter.invoke(input_dict))
+        state_container["state"] = result.get("_state", {}) if result else {}
+        output = result.get("output", "") if result else ""
+        await queue.put({"type": "response", "content": output})
+        await queue.put({"type": "done"})
+    except Exception as exc:
+        state_container["state"] = {}
+        await queue.put({"type": "error", "error": str(exc)})
+    finally:
+        graph_instance._progress_queue = None
+        graph_instance._progress_loop = None
 
 
 async def route_agent_for_message(message: str) -> str:
@@ -310,6 +369,18 @@ async def route_agent_for_message(message: str) -> str:
     except Exception as e:
         logger.warning(f"Auto-routing failed, defaulting to research: {e}")
         return "research"
+
+
+def _requests_get_json(url: str, *, params: Dict[str, Any], timeout: int = 10) -> Any:
+    """Synchronous helper for requests-based APIs."""
+    response = requests.get(url, params=params, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+async def _fetch_json(url: str, *, params: Dict[str, Any], timeout: int = 10) -> Any:
+    """Run blocking HTTP requests in a threadpool so async endpoints stay responsive."""
+    return await run_in_threadpool(_requests_get_json, url, params=params, timeout=timeout)
 
 
 async def generate_follow_up_questions(message: str, response: str, agent_type: str) -> list[str]:
@@ -360,9 +431,115 @@ async def stream_agent_response(
     is_followup: bool = False,
     session_id: Optional[str] = None,
     persist: bool = True,
+    project_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response using Server-Sent Events with thinking process"""
     queue = asyncio.Queue()
+
+    # ── Project session path ──────────────────────────────────────────────────
+    if project_id:
+        try:
+            from backend.database import AsyncSessionLocal
+            from backend.context_assembly import assemble_project_context
+            from backend.project_router import route_for_project
+            from agents.project_agent import ProjectAnalysisGraph, ProjectAnalysisGraphAdapter
+            from data.chroma_client import ProjectChromaClient
+
+            # 1. Assemble context and load project config
+            async with AsyncSessionLocal() as _db:
+                _chroma = ProjectChromaClient()
+                context_block = await assemble_project_context(project_id, message, _db, _chroma)
+                _proj_result = await _db.execute(select(Project).where(Project.id == project_id))
+                _proj = _proj_result.scalar_one_or_none()
+                if not _proj:
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Project not found'})}\n\n"
+                    return
+                project_config: dict = json.loads(_proj.config) if _proj.config else {}
+
+            # 2. Route query to agents
+            routing_decision_obj = await route_for_project(message, context_block, project_config)
+            routing_decision = {
+                "agents": [
+                    {"agent_type": a.agent_type, "task": a.task}
+                    for a in routing_decision_obj.agents
+                ],
+                "reasoning": routing_decision_obj.reasoning,
+            }
+
+            yield f"data: {json.dumps({'type': 'routing_decision', 'agent': 'project', 'routing': routing_decision})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'agent': 'project'})}\n\n"
+
+            # 3. Run graph
+            graph = ProjectAnalysisGraph()
+            adapter = ProjectAnalysisGraphAdapter(graph)
+            state_container: dict = {}
+            task = asyncio.create_task(
+                run_project_graph_with_callbacks(
+                    adapter,
+                    {
+                        "input": message,
+                        "project_id": project_id,
+                        "context_block": context_block,
+                        "routing_decision": routing_decision,
+                    },
+                    queue,
+                    state_container,
+                )
+            )
+
+            # 4. Drain queue (same pattern as regular path)
+            collected_response = ""
+            while True:
+                event = await queue.get()
+                if event["type"] == "done":
+                    break
+                elif event["type"] == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'error': event['error']})}\n\n"
+                    break
+                elif event["type"] == "response":
+                    collected_response = event["content"]
+                    for i in range(0, len(collected_response), SSE_CHUNK_SIZE):
+                        chunk = collected_response[i:i + SSE_CHUNK_SIZE]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                        await asyncio.sleep(SSE_STREAM_DELAY_SECONDS)
+                else:
+                    yield f"data: {json.dumps(event)}\n\n"
+
+            await task
+
+            # 5a. Non-blocking memory update background task
+            final_state = state_container.get("state", {})
+            memory_patch = final_state.get("memory_patch") or {}
+            if memory_patch:
+                try:
+                    asyncio.create_task(_run_memory_update(project_id, memory_patch))
+                except Exception as _me:
+                    logger.warning("Failed to schedule memory update for project %s: %s", project_id, _me)
+
+            # 5. Persist with project_id linkage
+            ticker = extract_ticker_from_query(message)
+            if persist and collected_response:
+                try:
+                    asyncio.create_task(
+                        _persist_conversation(
+                            session_id=session_id,
+                            user_message=message,
+                            assistant_response=collected_response,
+                            agent_type="project",
+                            ticker=ticker,
+                            thinking_steps=[],
+                            follow_ups=[],
+                            project_id=project_id,
+                        )
+                    )
+                except Exception as _pe:
+                    logger.warning(f"Failed to schedule project persistence: {_pe}")
+
+            yield f"data: {json.dumps({'type': 'end'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': f'Project analysis error: {str(e)}'})}\n\n"
+        return
+    # ── End project path ──────────────────────────────────────────────────────
 
     try:
         # Auto-route when agent_type is "auto" — use Claude Haiku to classify the query
@@ -372,7 +549,7 @@ async def stream_agent_response(
             logger.info(f"[AUTO-ROUTE] '{message[:60]}...' → {resolved_agent_type}")
             yield f"data: {json.dumps({'type': 'routing_decision', 'agent': resolved_agent_type})}\n\n"
 
-        agent = get_or_create_agent(resolved_agent_type, model)
+        agent = get_or_create_agent(resolved_agent_type, model, session_id=session_id)
 
         # Send start event
         yield f"data: {json.dumps({'type': 'start', 'agent': resolved_agent_type})}\n\n"
@@ -463,6 +640,22 @@ async def stream_agent_response(
 _ANALYSIS_AGENT_TYPES = {"dcf", "analyst", "earnings", "graph"}
 
 
+async def _run_memory_update(project_id: str, memory_patch: dict) -> None:
+    """Background wrapper: open own DB session and apply memory patch.
+
+    Errors are logged but never raised — memory update failure must not affect
+    the user-visible response.
+    """
+    try:
+        from backend.database import AsyncSessionLocal
+        from data.project_memory import update_project_memory
+        async with AsyncSessionLocal() as db:
+            await update_project_memory(project_id, memory_patch, db)
+        logger.info("Memory update completed for project %s", project_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("_run_memory_update failed for project %s: %s", project_id, exc, exc_info=True)
+
+
 async def _persist_conversation(
     session_id: Optional[str],
     user_message: str,
@@ -472,6 +665,7 @@ async def _persist_conversation(
     thinking_steps: list,
     follow_ups: list[str],
     chart_specs: Optional[dict] = None,
+    project_id: Optional[str] = None,
 ) -> None:
     """Persist session, messages, and optional analysis to the database."""
     from backend.database import AsyncSessionLocal
@@ -540,6 +734,17 @@ async def _persist_conversation(
                     tags="[]",
                 )
                 db.add(analysis)
+
+            # Link session to project (upsert — UNIQUE constraint prevents duplicates)
+            if project_id:
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                link_stmt = sqlite_insert(ProjectSession).values(
+                    id=str(_uuid_mod.uuid4()),
+                    project_id=project_id,
+                    session_id=sid,
+                    created_at=datetime.utcnow(),
+                ).on_conflict_do_nothing()
+                await db.execute(link_stmt)
 
             await db.commit()
             logger.info(f"[DB] Persisted session {sid} with {agent_type} message")
@@ -615,6 +820,7 @@ async def chat_stream(chat_message: ChatMessage):
             chat_message.is_followup,
             session_id=chat_message.session_id,
             persist=chat_message.persist,
+            project_id=chat_message.project_id,
         ),
         media_type="text/event-stream",
         headers={
@@ -629,19 +835,25 @@ async def chat_stream(chat_message: ChatMessage):
 async def chat(chat_message: ChatMessage):
     """Non-streaming chat endpoint (for simple requests)"""
     try:
-        agent = get_or_create_agent(chat_message.agent_type, chat_message.model)
+        session_id = chat_message.session_id
+        if chat_message.agent_type in SESSION_SCOPED_AGENT_TYPES and not session_id:
+            session_id = str(uuid_mod.uuid4())
+
+        agent = get_or_create_agent(chat_message.agent_type, chat_message.model, session_id=session_id)
 
         # Get response synchronously - research agent uses 'chat' method, others use 'analyze'
         if chat_message.agent_type == "research":
-            response = agent.chat(chat_message.message)
+            response = await run_in_threadpool(agent.chat, chat_message.message)
         else:
-            response = agent.analyze(chat_message.message)
+            response = await run_in_threadpool(agent.analyze, chat_message.message)
+
+        response = _ensure_str_response(response)
 
         return ChatResponse(
             response=response,
             agent_type=chat_message.agent_type,
             timestamp=datetime.now().isoformat(),
-            session_id=chat_message.session_id or "default"
+            session_id=session_id or "default"
         )
 
     except Exception as e:
@@ -669,26 +881,31 @@ async def get_stock_chart_compare(tickers: str, period: str = "1M"):
         if len(ticker_list) == 0 or len(ticker_list) > 2:
             raise HTTPException(status_code=400, detail="Provide 1-2 comma-separated tickers")
 
-        quotes = {}
-        historical = {}
+        quote_url = "https://financialmodelingprep.com/stable/quote"
+        hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 
-        for tkr in ticker_list:
-            # Fetch quote
-            quote_url = "https://financialmodelingprep.com/stable/quote"
-            quote_params = {"symbol": tkr, "apikey": fmp_key}
+        async def load_compare_ticker(tkr: str) -> tuple[str, dict, List[Dict]]:
             try:
-                quote_response = requests.get(quote_url, params=quote_params, timeout=10)
-                quote_response.raise_for_status()
-                quote_data_list = quote_response.json()
+                quote_data_list, hist_result = await asyncio.gather(
+                    _fetch_json(quote_url, params={"symbol": tkr, "apikey": fmp_key}),
+                    _fetch_json(hist_url, params={"symbol": tkr, "apikey": fmp_key}),
+                    return_exceptions=True,
+                )
             except requests.exceptions.RequestException as e:
-                logger.error(f"Failed to fetch quote for {tkr}: {e}")
-                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}")
+                logger.error(f"Failed to fetch compare chart data for {tkr}: {e}")
+                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}") from e
 
             if not quote_data_list:
                 raise HTTPException(status_code=404, detail=f"No quote data found for {tkr}")
 
+            if isinstance(hist_result, Exception):
+                logger.warning(f"Historical compare chart fetch failed for {tkr}: {hist_result}")
+                hist_data = []
+            else:
+                hist_data = hist_result
+
             qd = quote_data_list[0]
-            quotes[tkr] = {
+            quote_payload = {
                 "symbol": qd.get("symbol", tkr),
                 "name": qd.get("name", ""),
                 "exchange": qd.get("exchange", ""),
@@ -705,18 +922,11 @@ async def get_stock_chart_compare(tickers: str, period: str = "1M"):
                 "yearLow": qd.get("yearLow", 0),
                 "avgVolume": qd.get("avgVolume", 0),
             }
+            return tkr, quote_payload, filter_chart_data_by_period(hist_data, period)
 
-            # Fetch historical
-            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-            hist_params = {"symbol": tkr, "apikey": fmp_key}
-            try:
-                hist_response = requests.get(hist_url, params=hist_params, timeout=10)
-                hist_response.raise_for_status()
-                hist_data = hist_response.json()
-            except requests.exceptions.RequestException:
-                hist_data = []
-
-            historical[tkr] = filter_chart_data_by_period(hist_data, period)
+        results = await asyncio.gather(*(load_compare_ticker(tkr) for tkr in ticker_list))
+        quotes = {ticker: quote for ticker, quote, _ in results}
+        historical = {ticker: history for ticker, _, history in results}
 
         return {
             "tickers": ticker_list,
@@ -784,14 +994,18 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
 
         ticker = ticker.upper()
 
-        # Get current quote
         quote_url = "https://financialmodelingprep.com/stable/quote"
-        quote_params = {"symbol": ticker, "apikey": fmp_key}
+        if period == "1D":
+            hist_url = "https://financialmodelingprep.com/stable/historical-chart/5min"
+        else:
+            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 
         try:
-            quote_response = requests.get(quote_url, params=quote_params, timeout=10)
-            quote_response.raise_for_status()
-            quote_data_list = quote_response.json()
+            quote_data_list, hist_result = await asyncio.gather(
+                _fetch_json(quote_url, params={"symbol": ticker, "apikey": fmp_key}),
+                _fetch_json(hist_url, params={"symbol": ticker, "apikey": fmp_key}),
+                return_exceptions=True,
+            )
         except requests.exceptions.RequestException as e:
             print(f"[ERROR] Failed to fetch quote for {ticker}: {e}")
             raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {ticker}")
@@ -804,6 +1018,12 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
 
         # Log the quote data structure for debugging
         print(f"[DEBUG] FMP Quote Response for {ticker}: {quote_data}")
+
+        if isinstance(hist_result, Exception):
+            print(f"[ERROR] Failed to fetch historical data for {ticker}: {hist_result}")
+            hist_data = []
+        else:
+            hist_data = hist_result
 
         # Ensure required fields exist with fallbacks
         quote_data = {
@@ -823,25 +1043,6 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
             "yearLow": quote_data.get("yearLow", 0),
             "avgVolume": quote_data.get("avgVolume", 0)
         }
-
-        # Get historical data based on period
-        if period == "1D":
-            # Intraday 5-minute data for 1-day chart
-            hist_url = "https://financialmodelingprep.com/stable/historical-chart/5min"
-            hist_params = {"symbol": ticker, "apikey": fmp_key}
-        else:
-            # Daily data for other periods
-            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-            hist_params = {"symbol": ticker, "apikey": fmp_key}
-
-        try:
-            hist_response = requests.get(hist_url, params=hist_params, timeout=10)
-            hist_response.raise_for_status()
-            hist_data = hist_response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to fetch historical data for {ticker}: {e}")
-            # Return quote data even if historical fails
-            hist_data = []
 
         # Log sample of historical data for debugging
         if isinstance(hist_data, list) and len(hist_data) > 0:
@@ -1255,6 +1456,341 @@ async def delete_watchlist(watchlist_id: str, db: AsyncSession = Depends(get_db)
     if not wl:
         raise HTTPException(status_code=404, detail="Watchlist not found")
     await db.delete(wl)
+    await db.commit()
+    return Response(status_code=204)
+
+
+# =============================================================================
+# REST Endpoints — Projects
+# =============================================================================
+
+class CreateProjectRequest(BaseModel):
+    title: str
+    thesis: str
+    tickers: Optional[List[str]] = None
+
+
+class ProjectMemoryPatch(BaseModel):
+    memory_doc: str
+
+
+class ProjectPatch(BaseModel):
+    title: Optional[str] = None
+    thesis: Optional[str] = None
+    config: Optional[dict] = None
+    status: Optional[str] = None
+
+
+def _project_detail(p: Project, session_count: int = 0, document_count: int = 0) -> dict:
+    config = json.loads(p.config) if p.config else {}
+    return {
+        "id": p.id,
+        "title": p.title,
+        "thesis": p.thesis,
+        "config": config,
+        "memory_doc": p.memory_doc,
+        "status": p.status,
+        "created_at": p.created_at.isoformat(),
+        "updated_at": p.updated_at.isoformat(),
+        "session_count": session_count,
+        "document_count": document_count,
+    }
+
+
+def _project_summary(p: Project, session_count: int = 0, document_count: int = 0) -> dict:
+    d = _project_detail(p, session_count, document_count)
+    d.pop("memory_doc", None)
+    return d
+
+
+@app.post("/projects", status_code=201)
+async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(get_db)):
+    """Create a new investment thesis project."""
+    from data.project_memory import initialize_memory_doc
+    tickers = [t.upper() for t in (body.tickers or [])]
+    config = json.dumps({"tickers": tickers, "preferred_agents": []})
+    memory_doc = initialize_memory_doc(body.title, body.thesis)
+    project = Project(
+        title=body.title,
+        thesis=body.thesis,
+        config=config,
+        memory_doc=memory_doc,
+    )
+    db.add(project)
+    await db.commit()
+    return _project_detail(project)
+
+
+@app.get("/projects")
+async def list_projects(db: AsyncSession = Depends(get_db)):
+    """List active projects with session and document counts."""
+    from sqlalchemy import func
+    result = await db.execute(
+        select(Project).where(Project.status == "active").order_by(Project.updated_at.desc())
+    )
+    projects = result.scalars().all()
+    out = []
+    for p in projects:
+        sc_result = await db.execute(
+            select(func.count()).select_from(ProjectSession).where(ProjectSession.project_id == p.id)
+        )
+        session_count = sc_result.scalar() or 0
+        dc_result = await db.execute(
+            select(func.count()).select_from(ProjectDocument).where(ProjectDocument.project_id == p.id)
+        )
+        document_count = dc_result.scalar() or 0
+        out.append(_project_summary(p, session_count, document_count))
+    return out
+
+
+@app.get("/projects/{project_id}")
+async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Get full project detail including memory_doc."""
+    from sqlalchemy import func
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    sc_result = await db.execute(
+        select(func.count()).select_from(ProjectSession).where(ProjectSession.project_id == p.id)
+    )
+    session_count = sc_result.scalar() or 0
+    dc_result = await db.execute(
+        select(func.count()).select_from(ProjectDocument).where(ProjectDocument.project_id == p.id)
+    )
+    document_count = dc_result.scalar() or 0
+    return _project_detail(p, session_count, document_count)
+
+
+@app.patch("/projects/{project_id}")
+async def update_project(project_id: str, patch: ProjectPatch, db: AsyncSession = Depends(get_db)):
+    """Update project title, thesis, config, or status."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if patch.title is not None:
+        p.title = patch.title
+    if patch.thesis is not None:
+        p.thesis = patch.thesis
+    if patch.config is not None:
+        p.config = json.dumps(patch.config)
+    if patch.status is not None:
+        p.status = patch.status
+    p.updated_at = datetime.utcnow()
+    await db.commit()
+    return _project_detail(p)
+
+
+@app.delete("/projects/{project_id}", status_code=204)
+async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Archive a project and delete its Chroma collection."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    p.status = "archived"
+    p.updated_at = datetime.utcnow()
+    await db.commit()
+    # Best-effort Chroma cleanup
+    try:
+        from data.chroma_client import ProjectChromaClient
+        chroma = ProjectChromaClient()
+        await chroma.async_delete_collection(project_id)
+    except Exception as e:
+        logger.warning(f"Chroma cleanup failed for project {project_id}: {e}")
+    return Response(status_code=204)
+
+
+@app.get("/projects/{project_id}/memory")
+async def get_project_memory(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the project memory document."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"memory_doc": p.memory_doc, "updated_at": p.updated_at.isoformat()}
+
+
+@app.patch("/projects/{project_id}/memory")
+async def patch_project_memory(project_id: str, body: ProjectMemoryPatch, db: AsyncSession = Depends(get_db)):
+    """Manually overwrite the project memory document."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    p.memory_doc = body.memory_doc
+    p.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"memory_doc": p.memory_doc, "updated_at": p.updated_at.isoformat()}
+
+
+@app.get("/projects/{project_id}/sessions")
+async def list_project_sessions(project_id: str, db: AsyncSession = Depends(get_db)):
+    """List sessions linked to a project."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Project not found")
+    ps_result = await db.execute(
+        select(ProjectSession).where(ProjectSession.project_id == project_id).order_by(ProjectSession.created_at.desc())
+    )
+    project_sessions = ps_result.scalars().all()
+    out = []
+    for ps in project_sessions:
+        s_result = await db.execute(select(DBSession).where(DBSession.id == ps.session_id))
+        s = s_result.scalar_one_or_none()
+        if s:
+            out.append({
+                "id": s.id,
+                "title": s.title,
+                "agent_type": s.agent_type,
+                "created_at": s.created_at.isoformat(),
+                "last_active_at": s.last_active_at.isoformat(),
+            })
+    return out
+
+
+# =============================================================================
+# REST Endpoints — Project Documents
+# =============================================================================
+
+@app.post("/projects/{project_id}/documents", status_code=201)
+async def upload_project_document(
+    project_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a document to a project: extract text, embed in Chroma, save record."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Allowed: {', '.join(ALLOWED_UPLOAD_EXTENSIONS)}"
+        )
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
+
+    try:
+        raw_text = extract_text_from_file(file.filename, content)
+    except Exception as e:
+        logger.error(f"Failed to extract text from {file.filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to extract text: {str(e)}")
+
+    # Create document record to get an ID
+    import uuid as _uuid_mod
+    doc_id = str(_uuid_mod.uuid4())
+    doc = ProjectDocument(
+        id=doc_id,
+        project_id=project_id,
+        filename=file.filename,
+        file_type=ext,
+        raw_text=raw_text,
+        chunk_count=0,
+        chroma_ids="[]",
+    )
+    db.add(doc)
+    await db.flush()
+
+    # Embed chunks in Chroma
+    chroma_ids: List[str] = []
+    try:
+        from data.chroma_client import ProjectChromaClient
+        chroma = ProjectChromaClient()
+        chroma_ids = await chroma.async_add_document_chunks(project_id, doc_id, file.filename, raw_text)
+        doc.chunk_count = len(chroma_ids)
+        doc.chroma_ids = json.dumps(chroma_ids)
+    except Exception as e:
+        logger.warning(f"Chroma embedding failed for {file.filename}: {e}")
+
+    # Generate summary and patch memory_doc
+    try:
+        from langchain_anthropic import ChatAnthropic
+        from data.project_memory import generate_document_summary, patch_memory_section
+        llm = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=400)
+        summary = generate_document_summary(file.filename, raw_text, llm)
+        p.memory_doc = patch_memory_section(
+            p.memory_doc or "",
+            "Uploaded Document Summaries",
+            f"### {file.filename}\n{summary}",
+            mode="append",
+        )
+        p.updated_at = datetime.utcnow()
+    except Exception as e:
+        logger.warning(f"Document summary generation failed for {file.filename}: {e}")
+
+    await db.commit()
+    await db.refresh(doc)
+
+    return {
+        "id": doc.id,
+        "project_id": doc.project_id,
+        "filename": doc.filename,
+        "file_type": doc.file_type,
+        "chunk_count": doc.chunk_count,
+        "uploaded_at": doc.uploaded_at.isoformat(),
+    }
+
+
+@app.get("/projects/{project_id}/documents")
+async def list_project_documents(project_id: str, db: AsyncSession = Depends(get_db)):
+    """List documents for a project (no raw_text in response)."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    docs_result = await db.execute(
+        select(ProjectDocument).where(ProjectDocument.project_id == project_id)
+        .order_by(ProjectDocument.uploaded_at.desc())
+    )
+    docs = docs_result.scalars().all()
+    return [
+        {
+            "id": d.id,
+            "project_id": d.project_id,
+            "filename": d.filename,
+            "file_type": d.file_type,
+            "chunk_count": d.chunk_count,
+            "uploaded_at": d.uploaded_at.isoformat(),
+        }
+        for d in docs
+    ]
+
+
+@app.delete("/projects/{project_id}/documents/{doc_id}")
+async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a project document and its Chroma chunks."""
+    result = await db.execute(
+        select(ProjectDocument).where(
+            ProjectDocument.id == doc_id,
+            ProjectDocument.project_id == project_id,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete Chroma chunks
+    if doc.chroma_ids:
+        try:
+            from data.chroma_client import ProjectChromaClient
+            chroma = ProjectChromaClient()
+            ids = json.loads(doc.chroma_ids)
+            if ids:
+                await chroma.async_delete_chunks(project_id, ids)
+        except Exception as e:
+            logger.warning(f"Chroma chunk deletion failed for doc {doc_id}: {e}")
+
+    await db.delete(doc)
     await db.commit()
     return Response(status_code=204)
 

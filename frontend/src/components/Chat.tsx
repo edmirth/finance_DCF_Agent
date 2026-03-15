@@ -18,6 +18,8 @@ interface ChatProps {
   sessionId?: string;
   /** Called when an analysis response is received (to show save toast) */
   onAnalysisSaved?: () => void;
+  /** Project ID to ground all messages in project context */
+  projectId?: string;
 }
 
 function Chat({
@@ -27,6 +29,7 @@ function Chat({
   initialMessages,
   sessionId: sessionIdProp,
   onAnalysisSaved,
+  projectId,
 }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>(initialMessages ?? []);
   const [input, setInput] = useState('');
@@ -235,6 +238,7 @@ function Chat({
         agent_type: agent.id, // 'auto' or specific agent id
         model: 'claude-sonnet-4-5-20250929',
         session_id: sessionId.current,
+        ...(projectId ? { project_id: projectId } : {}),
       },
       (event) => {
         if (event.type === 'routing_decision' && event.agent) {

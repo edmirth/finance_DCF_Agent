@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Agent, ChatRequest, StreamEvent, SessionSummary, SessionDetail, AnalysisSummary, AnalysisDetail, WatchlistDetail } from './types';
+import { Agent, ChatRequest, StreamEvent, SessionSummary, SessionDetail, AnalysisSummary, AnalysisDetail, WatchlistDetail, ProjectSummary, ProjectDetail, ProjectDocument } from './types';
 
 const API_BASE_URL = '/api';
 
@@ -277,6 +277,79 @@ export const removeTickerFromWatchlist = async (watchlistId: string, ticker: str
 
 export const deleteWatchlist = async (watchlistId: string): Promise<void> => {
   await api.delete(`/watchlists/${watchlistId}`);
+};
+
+// ============================================================
+// Projects
+// ============================================================
+
+export const getProjects = async (): Promise<ProjectSummary[]> => {
+  const response = await api.get('/projects');
+  return response.data;
+};
+
+export const getProject = async (id: string): Promise<ProjectDetail> => {
+  const response = await api.get(`/projects/${id}`);
+  return response.data;
+};
+
+export const createProject = async (
+  title: string,
+  thesis: string,
+  tickers?: string[]
+): Promise<ProjectDetail> => {
+  const response = await api.post('/projects', { title, thesis, tickers });
+  return response.data;
+};
+
+export const updateProject = async (
+  id: string,
+  patch: Partial<{ title: string; thesis: string; config: Record<string, unknown>; status: string }>
+): Promise<ProjectDetail> => {
+  const response = await api.patch(`/projects/${id}`, patch);
+  return response.data;
+};
+
+export const deleteProject = async (id: string): Promise<void> => {
+  await api.delete(`/projects/${id}`);
+};
+
+export const uploadProjectDocument = async (
+  projectId: string,
+  file: File
+): Promise<ProjectDocument> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await axios.post(`${API_BASE_URL}/projects/${projectId}/documents`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+};
+
+export const getProjectDocuments = async (projectId: string): Promise<ProjectDocument[]> => {
+  const response = await api.get(`/projects/${projectId}/documents`);
+  return response.data;
+};
+
+export const deleteProjectDocument = async (
+  projectId: string,
+  docId: string
+): Promise<void> => {
+  await api.delete(`/projects/${projectId}/documents/${docId}`);
+};
+
+export const getProjectMemory = async (id: string): Promise<string> => {
+  const response = await api.get(`/projects/${id}/memory`);
+  return response.data.memory_doc;
+};
+
+export const patchProjectMemory = async (id: string, memoryDoc: string): Promise<void> => {
+  await api.patch(`/projects/${id}/memory`, { memory_doc: memoryDoc });
+};
+
+export const getProjectSessions = async (id: string): Promise<SessionSummary[]> => {
+  const response = await api.get(`/projects/${id}/sessions`);
+  return response.data;
 };
 
 export default api;

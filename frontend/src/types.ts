@@ -68,6 +68,7 @@ export interface ChatRequest {
   model: string;
   session_id?: string;
   is_followup?: boolean;
+  project_id?: string;
 }
 
 export interface ChartSeriesConfig {
@@ -239,4 +240,38 @@ export interface WatchlistDetail {
   name: string;
   created_at: string;
   tickers: WatchlistTicker[];
+}
+
+// ============================================================
+// Project types
+// ============================================================
+
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  thesis: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  session_count: number;
+  document_count: number;
+}
+
+export interface ProjectConfig {
+  tickers?: string[];
+  preferred_agents?: string[];
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  config: ProjectConfig;
+  memory_doc: string;
+}
+
+export interface ProjectDocument {
+  id: string;
+  project_id: string;
+  filename: string;
+  file_type: string;
+  chunk_count: number;
+  uploaded_at: string;
 }

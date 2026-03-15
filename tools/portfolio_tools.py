@@ -89,13 +89,34 @@ class CalculatePortfolioMetricsTool(BaseTool):
             total_cost = 0
 
             for holding in holdings:
-                ticker = holding['ticker'].upper()
-                shares = holding['shares']
+                ticker = holding.get('ticker')
+                shares = holding.get('shares')
                 cost_basis = holding.get('cost_basis', 0)
+
+                # Validate required fields
+                if not ticker or shares is None:
+                    logger.warning(f"Skipping invalid holding (missing ticker or shares): {holding}")
+                    continue
+
+                ticker = str(ticker).upper()
+
+                try:
+                    shares = float(shares)
+                    cost_basis = float(cost_basis)
+                except (ValueError, TypeError):
+                    logger.warning(f"Skipping {ticker}: non-numeric shares or cost_basis")
+                    continue
+
+                if shares <= 0:
+                    logger.warning(f"Skipping {ticker}: shares must be positive, got {shares}")
+                    continue
+                if cost_basis < 0:
+                    logger.warning(f"Skipping {ticker}: cost_basis cannot be negative, got {cost_basis}")
+                    continue
 
                 # Get current stock info
                 stock_info = fetcher.get_stock_info(ticker)
-                current_price = stock_info.get('price', 0)
+                current_price = stock_info.get('current_price', 0)
 
                 if current_price == 0:
                     logger.warning(f"Could not fetch price for {ticker}, skipping")
@@ -229,12 +250,23 @@ class AnalyzeDiversificationTool(BaseTool):
             total_value = 0
 
             for holding in holdings:
-                ticker = holding['ticker'].upper()
-                shares = holding['shares']
+                ticker = holding.get('ticker')
+                shares = holding.get('shares')
+
+                if not ticker or shares is None:
+                    continue
+
+                ticker = str(ticker).upper()
+                try:
+                    shares = float(shares)
+                except (ValueError, TypeError):
+                    continue
+                if shares <= 0:
+                    continue
 
                 # Get stock info for sector/industry
                 stock_info = fetcher.get_stock_info(ticker)
-                current_price = stock_info.get('price', 0)
+                current_price = stock_info.get('current_price', 0)
                 sector = stock_info.get('sector', 'Unknown')
 
                 if current_price == 0:
@@ -353,14 +385,26 @@ class IdentifyTaxLossHarvestingTool(BaseTool):
             total_harvestable_loss = 0
 
             for holding in holdings:
-                ticker = holding['ticker'].upper()
-                shares = holding['shares']
+                ticker = holding.get('ticker')
+                shares = holding.get('shares')
                 cost_basis = holding.get('cost_basis', 0)
 
-                stock_info = fetcher.get_stock_info(ticker)
-                current_price = stock_info.get('price', 0)
+                if not ticker or shares is None:
+                    continue
 
-                if current_price == 0 or cost_basis == 0:
+                ticker = str(ticker).upper()
+                try:
+                    shares = float(shares)
+                    cost_basis = float(cost_basis)
+                except (ValueError, TypeError):
+                    continue
+                if shares <= 0 or cost_basis <= 0:
+                    continue
+
+                stock_info = fetcher.get_stock_info(ticker)
+                current_price = stock_info.get('current_price', 0)
+
+                if current_price == 0:
                     continue
 
                 market_value = shares * current_price
