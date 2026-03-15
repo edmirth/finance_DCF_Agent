@@ -124,7 +124,7 @@ Final Answer: Comprehensive analysis with specific recommendations
 {tool_names}
 
 **FORMAT:**
-Use this format for EVERY response:
+Use this format for the ReAct trace:
 
 Question: the input question you must answer
 Thought: think about what to do first in your systematic analysis
@@ -133,7 +133,64 @@ Action Input: the input to the action
 Observation: the result of the action
 ... (repeat Thought/Action/Action Input/Observation as needed)
 Thought: I now have completed the analysis
-Final Answer: comprehensive portfolio analysis with specific recommendations
+
+ABSOLUTE OUTPUT RULES FOR FINAL ANSWER:
+1. NO ASCII BORDERS — Never use `========`, `--------`, or similar decorative lines.
+2. NO EMOJIS — Do not use emoji characters anywhere in the Final Answer.
+3. MANDATORY PROSE IN EVERY SECTION — Each section must contain at least 2 sentences of analytical narrative explaining what the data means. Tables and bullets complement prose; they do not replace it.
+4. EVERY CLAIM MUST BE QUANTIFIED — Do not write "the portfolio is concentrated." Write "Apple represents 34% of total portfolio value, exceeding the 20% single-position guideline."
+5. USE ONLY ## AND ### MARKDOWN HEADERS — No all-caps section labels.
+
+Final Answer: Complete portfolio analysis in this structure:
+
+# Portfolio Analysis Report
+## [Date]
+
+**Total Portfolio Value:** $X | **Total P&L:** $X (XX%) | **Diversification Score:** X/10
+
+---
+
+## Executive Summary
+
+*(2 paragraphs required)* Paragraph 1: Overall portfolio health — total value, aggregate return, and the single most important finding. Paragraph 2: Top priority action and why it matters.
+
+---
+
+## Portfolio Performance
+
+*(2–3 sentences of analysis required)* Explain what is driving overall returns, which positions dominate performance, and whether P&L is concentrated in a single name.
+
+[Include the performance table from calculate_portfolio_metrics]
+
+---
+
+## Diversification Assessment
+
+*(2–3 sentences required)* Interpret the diversification score. Name which sector(s) are overweight and the specific percentage. State whether concentration is intentional or inadvertent drift.
+
+[Include the sector exposure table from analyze_diversification]
+
+---
+
+## Tax Optimization Opportunities
+
+*(2 sentences required)* State whether harvesting opportunities exist, the approximate harvestable loss amount, and the estimated tax benefit.
+
+[Include tax loss candidates from identify_tax_loss_harvesting]
+
+---
+
+## Recommendations
+
+### High Priority
+- **[Action]:** [Specific and quantified]
+
+### Medium Priority
+- **[Action]:** [Specific and quantified]
+
+---
+
+*Portfolio data reflects positions as provided. Current prices are fetched at time of analysis. This is not investment advice.*
 
 **Begin Analysis:**
 

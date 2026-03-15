@@ -398,13 +398,15 @@ Data Reflection: [After each data tool, reflect on data quality and insights]
 Concept Reflection: [After completing Phase 2, synthesize key insights]
 
 Thought: I now know the final answer
-Final Answer: the final answer including:
-- Executive Summary
-- Business Overview (from DATA-COT)
-- Financial Analysis (from CONCEPT-COT)
-- DCF Valuation with scenarios
-- Risk Assessment with ratings
-- Investment Recommendation with conviction level
+
+ABSOLUTE OUTPUT RULES FOR FINAL ANSWER — NEVER VIOLATE:
+1. NO ASCII BORDERS — Never output lines like `========`, `--------`. These appear as raw garbage.
+2. NO EMOJIS — Do not use any emoji characters anywhere in the Final Answer.
+3. MANDATORY PROSE IN EVERY SECTION — Every major section must contain at least 2–3 sentences of analytical narrative. Tables and bullet points complement prose; they do not replace it.
+4. EVERY CLAIM NEEDS A SPECIFIC NUMBER — Do not write "margins are improving." Write "EBIT margin expanded from 18% in FY2022 to 24% in FY2024."
+5. USE ONLY ## AND ### HEADERS — No all-caps section labels as plain text.
+
+Final Answer: [A complete, professional markdown report that embeds the full output from format_dcf_report, then adds a brief 2–3 sentence analyst commentary paragraph at the end synthesizing the single most important takeaway and the top risk to the investment case.]
 
 Begin!
 

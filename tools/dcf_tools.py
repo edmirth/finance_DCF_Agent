@@ -1760,163 +1760,94 @@ class FormatDCFReportTool(BaseTool):
             else:
                 return f"${n:,.{decimals}f}"
 
-        # Determine rating color/emoji for text display
-        rating_display = {
-            'BUY': '🟢 BUY',
-            'HOLD': '🟡 HOLD',
-            'SELL': '🔴 SELL'
-        }.get(rating.upper(), rating)
-
-        # Build report
-        lines = []
-
-        # Header
-        lines.append("=" * 80)
-        lines.append(f"{'DCF VALUATION REPORT':^80}")
-        lines.append("=" * 80)
-        lines.append("")
-        lines.append(f"Company:         {company_name} ({ticker})")
-        lines.append(f"Sector:          {sector}")
-        lines.append(f"Industry:        {industry}")
-        lines.append(f"Report Date:     {datetime.now().strftime('%B %d, %Y')}")
-        lines.append("")
-
-        # Investment Rating Summary
-        lines.append("-" * 80)
-        lines.append("INVESTMENT SUMMARY")
-        lines.append("-" * 80)
-        lines.append("")
-        lines.append(f"  Rating:              {rating_display}")
-        lines.append(f"  Conviction:          {conviction}")
-        lines.append(f"  Current Price:       ${current_price:.2f}")
-        lines.append(f"  Target Price (Base): ${base_intrinsic_value:.2f}")
-        lines.append(f"  Upside/Downside:     {base_upside:+.1f}%")
-        lines.append("")
-
-        # Scenario Analysis Table
-        lines.append("-" * 80)
-        lines.append("SCENARIO ANALYSIS")
-        lines.append("-" * 80)
-        lines.append("")
-        lines.append(f"{'Scenario':<15} {'Intrinsic Value':>18} {'vs Current Price':>18} {'Probability':>12}")
-        lines.append("-" * 80)
-        lines.append(f"{'Bull Case':<15} ${bull_intrinsic_value:>16,.2f} {bull_upside:>17.1f}% {'25%':>12}")
-        lines.append(f"{'Base Case':<15} ${base_intrinsic_value:>16,.2f} {base_upside:>17.1f}% {'50%':>12}")
-        lines.append(f"{'Bear Case':<15} ${bear_intrinsic_value:>16,.2f} {bear_upside:>17.1f}% {'25%':>12}")
-        lines.append("-" * 80)
+        # Plain text rating (no emoji)
+        rating_display = rating.upper()
 
         # Probability-weighted value
         prob_weighted = bull_intrinsic_value * 0.25 + base_intrinsic_value * 0.50 + bear_intrinsic_value * 0.25
         prob_weighted_upside = ((prob_weighted - current_price) / current_price * 100) if current_price > 0 else 0
-        lines.append(f"{'Prob-Weighted':<15} ${prob_weighted:>16,.2f} {prob_weighted_upside:>17.1f}%")
-        lines.append("")
 
-        # DCF Assumptions
-        lines.append("-" * 80)
-        lines.append("DCF ASSUMPTIONS")
-        lines.append("-" * 80)
-        lines.append("")
-        lines.append("Growth Assumptions:")
-        lines.append(f"  Near-Term Growth (Yr 1-2):    {near_term_growth_rate*100:.1f}%  (Analyst consensus)")
-        lines.append(f"  Long-Term Growth (Yr 3-5):    {long_term_growth_rate*100:.1f}%  (Industry average fade)")
-        lines.append(f"  Terminal Growth:              {terminal_growth_rate*100:.1f}%  (GDP + inflation)")
-        lines.append("")
-        lines.append("Discount Rate (WACC):")
-        lines.append(f"  Risk-Free Rate:               {risk_free_rate*100:.2f}% (10Y Treasury)")
-        lines.append(f"  Beta:                         {beta:.2f}")
-        lines.append(f"  Market Risk Premium:          {market_risk_premium*100:.1f}%")
-        lines.append(f"  WACC:                         {wacc*100:.2f}%")
-        lines.append("")
-        lines.append("Operating Assumptions:")
-        lines.append(f"  EBIT Margin:                  {ebit_margin*100:.1f}%")
-        lines.append(f"  Tax Rate:                     {tax_rate*100:.1f}%")
-        lines.append("")
+        # Build markdown report
+        sections = []
+        sections.append(f"# {company_name} ({ticker}) — DCF Valuation")
+        sections.append(f"**{sector}** | {industry} | {datetime.now().strftime('%B %d, %Y')}\n")
+        sections.append(
+            f"**Rating:** {rating_display} &nbsp;|&nbsp; **Conviction:** {conviction} "
+            f"&nbsp;|&nbsp; **Current Price:** ${current_price:.2f} "
+            f"&nbsp;|&nbsp; **Base Target:** ${base_intrinsic_value:.2f} "
+            f"&nbsp;|&nbsp; **Upside:** {base_upside:+.1f}%\n"
+        )
+        sections.append("---\n")
 
-        # Valuation Waterfall (if data available)
+        sections.append("## Scenario Analysis\n")
+        sections.append("| Scenario | Intrinsic Value | vs. Current Price | Probability |")
+        sections.append("|----------|----------------|-------------------|-------------|")
+        sections.append(f"| Bull Case | ${bull_intrinsic_value:,.2f} | {bull_upside:+.1f}% | 25% |")
+        sections.append(f"| Base Case | ${base_intrinsic_value:,.2f} | {base_upside:+.1f}% | 50% |")
+        sections.append(f"| Bear Case | ${bear_intrinsic_value:,.2f} | {bear_upside:+.1f}% | 25% |")
+        sections.append(f"| **Probability-Weighted** | **${prob_weighted:,.2f}** | **{prob_weighted_upside:+.1f}%** | — |\n")
+
+        sections.append("## DCF Assumptions\n")
+        sections.append("### Growth Rates\n")
+        sections.append("| Parameter | Value | Basis |")
+        sections.append("|-----------|-------|-------|")
+        sections.append(f"| Near-Term Growth (Yr 1–2) | {near_term_growth_rate:.1%} | Analyst consensus |")
+        sections.append(f"| Long-Term Growth (Yr 3–5) | {long_term_growth_rate:.1%} | Industry average fade |")
+        sections.append(f"| Terminal Growth | {terminal_growth_rate:.1%} | GDP + inflation |\n")
+        sections.append("### Discount Rate (WACC)\n")
+        sections.append("| Parameter | Value |")
+        sections.append("|-----------|-------|")
+        sections.append(f"| Risk-Free Rate | {risk_free_rate:.2%} |")
+        sections.append(f"| Beta | {beta:.2f} |")
+        sections.append(f"| Market Risk Premium | {market_risk_premium:.1%} |")
+        sections.append(f"| **WACC** | **{wacc:.2%}** |\n")
+        sections.append("### Operating Assumptions\n")
+        sections.append("| Parameter | Value |")
+        sections.append("|-----------|-------|")
+        sections.append(f"| EBIT Margin | {ebit_margin:.1%} |")
+        sections.append(f"| Tax Rate | {tax_rate:.1%} |\n")
+
+        # Valuation waterfall — conditional
         if enterprise_value > 0 and equity_value > 0:
-            lines.append("-" * 80)
-            lines.append("VALUATION WATERFALL (Base Case)")
-            lines.append("-" * 80)
-            lines.append("")
-            lines.append(f"  Enterprise Value:           {fmt_num(enterprise_value, 1)}")
-            lines.append(f"  Less: Total Debt:           ({fmt_num(total_debt, 1)})")
-            lines.append(f"  Plus: Cash:                 {fmt_num(cash, 1)}")
-            lines.append(f"  Equity Value:               {fmt_num(equity_value, 1)}")
-            lines.append(f"  Shares Outstanding:         {shares_outstanding/1e9:.2f}B" if shares_outstanding > 0 else "  Shares Outstanding:         N/A")
-            lines.append(f"  Intrinsic Value/Share:      ${base_intrinsic_value:.2f}")
-            lines.append("")
+            sections.append("## Valuation Waterfall (Base Case)\n")
+            sections.append("| Component | Value |")
+            sections.append("|-----------|-------|")
+            sections.append(f"| Enterprise Value | {fmt_num(enterprise_value, 1)} |")
+            sections.append(f"| Less: Total Debt | ({fmt_num(total_debt, 1)}) |")
+            sections.append(f"| Plus: Cash | {fmt_num(cash, 1)} |")
+            sections.append(f"| **Equity Value** | **{fmt_num(equity_value, 1)}** |")
+            shares_str = f"{shares_outstanding/1e9:.2f}B" if shares_outstanding > 0 else "N/A"
+            sections.append(f"| Shares Outstanding | {shares_str} |")
+            sections.append(f"| **Intrinsic Value per Share** | **${base_intrinsic_value:.2f}** |\n")
 
-        # Growth Analysis
+        # Prose sections — pass through directly (no indentation)
         if growth_analysis:
-            lines.append("-" * 80)
-            lines.append("GROWTH ANALYSIS")
-            lines.append("-" * 80)
-            lines.append("")
-            for line in growth_analysis.split('\n'):
-                lines.append(f"  {line}")
-            lines.append("")
+            sections.append("## Growth Analysis\n")
+            sections.append(growth_analysis + "\n")
 
-        # Risk Analysis
         if risk_analysis:
-            lines.append("-" * 80)
-            lines.append("RISK ANALYSIS")
-            lines.append("-" * 80)
-            lines.append("")
-            for line in risk_analysis.split('\n'):
-                lines.append(f"  {line}")
-            lines.append("")
+            sections.append("## Risk Analysis\n")
+            sections.append(risk_analysis + "\n")
 
-        # Investment Thesis
         if investment_thesis:
-            lines.append("-" * 80)
-            lines.append("INVESTMENT THESIS")
-            lines.append("-" * 80)
-            lines.append("")
-            for line in investment_thesis.split('\n'):
-                lines.append(f"  {line}")
-            lines.append("")
+            sections.append("## Investment Thesis\n")
+            sections.append(investment_thesis + "\n")
 
-        # Company Overview
         if company_overview:
-            lines.append("-" * 80)
-            lines.append("COMPANY OVERVIEW")
-            lines.append("-" * 80)
-            lines.append("")
-            for line in company_overview.split('\n'):
-                lines.append(f"  {line}")
-            lines.append("")
+            sections.append("## Company Overview\n")
+            sections.append(company_overview + "\n")
 
-        # Warnings
         if warnings:
-            lines.append("-" * 80)
-            lines.append("WARNINGS & CAVEATS")
-            lines.append("-" * 80)
-            lines.append("")
-            for line in warnings.split('\n'):
-                if line.strip():
-                    lines.append(f"  ⚠ {line}")
-            lines.append("")
+            sections.append("## Notes & Caveats\n")
+            sections.append("> **Note:** " + warnings.replace('\n', ' ') + "\n")
 
-        # Disclaimer
-        lines.append("-" * 80)
-        lines.append("DISCLAIMER")
-        lines.append("-" * 80)
-        lines.append("")
-        lines.append("  This report is generated by an AI-powered DCF analysis system.")
-        lines.append("  The analysis is based on publicly available data and analyst estimates.")
-        lines.append("  ")
-        lines.append("  Key limitations:")
-        lines.append("  - DCF valuations are highly sensitive to growth and discount rate assumptions")
-        lines.append("  - Past performance does not guarantee future results")
-        lines.append("  - This is not investment advice; consult a financial professional")
-        lines.append("  ")
-        lines.append("  Data sources: Financial Datasets API, FRED API, Tavily, FMP API")
-        lines.append("")
-        lines.append("=" * 80)
-        lines.append(f"Generated by Finance DCF Agent | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append("=" * 80)
+        sections.append("---\n")
+        sections.append(
+            "*This report is generated by an AI-powered DCF analysis system based on publicly available data "
+            "and analyst estimates. DCF valuations are highly sensitive to assumptions. This is not investment advice.*"
+        )
 
-        return "\n".join(lines)
+        return "\n".join(sections)
 
     async def _arun(self, **kwargs) -> str:
         """Async version"""
