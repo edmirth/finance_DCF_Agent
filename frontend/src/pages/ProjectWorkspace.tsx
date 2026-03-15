@@ -1,7 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import Chat from '../components/Chat';
 import ToastNotification from '../components/ToastNotification';
 import { Agent, Message, ProjectDetail, ProjectDocument, SessionSummary } from '../types';
@@ -58,6 +56,300 @@ function parseThesisHealth(memoryDoc: string): ThesisHealth {
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ── Memory doc parsers ──────────────────────────────────────────────────────
+
+function parseSection(memoryDoc: string, header: string): string {
+  const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = memoryDoc.match(new RegExp(`## ${escaped}\\n([\\s\\S]*?)(?=\\n## |\\n# |$)`));
+  const raw = match ? match[1].trim() : '';
+  return raw === '(to be populated)' || raw === '(none yet)' ? '' : raw;
+}
+
+function parseBullets(content: string): string[] {
+  if (!content) return [];
+  return content.split('\n').filter(l => l.trim().startsWith('- ')).map(l => l.trim().slice(2).trim()).filter(Boolean);
+}
+
+function parseConclusion(text: string): { date: string; content: string } {
+  const m = text.match(/^\[(\d{4}-\d{2}-\d{2})[^\]]*\]\s*(.+)$/);
+  return m ? { date: m[1], content: m[2] } : { date: '', content: text };
+}
+
+function parseTickers(content: string): Array<{ label: string; ticker: string }> {
+  if (!content) return [];
+  return parseBullets(content).map(b => {
+    const m = b.match(/^(.+?)\s*\(([A-Z]{1,6})\)/);
+    return m ? { label: m[1].trim(), ticker: m[2] } : { label: b, ticker: '' };
+  });
+}
+
+// ── Memory section card ────────────────────────────────────────────────────
+
+const SECTION_ICON: Record<string, string> = {
+  'Thesis': '💡',
+  'Key Assumptions': '✓',
+  'Violated or Revised Assumptions': '⚠',
+  'Thesis Health': '❤',
+  'Key Companies & Tickers': '🏢',
+  'Accumulated Conclusions': '📌',
+  'Open Questions': '?',
+  'Uploaded Document Summaries': '📄',
+  'Live Data Snapshots': '📊',
+};
+
+function SectionCard({ title, children, accent }: { title: string; children: React.ReactNode; accent?: string }) {
+  return (
+    <div style={{
+      border: '1px solid #F0F0F0',
+      borderRadius: '10px',
+      padding: '0.875rem 1rem',
+      marginBottom: '0.5rem',
+      background: '#FFFFFF',
+      borderLeft: accent ? `3px solid ${accent}` : '1px solid #F0F0F0',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.375rem',
+        marginBottom: '0.625rem',
+      }}>
+        <span style={{ fontSize: '0.6875rem' }}>{SECTION_ICON[title]}</span>
+        <span style={{
+          fontFamily: 'Inter, sans-serif',
+          fontSize: '0.6875rem',
+          fontWeight: 600,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+          color: '#9CA3AF',
+        }}>{title}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function EmptyPlaceholder({ label }: { label: string }) {
+  return (
+    <div style={{
+      border: '1.5px dashed #E5E7EB',
+      borderRadius: '6px',
+      padding: '0.625rem 0.875rem',
+      textAlign: 'center',
+    }}>
+      <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#D1D5DB' }}>{label}</span>
+    </div>
+  );
+}
+
+function MemoryDashboard({ memoryDoc, thesisHealth }: { memoryDoc: string; thesisHealth: ThesisHealth }) {
+  const thesis = parseSection(memoryDoc, 'Thesis');
+  const assumptions = parseBullets(parseSection(memoryDoc, 'Key Assumptions'));
+  const violated = parseBullets(parseSection(memoryDoc, 'Violated or Revised Assumptions'));
+  const tickers = parseTickers(parseSection(memoryDoc, 'Key Companies & Tickers'));
+  const conclusions = parseBullets(parseSection(memoryDoc, 'Accumulated Conclusions')).map(parseConclusion);
+  const questions = parseBullets(parseSection(memoryDoc, 'Open Questions'));
+  const docSummaries = parseSection(memoryDoc, 'Uploaded Document Summaries');
+  const snapshots = parseBullets(parseSection(memoryDoc, 'Live Data Snapshots'));
+
+  const healthStyle = THESIS_STATUS_STYLES[thesisHealth.status];
+
+  return (
+    <div>
+      {/* Thesis */}
+      <SectionCard title="Thesis" accent="#10B981">
+        {thesis ? (
+          <div style={{
+            fontFamily: 'Inter, sans-serif',
+            fontSize: '0.875rem',
+            color: '#1A1A1A',
+            lineHeight: 1.6,
+            fontStyle: 'italic',
+            borderLeft: '2px solid #D1FAE5',
+            paddingLeft: '0.75rem',
+          }}>{thesis}</div>
+        ) : <EmptyPlaceholder label="No thesis defined yet" />}
+      </SectionCard>
+
+      {/* Thesis Health */}
+      <SectionCard title="Thesis Health">
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '0.75rem',
+          background: healthStyle.bg,
+          border: `1px solid ${healthStyle.border}`,
+          borderRadius: '8px',
+          padding: '0.75rem',
+        }}>
+          <div style={{
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            background: healthStyle.color,
+            flexShrink: 0,
+            marginTop: '5px',
+          }} />
+          <div>
+            <div style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', fontWeight: 700, color: healthStyle.color }}>
+              {thesisHealth.status}
+            </div>
+            {thesisHealth.rationale && (
+              <div style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: healthStyle.color, marginTop: '0.25rem', opacity: 0.85 }}>
+                {thesisHealth.rationale}
+              </div>
+            )}
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Key Companies & Tickers */}
+      <SectionCard title="Key Companies & Tickers">
+        {tickers.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
+            {tickers.map((t, i) => (
+              <div key={i} style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                background: '#F9FAFB',
+                border: '1px solid #E5E7EB',
+                borderRadius: '999px',
+                padding: '0.25rem 0.625rem',
+              }}>
+                {t.ticker && (
+                  <span style={{
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: '0.6875rem',
+                    fontWeight: 600,
+                    color: '#10B981',
+                    background: '#ECFDF5',
+                    borderRadius: '4px',
+                    padding: '0 0.25rem',
+                  }}>{t.ticker}</span>
+                )}
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#374151' }}>{t.label}</span>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyPlaceholder label="Companies will appear after analysis" />}
+      </SectionCard>
+
+      {/* Key Assumptions */}
+      <SectionCard title="Key Assumptions" accent="#10B981">
+        {assumptions.length > 0 ? (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            {assumptions.map((a, i) => (
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: '#10B981', fontSize: '0.75rem', marginTop: '2px', flexShrink: 0 }}>✓</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.5 }}>{a}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <EmptyPlaceholder label="Assumptions will populate after analysis" />}
+      </SectionCard>
+
+      {/* Violated / Revised Assumptions */}
+      <SectionCard title="Violated or Revised Assumptions" accent="#F59E0B">
+        {violated.length > 0 ? (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            {violated.map((v, i) => (
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: '#F59E0B', fontSize: '0.75rem', marginTop: '2px', flexShrink: 0 }}>⚠</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#92400E', lineHeight: 1.5 }}>{v}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.75rem', color: '#10B981' }}>✓</span>
+            <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#6B7280' }}>No violations detected</span>
+          </div>
+        )}
+      </SectionCard>
+
+      {/* Accumulated Conclusions */}
+      <SectionCard title="Accumulated Conclusions" accent="#6366F1">
+        {conclusions.length > 0 ? (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {conclusions.map((c, i) => (
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: '#6366F1', fontSize: '0.625rem', marginTop: '4px', flexShrink: 0 }}>●</span>
+                <div style={{ minWidth: 0 }}>
+                  {c.date && (
+                    <span style={{
+                      fontFamily: 'IBM Plex Mono, monospace',
+                      fontSize: '0.625rem',
+                      color: '#9CA3AF',
+                      display: 'block',
+                      marginBottom: '1px',
+                    }}>{c.date}</span>
+                  )}
+                  <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.5 }}>{c.content}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : <EmptyPlaceholder label="Conclusions accumulate after each session" />}
+      </SectionCard>
+
+      {/* Open Questions */}
+      <SectionCard title="Open Questions">
+        {questions.length > 0 ? (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            {questions.map((q, i) => (
+              <li key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{
+                  width: '16px',
+                  height: '16px',
+                  borderRadius: '50%',
+                  background: '#F3F4F6',
+                  border: '1px solid #E5E7EB',
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '0.5625rem',
+                  color: '#9CA3AF',
+                  fontWeight: 700,
+                  marginTop: '1px',
+                }}>?</span>
+                <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.5 }}>{q}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <EmptyPlaceholder label="Questions will surface during analysis" />}
+      </SectionCard>
+
+      {/* Uploaded Document Summaries */}
+      <SectionCard title="Uploaded Document Summaries">
+        {docSummaries ? (
+          <div style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#374151', lineHeight: 1.6 }}>
+            {docSummaries}
+          </div>
+        ) : <EmptyPlaceholder label="Upload docs in the Documents tab" />}
+      </SectionCard>
+
+      {/* Live Data Snapshots */}
+      <SectionCard title="Live Data Snapshots">
+        {snapshots.length > 0 ? (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            {snapshots.map((s, i) => (
+              <li key={i} style={{
+                fontFamily: 'IBM Plex Mono, monospace',
+                fontSize: '0.75rem',
+                color: '#374151',
+                background: '#F9FAFB',
+                borderRadius: '4px',
+                padding: '0.25rem 0.5rem',
+              }}>{s}</li>
+            ))}
+          </ul>
+        ) : <EmptyPlaceholder label="Data snapshots appear after analysis runs" />}
+      </SectionCard>
+    </div>
+  );
 }
 
 
@@ -593,21 +885,14 @@ function ProjectWorkspace() {
                     }}
                   />
                 ) : memoryDoc ? (
-                  <div
-                    style={{
-                      fontFamily: 'Inter, sans-serif',
-                      fontSize: '0.8125rem',
-                      color: '#1A1A1A',
-                      lineHeight: 1.65,
-                    }}
-                    className="markdown-body project-memory"
-                  >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{memoryDoc}</ReactMarkdown>
-                  </div>
+                  <MemoryDashboard memoryDoc={memoryDoc} thesisHealth={thesisHealth} />
                 ) : (
-                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '2rem' }}>
-                    Memory will populate automatically after your first chat session.
-                  </p>
+                  <div style={{ textAlign: 'center', marginTop: '3rem' }}>
+                    <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>🧠</div>
+                    <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', margin: 0 }}>
+                      Memory builds automatically after your first analysis session.
+                    </p>
+                  </div>
                 )}
               </div>
             )}

@@ -3,6 +3,7 @@ import { ThinkingStep } from '../types';
 import { Search, FileText, Calculator, Lightbulb, Loader2, Brain, CheckCircle2, Sparkles } from 'lucide-react';
 import SearchQueryItem from './SearchQueryItem';
 import SourceItem from './SourceItem';
+import { cleanLabel } from './ReasoningDisplay';
 
 interface PhaseSectionProps {
   phase: string;
@@ -140,7 +141,7 @@ function PhaseSection({ phase, steps, isActive }: PhaseSectionProps) {
             {tools.map(step => (
               <div key={step.id} className="flex items-center gap-2 text-xs text-gray-500">
                 <CheckCircle2 className="w-3 h-3 text-green-500" />
-                <span>{step.tool || step.content}</span>
+                <span>{cleanLabel(step.tool || step.content || '')}</span>
               </div>
             ))}
           </div>

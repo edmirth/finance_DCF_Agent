@@ -3,9 +3,13 @@ Async SQLAlchemy database engine and session factory.
 Supports SQLite (default) and PostgreSQL (set DATABASE_URL env var).
 """
 import os
+import logging
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
+
+logger = logging.getLogger(__name__)
 
 # Default to SQLite alongside api_server.py; override with DATABASE_URL env var
 _db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./finance_agent.db")
@@ -38,8 +42,10 @@ async def init_db() -> None:
         # Idempotent migration: add chart_specs column if it doesn't exist yet
         try:
             await conn.execute(text("ALTER TABLE messages ADD COLUMN chart_specs TEXT"))
-        except Exception:
-            pass
+        except OperationalError:
+            pass  # Column already exists
+        except Exception as e:
+            logger.error(f"Unexpected error adding chart_specs column: {e}")
         # Idempotent migration: create project tables if they don't exist yet
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS projects (
@@ -55,8 +61,10 @@ async def init_db() -> None:
         """))
         try:
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_projects_status ON projects (status)"))
-        except Exception:
-            pass
+        except OperationalError:
+            pass  # Index already exists
+        except Exception as e:
+            logger.error(f"Unexpected error creating ix_projects_status index: {e}")
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS project_sessions (
                 id TEXT PRIMARY KEY,
@@ -69,8 +77,10 @@ async def init_db() -> None:
         try:
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_project_sessions_project_id ON project_sessions (project_id)"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_project_sessions_session_id ON project_sessions (session_id)"))
-        except Exception:
-            pass
+        except OperationalError:
+            pass  # Indexes already exist
+        except Exception as e:
+            logger.error(f"Unexpected error creating project_sessions indexes: {e}")
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS project_documents (
                 id TEXT PRIMARY KEY,
@@ -85,8 +95,10 @@ async def init_db() -> None:
         """))
         try:
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_project_documents_project_id ON project_documents (project_id)"))
-        except Exception:
-            pass
+        except OperationalError:
+            pass  # Index already exists
+        except Exception as e:
+            logger.error(f"Unexpected error creating project_documents index: {e}")
 
 
 async def get_db() -> AsyncSession:

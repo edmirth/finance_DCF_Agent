@@ -277,6 +277,32 @@
   - onMouseEnter/Leave on buttons inside clickable cards: stopPropagation not needed for hover (only click)
 ---
 
+## Iteration 21 - US-018: ProjectWorkspace — document upload UI
+- US-018 was already fully implemented as part of US-017 (Iteration 19)
+- All acceptance criteria satisfied: drag-drop zone, extension/size validation, uploadProjectDocument() call, loading state, success toast, error display
+- ACCEPTED_EXTENSIONS, MAX_FILE_SIZE, handleFileSelect(), fileInputRef, uploadingDoc, docError all present in ProjectWorkspace.tsx
+- Typecheck: only pre-existing AgentChart.tsx error
+- Files changed: ralph_loop/PRD.md
+- Learnings for future iterations:
+  - US-017 Documents tab already implemented full upload UI inline — US-018 was redundant
+  - Always read current file state before implementing to catch pre-completed work
+---
+
+## Iteration 22 - US-019: Thesis health indicator
+- Added `parseThesisHealth(memoryDoc)` function that regex-extracts ## Thesis Health section
+- Added `ThesisHealth` interface and `ThesisStatus` type + `THESIS_STATUS_STYLES` color map
+- Added `thesisHealth` state + `useEffect` that re-parses whenever `memoryDoc` changes
+- Badge rendered inline next to project title in header, color-coded per status
+- `title` attribute on badge div shows rationale as native tooltip on hover
+- Falls back to "Not assessed" (neutral gray) when memory_doc empty or section not yet written
+- Typecheck: only pre-existing AgentChart.tsx error, no new errors
+- Files changed: frontend/src/pages/ProjectWorkspace.tsx, ralph_loop/PRD.md
+- Learnings for future iterations:
+  - `useEffect([memoryDoc])` is cleanest pattern to derive parsed state from raw string state
+  - CSS `title` attribute gives free native tooltip — no extra library needed
+  - `cursor: 'help'` signals hoverable tooltip to user
+---
+
 ## Iteration 20 - US-013/015/016/017: Verify changes work in browser
 - Ran `npx tsc --noEmit` — only pre-existing AgentChart.tsx error (type unknown not assignable to ReactNode), no new errors
 - Frontend compiles clean for all project pages: Sidebar, ProjectsListPage, ProjectWorkspace (chat + memory/docs panels)

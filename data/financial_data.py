@@ -664,7 +664,8 @@ class FinancialDataFetcher:
 
             cagr = (pow(ending_value / beginning_value, 1 / num_years) - 1)
             return round(cagr, 4)
-        except:
+        except (ZeroDivisionError, ValueError, OverflowError) as e:
+            logger.warning(f"CAGR calculation failed: {e}")
             return 0.0
 
     def screen_stocks(self, filters: List[Dict], limit: int = 50, sort_by: Optional[str] = None) -> List[Dict]:
