@@ -138,6 +138,15 @@ class ProjectAnalysisGraph:
         return task
 
     @staticmethod
+    def _extract_project_tickers(context_block: str) -> List[str]:
+        """Extract project tickers from the <project_tickers> XML helper block."""
+        match = re.search(r"<project_tickers>(.*?)</project_tickers>", context_block, re.DOTALL)
+        if not match:
+            return []
+        tickers = [item.strip().upper() for item in match.group(1).split(",")]
+        return [ticker for ticker in tickers if ticker]
+
+    @staticmethod
     def _extract_ticker(text: str) -> str:
         """Extract first plausible ticker symbol from a text string."""
         # $TICKER format
@@ -215,6 +224,10 @@ class ProjectAnalysisGraph:
         ticker = self._extract_ticker(task)
         if not ticker:
             ticker = self._extract_ticker(state.get("query", ""))
+        if not ticker:
+            project_tickers = self._extract_project_tickers(state.get("context_block", ""))
+            if len(project_tickers) == 1:
+                ticker = project_tickers[0]
         try:
             if not ticker:
                 raise ValueError("No ticker symbol found in task for earnings agent")
@@ -382,12 +395,16 @@ class ProjectAnalysisGraph:
             "Respond ONLY with valid JSON (no markdown fences) matching this exact schema:\n"
             '{"conclusions": ["string", ...], "violated_assumptions": ["string", ...], '
             '"thesis_health": {"status": "STRONG|WEAKENING|CHALLENGED|INVALIDATED", "rationale": "string"}, '
-            '"open_questions": ["string", ...]}\n\n'
+            '"assumptions": ["string", ...], "open_questions": ["string", ...], '
+            '"key_companies": ["string", ...], "live_data_snapshots": ["string", ...]}\n\n'
             "Rules:\n"
             "- conclusions: 1–3 concrete findings from this analysis (short bullet-style strings)\n"
             "- violated_assumptions: list any thesis assumptions contradicted by findings (empty list if none)\n"
             "- thesis_health: assess whether findings support or challenge the thesis\n"
+            "- assumptions: only include durable thesis assumptions that should be tracked in future sessions\n"
             "- open_questions: 1–2 questions raised by this analysis worth investigating next\n"
+            "- key_companies: company/ticker strings worth tracking, e.g. 'NVIDIA (NVDA)'\n"
+            "- live_data_snapshots: 1–3 terse current facts or metrics that would help future follow-ups\n"
             "All lists may be empty but must be present. Output ONLY the JSON object."
         )
 
@@ -406,7 +423,10 @@ class ProjectAnalysisGraph:
             patch.setdefault("conclusions", [])
             patch.setdefault("violated_assumptions", [])
             patch.setdefault("thesis_health", {"status": "STRONG", "rationale": ""})
+            patch.setdefault("assumptions", [])
             patch.setdefault("open_questions", [])
+            patch.setdefault("key_companies", [])
+            patch.setdefault("live_data_snapshots", [])
 
             logger.info(f"[project_graph] extract_memory_patch complete: {list(patch.keys())}")
             self._emit_progress("project_progress", {"node": "extract_memory_patch", "status": "completed"})

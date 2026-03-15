@@ -10,7 +10,7 @@ import logging
 import threading
 import uuid as uuid_mod
 from typing import Optional, AsyncGenerator, Any, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +38,7 @@ from backend.config import (
 from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
+from backend.project_config import normalize_project_config
 from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
@@ -1507,9 +1508,9 @@ def _project_summary(p: Project, session_count: int = 0, document_count: int = 0
 async def create_project(body: CreateProjectRequest, db: AsyncSession = Depends(get_db)):
     """Create a new investment thesis project."""
     from data.project_memory import initialize_memory_doc
-    tickers = [t.upper() for t in (body.tickers or [])]
-    config = json.dumps({"tickers": tickers, "preferred_agents": []})
-    memory_doc = initialize_memory_doc(body.title, body.thesis)
+    config_dict = normalize_project_config({"tickers": body.tickers, "preferred_agents": []})
+    config = json.dumps(config_dict)
+    memory_doc = initialize_memory_doc(body.title, body.thesis, tickers=config_dict.get("tickers", []))
     project = Project(
         title=body.title,
         thesis=body.thesis,
@@ -1565,18 +1566,34 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 @app.patch("/projects/{project_id}")
 async def update_project(project_id: str, patch: ProjectPatch, db: AsyncSession = Depends(get_db)):
     """Update project title, thesis, config, or status."""
+    from data.project_memory import sync_project_memory
     result = await db.execute(select(Project).where(Project.id == project_id))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    existing_config = json.loads(p.config) if p.config else {}
+    next_title = patch.title if patch.title is not None else p.title
+    next_thesis = patch.thesis if patch.thesis is not None else p.thesis
+    next_config = existing_config
+
     if patch.title is not None:
         p.title = patch.title
     if patch.thesis is not None:
         p.thesis = patch.thesis
     if patch.config is not None:
-        p.config = json.dumps(patch.config)
+        next_config = normalize_project_config(patch.config, existing=existing_config)
+        p.config = json.dumps(next_config)
     if patch.status is not None:
         p.status = patch.status
+
+    if patch.title is not None or patch.thesis is not None or patch.config is not None:
+        p.memory_doc = sync_project_memory(
+            p.memory_doc or "",
+            title=next_title,
+            thesis=next_thesis,
+            tickers=next_config.get("tickers"),
+        )
     p.updated_at = datetime.utcnow()
     await db.commit()
     return _project_detail(p)
@@ -1615,12 +1632,18 @@ async def get_project_memory(project_id: str, db: AsyncSession = Depends(get_db)
 @app.patch("/projects/{project_id}/memory")
 async def patch_project_memory(project_id: str, body: ProjectMemoryPatch, db: AsyncSession = Depends(get_db)):
     """Manually overwrite the project memory document."""
+    from data.project_memory import sync_project_memory
+
     result = await db.execute(select(Project).where(Project.id == project_id))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
-    p.memory_doc = body.memory_doc
-    p.updated_at = datetime.utcnow()
+    now = datetime.utcnow()
+    p.memory_doc = sync_project_memory(
+        body.memory_doc,
+        now_iso=now.replace(tzinfo=timezone.utc).isoformat(timespec="seconds"),
+    )
+    p.updated_at = now
     await db.commit()
     return {"memory_doc": p.memory_doc, "updated_at": p.updated_at.isoformat()}
 
@@ -1715,13 +1738,17 @@ async def upload_project_document(
     # Generate summary and patch memory_doc
     try:
         from langchain_anthropic import ChatAnthropic
-        from data.project_memory import generate_document_summary, patch_memory_section
+        from data.project_memory import (
+            format_document_summary_entry,
+            generate_document_summary,
+            patch_memory_section,
+        )
         llm = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=400)
         summary = generate_document_summary(file.filename, raw_text, llm)
         p.memory_doc = patch_memory_section(
             p.memory_doc or "",
             "Uploaded Document Summaries",
-            f"### {file.filename}\n{summary}",
+            format_document_summary_entry(file.filename, summary, document_id=doc_id),
             mode="append",
         )
         p.updated_at = datetime.utcnow()
@@ -1769,6 +1796,8 @@ async def list_project_documents(project_id: str, db: AsyncSession = Depends(get
 @app.delete("/projects/{project_id}/documents/{doc_id}")
 async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession = Depends(get_db)):
     """Delete a project document and its Chroma chunks."""
+    from data.project_memory import remove_document_summary
+
     result = await db.execute(
         select(ProjectDocument).where(
             ProjectDocument.id == doc_id,
@@ -1789,6 +1818,16 @@ async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession
                 await chroma.async_delete_chunks(project_id, ids)
         except Exception as e:
             logger.warning(f"Chroma chunk deletion failed for doc {doc_id}: {e}")
+
+    project_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = project_result.scalar_one_or_none()
+    if project is not None:
+        project.memory_doc = remove_document_summary(
+            project.memory_doc or "",
+            doc.filename,
+            document_id=doc.id,
+        )
+        project.updated_at = datetime.utcnow()
 
     await db.delete(doc)
     await db.commit()
