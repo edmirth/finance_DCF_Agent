@@ -19,6 +19,7 @@ interface StockChartCardProps {
 function StockChartCard({ tickers }: StockChartCardProps) {
   const [period, setPeriod] = useState<TimePeriod>('1M');
   const [viewMode, setViewMode] = useState<ViewMode>('orig');
+  const [showMA, setShowMA] = useState(false);
   const [data, setData] = useState<ComparisonChartData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +102,9 @@ function StockChartCard({ tickers }: StockChartCardProps) {
           onPeriodChange={setPeriod}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
-          showToggle={isComparison}
+          showToggle={true}
+          showMA={showMA}
+          onToggleMA={() => setShowMA((v) => !v)}
         />
       </div>
 
@@ -112,6 +115,7 @@ function StockChartCard({ tickers }: StockChartCardProps) {
         colors={colorMap}
         period={period}
         viewMode={viewMode}
+        showMA={showMA}
       />
     </div>
   );

@@ -25,8 +25,8 @@ VALID_MODELS = [
 # Tools referenced in the prompt template (for validation)
 REQUIRED_TOOLS = [
     "get_company_context", "get_stock_info", "get_financial_metrics",
-    "get_market_parameters", "analyze_competitors", "search_web",
-    "perform_dcf_analysis", "perform_multiples_valuation", "get_dcf_comparison",
+    "get_market_parameters", "search_web",
+    "perform_dcf_analysis", "perform_multiples_valuation_dcf", "get_dcf_comparison",
     "format_dcf_report"
 ]
 
@@ -161,8 +161,7 @@ Tool Sequence:
 2. get_stock_info - Basic company information
 3. get_financial_metrics - Historical financials and operating ratios
 4. get_market_parameters - Beta, risk-free rate, growth estimates (CRITICAL for DCF!)
-5. analyze_competitors - Competitive positioning and peer comparison
-6. search_web - Industry outlook, competitive dynamics (qualitative research only)
+5. search_web - Industry outlook, competitive dynamics (qualitative research only)
 
 After EACH tool, reflect on data quality:
 - Data Reflection: "What did I learn? Is the data reliable? Any gaps?"
@@ -205,7 +204,7 @@ Objective: Build investment thesis with justified assumptions
 
 Tool Sequence for Phase 3:
 1. perform_dcf_analysis - With parameters from get_market_parameters
-2. perform_multiples_valuation - P/E, EV/EBITDA, P/S, P/B peer comparison (TRIANGULATION!)
+2. perform_multiples_valuation_dcf - P/E, EV/EBITDA, P/S, P/B peer comparison (TRIANGULATION!)
 3. get_dcf_comparison - Cross-validate with FMP DCF values
 4. format_dcf_report - Generate professional structured output
 
@@ -289,10 +288,6 @@ TOOL USAGE GUIDELINES
 - USE THIS instead of search_web for DCF numeric parameters!
 - All values are validated and ready to pass to perform_dcf_analysis
 
-**analyze_competitors**:
-- Input: {{"company": "Company Name", "ticker": "TICK", "industry": "Industry Name"}}
-- Purpose: Peer comparison, market share, competitive positioning
-
 **search_web** (QUALITATIVE RESEARCH ONLY):
 - Input: Your search query as a string
 - Use for: Industry outlook, competitive dynamics, strategic news, management quality
@@ -304,9 +299,9 @@ TOOL USAGE GUIDELINES
 - Recommended: long_term_growth_rate (from get_market_parameters industry_growth_rate)
 - Auto-calculated: ebit_margin, tax_rate, capex_to_revenue, depreciation_to_revenue, nwc_to_revenue, cost_of_debt
 - AUTO-METHODOLOGY: Automatically selects Levered DCF (FCFE) when D/E > 1.0
-- PASS EXPLICITLY to ensure correct WACC: current_price (from get_stock_info), shares_outstanding (from get_financial_metrics, in millions)
+- PASS EXPLICITLY to ensure correct WACC: current_price (from get_stock_info), shares_outstanding (from get_financial_metrics, absolute count e.g. 15441000000)
 
-**perform_multiples_valuation** (ALTERNATIVE/COMPLEMENT TO DCF):
+**perform_multiples_valuation_dcf** (ALTERNATIVE/COMPLEMENT TO DCF):
 - Input: {{"ticker": "AAPL", "peer_tickers": "MSFT,GOOGL,META"}} (peer_tickers optional)
 - Purpose: Valuation using P/E, EV/EBITDA, P/S, P/B multiples compared to peers/industry
 - Returns: Company multiples, peer averages, implied fair values, weighted average valuation
@@ -357,10 +352,10 @@ DO NOT use historical CAGR! The get_market_parameters tool fetches analyst conse
 6. Call format_dcf_report with all results
 
 Example for mega-cap quality stock (values from get_market_parameters + stock info):
-Action Input: {{"ticker": "AAPL", "near_term_growth_rate": 0.05, "long_term_growth_rate": 0.04, "terminal_growth_rate": 0.025, "beta": 1.10, "risk_free_rate": 0.045, "market_risk_premium": 0.055, "current_price": 227.52, "shares_outstanding": 15441.0}}
+Action Input: {{"ticker": "AAPL", "near_term_growth_rate": 0.05, "long_term_growth_rate": 0.04, "terminal_growth_rate": 0.025, "beta": 1.10, "risk_free_rate": 0.045, "market_risk_premium": 0.055, "current_price": 227.52, "shares_outstanding": 15441000000}}
 
 Example for high-growth stock (values from get_market_parameters + stock info):
-Action Input: {{"ticker": "PLTR", "near_term_growth_rate": 0.25, "long_term_growth_rate": 0.12, "terminal_growth_rate": 0.025, "beta": 1.55, "risk_free_rate": 0.045, "market_risk_premium": 0.07, "current_price": 85.40, "shares_outstanding": 2100.0}}
+Action Input: {{"ticker": "PLTR", "near_term_growth_rate": 0.25, "long_term_growth_rate": 0.12, "terminal_growth_rate": 0.025, "beta": 1.55, "risk_free_rate": 0.045, "market_risk_premium": 0.07, "current_price": 85.40, "shares_outstanding": 2100000000}}
 
 ================================================================================
 CHART PLACEHOLDERS
@@ -453,11 +448,10 @@ Thought: {agent_scratchpad}"""
         """
         # Bug #7 Fix: Specific exception handling for common errors
         try:
-            invoke_config = {"input": query}
-            if callbacks:
-                invoke_config["callbacks"] = callbacks
+            invoke_input = {"input": query}
+            invoke_config = {"callbacks": callbacks} if callbacks else None
 
-            result = self.agent_executor.invoke(invoke_config)
+            result = self.agent_executor.invoke(invoke_input, config=invoke_config)
 
             # Ensure output is a string — Anthropic returns list of content blocks
             output = result.get("output", "")

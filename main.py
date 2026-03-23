@@ -5,7 +5,6 @@ import os
 import sys
 from dotenv import load_dotenv
 from agents.dcf_agent import create_dcf_agent
-from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.finance_qa_agent import create_finance_qa_agent, interactive_session
 from agents.market_agent import create_market_agent
@@ -142,15 +141,7 @@ Modes:
         except Exception as e:
             print(f"Error initializing DCF agent: {e}")
             sys.exit(1)
-    elif args.mode == "analyst":
-        print("Initializing Equity Analyst Agent...")
-        try:
-            agent = create_equity_analyst_agent(model=args.model)
-            print(f"Equity Analyst Agent initialized with model: {args.model}\n")
-        except Exception as e:
-            print(f"Error initializing equity analyst agent: {e}")
-            sys.exit(1)
-    elif args.mode == "graph":
+    elif args.mode in ("analyst", "graph"):
         print("Initializing LangGraph Equity Analyst Agent...")
         try:
             agent = create_equity_analyst_graph(model=args.model)
@@ -190,10 +181,7 @@ def run_ticker_analysis(agent, ticker: str, mode: str):
 
     if mode == "dcf":
         result = agent.quick_dcf(ticker)
-    elif mode == "analyst":
-        result = agent.research_report(ticker)
-    elif mode == "graph":
-        # LangGraph uses analyze() method
+    elif mode in ("analyst", "graph"):
         result = agent.analyze(ticker)
     elif mode == "earnings":
         result = agent.analyze(ticker)

@@ -110,6 +110,48 @@ COMPANY_TICKER_MAP: Dict[str, str] = {
     'chevron': 'CVX',
     'berkshire': 'BRK.B',
     'berkshire hathaway': 'BRK.B',
+    'uber': 'UBER',
+    'lyft': 'LYFT',
+    'airbnb': 'ABNB',
+    'salesforce': 'CRM',
+    'adobe': 'ADBE',
+    'paypal': 'PYPL',
+    'shopify': 'SHOP',
+    'spotify': 'SPOT',
+    'snap': 'SNAP',
+    'twitter': 'X',
+    'palantir': 'PLTR',
+    'coinbase': 'COIN',
+    'robinhood': 'HOOD',
+    'snowflake': 'SNOW',
+    'datadog': 'DDOG',
+    'crowdstrike': 'CRWD',
+    'servicenow': 'NOW',
+    'workday': 'WDAY',
+    'oracle': 'ORCL',
+    'ibm': 'IBM',
+    'qualcomm': 'QCOM',
+    'broadcom': 'AVGO',
+    'arm': 'ARM',
+    'tsmc': 'TSM',
+    'samsung': '005930.KS',
+    'alibaba': 'BABA',
+    'tencent': 'TCEHY',
+    'baidu': 'BIDU',
+    'goldman sachs': 'GS',
+    'goldman': 'GS',
+    'morgan stanley': 'MS',
+    'blackrock': 'BLK',
+    'costco': 'COST',
+    'target': 'TGT',
+    'home depot': 'HD',
+    'lowes': 'LOW',
+    'mcdonalds': 'MCD',
+    'starbucks': 'SBUX',
+    'nike': 'NKE',
+    'boeing': 'BA',
+    'caterpillar': 'CAT',
+    'deere': 'DE',
 }
 
 # ============================================================================
@@ -123,22 +165,50 @@ TICKER_BLACKLIST = frozenset([
     'THE', 'AND', 'FOR', 'ARE', 'WAS', 'NOT', 'BUT', 'CAN', 'ALL', 'NEW',
     'GET', 'SET', 'PUT', 'OUT', 'TO', 'AT', 'IN', 'ON', 'OF', 'BY', 'AS',
     'IS', 'AN', 'OR', 'IF', 'IT', 'BE', 'SO', 'DO', 'UP',
+    'HAS', 'HAD', 'ITS', 'OUR', 'OWN', 'USE', 'MAY', 'ONE', 'TWO',
+    'HOW', 'WHY', 'HIM', 'HER', 'WHO', 'HIS', 'ANY',
 
     # Country codes
     'USA', 'UK', 'EU',
 
     # Business acronyms
     'API', 'CEO', 'CFO', 'CTO', 'IPO', 'ETF', 'SEC', 'FDA',
+    'COO', 'CMO', 'HR', 'PR', 'IR', 'IT', 'AI', 'ML',
+
+    # Technology terms (commonly appear ALL-CAPS in questions)
+    'GPU', 'CPU', 'LLM', 'NLP', 'SaaS', 'PaaS', 'IaaS',
 
     # Financial metrics (could be mistaken for tickers)
     'FCF', 'EBITDA', 'EBIT', 'EPS', 'ROE', 'ROI', 'ROIC', 'CAGR',
     'DCF', 'NPV', 'IRR', 'WACC', 'PE', 'PS', 'PB', 'EV',
+    'ROA', 'ROCE', 'EBITDA', 'NOPAT',
 
     # Fiscal / reporting period abbreviations
     'FY', 'FQ', 'YTD', 'HTD', 'QTD', 'TTM', 'LTM',
+    'QoQ', 'YoY', 'MoM', 'Q1', 'Q2', 'Q3', 'Q4',
 
     # SEC filing / document references
     'MD', 'MDA', 'QA', 'ITEM',
+
+    # Common follow-up words / phrases typed in caps
+    'US', 'vs', 'VS', 'RE', 'NO', 'YES', 'OK',
+])
+
+# ============================================================================
+# Stock Context Keywords
+# ============================================================================
+
+# Keywords that indicate a query is genuinely about a stock/company.
+# Pattern 4 (the aggressive all-caps catch-all) only fires when at least one
+# of these words is present, preventing false positives in follow-up messages.
+STOCK_CONTEXT_KEYWORDS = frozenset([
+    'stock', 'share', 'shares', 'equity', 'ticker', 'symbol',
+    'earnings', 'revenue', 'profit', 'margin', 'valuation',
+    'price', 'chart', 'dcf', 'market cap', 'dividend',
+    'invest', 'investment', 'buy', 'sell', 'hold', 'short',
+    'analyze', 'analysis', 'research', 'report',
+    'quarterly', 'annual', 'fiscal', 'guidance', 'outlook',
+    'trading', 'traded', 'listed', 'exchange',
 ])
 
 # ============================================================================

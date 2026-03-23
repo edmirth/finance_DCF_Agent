@@ -9,8 +9,10 @@ import asyncio
 import logging
 import threading
 import uuid as uuid_mod
+from collections import OrderedDict
 from typing import Optional, AsyncGenerator, Any, Dict, List
 from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,14 +35,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.config import (
     SSE_CHUNK_SIZE, SSE_STREAM_DELAY_SECONDS,
-    CHART_PERIOD_DAYS, CORS_ORIGINS, COMPANY_TICKER_MAP, TICKER_BLACKLIST
+    CHART_PERIOD_DAYS, CORS_ORIGINS, COMPANY_TICKER_MAP, TICKER_BLACKLIST,
+    STOCK_CONTEXT_KEYWORDS,
 )
 from backend.callbacks.streaming import StreamingCallbackHandler
-from backend.database import init_db, get_db
+from backend.database import init_db, get_db, SyncSessionLocal
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
 from backend.project_config import normalize_project_config
 from agents.dcf_agent import create_dcf_agent
-from agents.equity_analyst_agent import create_equity_analyst_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.finance_qa_agent import create_finance_qa_agent
 from agents.market_agent import create_market_agent
@@ -50,13 +52,9 @@ from agents.earnings_agent import create_earnings_agent
 # Load environment variables from parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-# Initialize FastAPI app
-app = FastAPI(title="Financial Analysis API", version="1.0.0")
-
-
-@app.on_event("startup")
-async def on_startup():
-    """Initialize the database on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize resources on startup."""
     await init_db()
     logger.info("Database initialized")
     # Pre-load Chroma embedding model so the ~90MB download happens before first request
@@ -66,6 +64,11 @@ async def on_startup():
         logger.info("ProjectChromaClient initialised")
     except Exception as _e:
         logger.warning(f"ProjectChromaClient pre-load failed (non-fatal): {_e}")
+    yield  # Application runs here
+
+
+# Initialize FastAPI app
+app = FastAPI(title="Financial Analysis API", version="1.0.0", lifespan=lifespan)
 
 
 # Configure CORS
@@ -90,10 +93,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": exc.errors(), "body": body.decode('utf-8')}
     )
 
-# Store active agents (in production, use proper session management)
-agents_cache = {}
+# Store active agents with bounded LRU eviction
+_AGENTS_CACHE_MAX = 100
+agents_cache: OrderedDict = OrderedDict()
 agents_cache_lock = threading.Lock()
 SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "earnings"})
+
+# Hold strong references to fire-and-forget tasks so they aren't GC'd before completion
+_background_tasks: set = set()
+
+
+def _fire_and_forget(coro) -> asyncio.Task:
+    """Schedule a coroutine as a background task, keeping a reference until it completes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 # Map agent types to their fallback methods (when agent_executor is not available)
 AGENT_FALLBACK_METHODS = {
@@ -107,23 +122,28 @@ AGENT_FALLBACK_METHODS = {
 }
 
 
-def extract_ticker_from_query(query: str) -> Optional[str]:
+def extract_ticker_from_query(query: str, is_followup: bool = False) -> Optional[str]:
     """
     Extract stock ticker from user query using smart pattern matching.
     Supports: "AAPL", "$AAPL", "Apple", "Tesla stock", etc.
+
+    For follow-up messages, Pattern 4 (the greedy all-caps catch-all) is only
+    applied when the query contains explicit stock-context keywords.  This
+    prevents false positives like "What about their AI strategy?" mapping to
+    the C3.AI ticker during an ongoing conversation about a different company.
     """
     if not query:
         return None
 
     query_lower = query.lower()
 
-    # Pattern 1: $TICKER format
+    # Pattern 1: $TICKER format — always applies
     dollar_pattern = r'\$([A-Z]{2,5})\b'
     match = re.search(dollar_pattern, query)
     if match:
         return match.group(1).upper()
 
-    # Pattern 2: Explicit ticker with context
+    # Pattern 2: Explicit ticker with context — always applies
     ticker_pattern = r'\b([A-Z]{2,5})\b\s*(?:stock|shares|earnings|analysis|price|chart|valuation)'
     match = re.search(ticker_pattern, query, re.IGNORECASE)
     if match:
@@ -131,18 +151,21 @@ def extract_ticker_from_query(query: str) -> Optional[str]:
         if ticker not in TICKER_BLACKLIST:
             return ticker
 
-    # Pattern 3: Company name mapping
+    # Pattern 3: Company name mapping — always applies
     for company, ticker in COMPANY_TICKER_MAP.items():
         if re.search(r'\b' + company + r'\b', query_lower):
             return ticker
 
-    # Pattern 4: All-caps ticker (2-5 chars) standalone — iterate all matches,
-    # skip blacklisted words, return first valid candidate
-    caps_pattern = r'\b([A-Z]{2,5})\b'
-    for match in re.finditer(caps_pattern, query):
-        ticker = match.group(1)
-        if ticker not in TICKER_BLACKLIST:
-            return ticker
+    # Pattern 4: All-caps ticker (2-5 chars) catch-all.
+    # For follow-up messages this pattern is gated behind a stock-context check
+    # to avoid returning a random ticker for words like "AI", "GS", "HD", etc.
+    has_stock_context = any(kw in query_lower for kw in STOCK_CONTEXT_KEYWORDS)
+    if not is_followup or has_stock_context:
+        caps_pattern = r'\b([A-Z]{2,5})\b'
+        for match in re.finditer(caps_pattern, query):
+            ticker = match.group(1)
+            if ticker not in TICKER_BLACKLIST:
+                return ticker
 
     return None
 
@@ -180,12 +203,10 @@ def _create_agent_instance(agent_type: str, model: str):
     """Create a single agent instance for the requested type."""
     if agent_type == "dcf":
         return create_dcf_agent(model=model)
-    if agent_type == "analyst":
-        return create_equity_analyst_agent(model=model)
-    if agent_type == "graph":
+    if agent_type in ("analyst", "graph"):
         return create_equity_analyst_graph(model=model)
     if agent_type == "research":
-        return create_finance_qa_agent(model=model)
+        return create_finance_qa_agent(model=model, db_session_factory=SyncSessionLocal)
     if agent_type == "market":
         return create_market_agent(model=model)
     if agent_type == "portfolio":
@@ -204,9 +225,14 @@ def get_or_create_agent(agent_type: str, model: str, session_id: Optional[str] =
             return _create_agent_instance(agent_type, model)
 
         with agents_cache_lock:
-            if cache_key not in agents_cache:
-                agents_cache[cache_key] = _create_agent_instance(agent_type, model)
-            return agents_cache[cache_key]
+            if cache_key in agents_cache:
+                agents_cache.move_to_end(cache_key)  # LRU: mark as recently used
+                return agents_cache[cache_key]
+            agent = _create_agent_instance(agent_type, model)
+            agents_cache[cache_key] = agent
+            while len(agents_cache) > _AGENTS_CACHE_MAX:
+                agents_cache.popitem(last=False)  # evict oldest (LRU)
+            return agent
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
@@ -249,7 +275,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
         queue: Async queue for streaming events to SSE response
         is_followup: Whether this is a follow-up question (earnings agent only)
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     callback = StreamingCallbackHandler(queue)
 
     try:
@@ -265,7 +291,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
         # Try to use agent_executor first (preferred method with callbacks)
         if hasattr(agent, 'agent_executor'):
             input_dict = {"input": message}
-            if is_followup:
+            if is_followup and agent_type == "earnings":
                 input_dict["followup"] = True
             response = await loop.run_in_executor(
                 None,
@@ -310,7 +336,7 @@ async def run_project_graph_with_callbacks(
     Final response is placed in queue as {"type": "response", "content": ...}.
     Extracted state (including memory_patch) is written to state_container["state"].
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     graph_instance = adapter.graph_instance
     graph_instance._progress_queue = queue
     graph_instance._progress_loop = loop
@@ -403,24 +429,29 @@ async def generate_follow_up_questions(message: str, response: str, agent_type: 
         "earnings": "earnings analysis and quarterly trends",
     }.get(agent_type, "financial analysis")
 
-    result = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=256,
-        system=(
-            f"You are a follow-up question generator for a {agent_context} tool. "
-            "Generate exactly 3 brief follow-up questions an investor might ask next, "
-            "based on the conversation. Each question should explore a different angle. "
-            "Return only the questions, one per line, no numbering or bullets."
-        ),
-        messages=[
-            {
-                "role": "user",
-                "content": f"User asked: {message}\n\nAssistant responded (excerpt):\n{response[:2000]}",
-            }
-        ],
-    )
+    try:
+        result = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            system=(
+                f"You are a follow-up question generator for a {agent_context} tool. "
+                "Generate exactly 3 brief follow-up questions an investor might ask next, "
+                "based on the conversation. Each question should explore a different angle. "
+                "Return only the questions, one per line, no numbering or bullets."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"User asked: {message}\n\nAssistant responded (excerpt):\n{response[:2000]}",
+                }
+            ],
+        )
+        if not result.content:
+            return []
+        text = result.content[0].text.strip()
+    except Exception:
+        return []
 
-    text = result.content[0].text.strip()
     questions = [q.strip() for q in text.split("\n") if q.strip()]
     return questions[:3]
 
@@ -496,6 +527,7 @@ async def stream_agent_response(
                     break
                 elif event["type"] == "error":
                     yield f"data: {json.dumps({'type': 'error', 'error': event['error']})}\n\n"
+                    task.cancel()
                     break
                 elif event["type"] == "response":
                     collected_response = event["content"]
@@ -506,22 +538,25 @@ async def stream_agent_response(
                 else:
                     yield f"data: {json.dumps(event)}\n\n"
 
-            await task
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
             # 5a. Non-blocking memory update background task
             final_state = state_container.get("state", {})
             memory_patch = final_state.get("memory_patch") or {}
             if memory_patch:
                 try:
-                    asyncio.create_task(_run_memory_update(project_id, memory_patch))
+                    _fire_and_forget(_run_memory_update(project_id, memory_patch))
                 except Exception as _me:
                     logger.warning("Failed to schedule memory update for project %s: %s", project_id, _me)
 
             # 5. Persist with project_id linkage
-            ticker = extract_ticker_from_query(message)
+            ticker = extract_ticker_from_query(message, is_followup=is_followup)
             if persist and collected_response:
                 try:
-                    asyncio.create_task(
+                    _fire_and_forget(
                         _persist_conversation(
                             session_id=session_id,
                             user_message=message,
@@ -556,7 +591,7 @@ async def stream_agent_response(
         yield f"data: {json.dumps({'type': 'start', 'agent': resolved_agent_type})}\n\n"
 
         # Extract ticker from user query and send as metadata
-        ticker = extract_ticker_from_query(message)
+        ticker = extract_ticker_from_query(message, is_followup=is_followup)
         if ticker:
             print(f"[INFO] Detected ticker from query: {ticker}")
             yield f"data: {json.dumps({'type': 'ticker_metadata', 'ticker': ticker})}\n\n"
@@ -614,7 +649,7 @@ async def stream_agent_response(
         # Persist session + messages + optional analysis to DB
         if persist and collected_response:
             try:
-                asyncio.create_task(
+                _fire_and_forget(
                     _persist_conversation(
                         session_id=session_id,
                         user_message=message,
@@ -688,7 +723,7 @@ async def _persist_conversation(
                 )
                 db.add(db_session)
             else:
-                db_session.last_active_at = datetime.utcnow()
+                db_session.last_active_at = datetime.now(timezone.utc)
                 db_session.agent_type = agent_type
 
             # Insert user message
@@ -718,7 +753,7 @@ async def _persist_conversation(
 
             # Auto-save analysis for qualifying agent types
             if agent_type in _ANALYSIS_AGENT_TYPES and ticker:
-                month_str = datetime.utcnow().strftime("%b %Y")
+                month_str = datetime.now(timezone.utc).strftime("%b %Y")
                 agent_label = {
                     "dcf": "DCF",
                     "analyst": "Equity Analyst",
@@ -743,7 +778,7 @@ async def _persist_conversation(
                     id=str(_uuid_mod.uuid4()),
                     project_id=project_id,
                     session_id=sid,
-                    created_at=datetime.utcnow(),
+                    created_at=datetime.now(timezone.utc),
                 ).on_conflict_do_nothing()
                 await db.execute(link_stmt)
 
@@ -760,7 +795,7 @@ async def root():
         "status": "online",
         "service": "Financial Analysis API",
         "version": "1.0.0",
-        "agents": ["dcf", "analyst", "research", "market", "portfolio"]
+        "agents": ["dcf", "analyst", "graph", "research", "market", "portfolio", "earnings"]
     }
 
 
@@ -886,15 +921,15 @@ async def get_stock_chart_compare(tickers: str, period: str = "1M"):
         hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 
         async def load_compare_ticker(tkr: str) -> tuple[str, dict, List[Dict]]:
-            try:
-                quote_data_list, hist_result = await asyncio.gather(
-                    _fetch_json(quote_url, params={"symbol": tkr, "apikey": fmp_key}),
-                    _fetch_json(hist_url, params={"symbol": tkr, "apikey": fmp_key}),
-                    return_exceptions=True,
-                )
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Failed to fetch compare chart data for {tkr}: {e}")
-                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}") from e
+            quote_data_list, hist_result = await asyncio.gather(
+                _fetch_json(quote_url, params={"symbol": tkr, "apikey": fmp_key}),
+                _fetch_json(hist_url, params={"symbol": tkr, "apikey": fmp_key}),
+                return_exceptions=True,
+            )
+
+            if isinstance(quote_data_list, Exception):
+                logger.error(f"Failed to fetch compare chart data for {tkr}: {quote_data_list}")
+                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}")
 
             if not quote_data_list:
                 raise HTTPException(status_code=404, detail=f"No quote data found for {tkr}")
@@ -922,6 +957,9 @@ async def get_stock_chart_compare(tickers: str, period: str = "1M"):
                 "yearHigh": qd.get("yearHigh", 0),
                 "yearLow": qd.get("yearLow", 0),
                 "avgVolume": qd.get("avgVolume", 0),
+                "pe":   qd.get("pe", None),
+                "eps":  qd.get("eps", None),
+                "beta": qd.get("beta", None),
             }
             return tkr, quote_payload, filter_chart_data_by_period(hist_data, period)
 
@@ -1001,14 +1039,14 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
         else:
             hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
 
-        try:
-            quote_data_list, hist_result = await asyncio.gather(
-                _fetch_json(quote_url, params={"symbol": ticker, "apikey": fmp_key}),
-                _fetch_json(hist_url, params={"symbol": ticker, "apikey": fmp_key}),
-                return_exceptions=True,
-            )
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to fetch quote for {ticker}: {e}")
+        quote_data_list, hist_result = await asyncio.gather(
+            _fetch_json(quote_url, params={"symbol": ticker, "apikey": fmp_key}),
+            _fetch_json(hist_url, params={"symbol": ticker, "apikey": fmp_key}),
+            return_exceptions=True,
+        )
+
+        if isinstance(quote_data_list, Exception):
+            print(f"[ERROR] Failed to fetch quote for {ticker}: {quote_data_list}")
             raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {ticker}")
 
         if not quote_data_list or len(quote_data_list) == 0:
@@ -1042,7 +1080,10 @@ async def get_stock_chart(ticker: str, period: str = "1M"):
             "previousClose": quote_data.get("previousClose", 0),
             "yearHigh": quote_data.get("yearHigh", 0),
             "yearLow": quote_data.get("yearLow", 0),
-            "avgVolume": quote_data.get("avgVolume", 0)
+            "avgVolume": quote_data.get("avgVolume", 0),
+            "pe":   quote_data.get("pe", None),
+            "eps":  quote_data.get("eps", None),
+            "beta": quote_data.get("beta", None),
         }
 
         # Log sample of historical data for debugging
@@ -1217,7 +1258,7 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
                 "ticker": m.ticker,
                 "thinking_steps": json.loads(m.thinking_steps) if m.thinking_steps else [],
                 "follow_ups": json.loads(m.follow_ups) if m.follow_ups else [],
-                "chart_specs": m.chart_specs,
+                "chart_specs": json.loads(m.chart_specs) if m.chart_specs else {},
                 "created_at": m.created_at.isoformat(),
             }
             for m in messages
@@ -1234,6 +1275,11 @@ async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Session not found")
     await db.delete(session)
     await db.commit()
+    # Evict any session-scoped agents from cache
+    with agents_cache_lock:
+        stale_keys = [k for k in agents_cache if k.endswith(f"_{session_id}")]
+        for k in stale_keys:
+            del agents_cache[k]
     return Response(status_code=204)
 
 
@@ -1317,7 +1363,7 @@ async def update_analysis(analysis_id: str, patch: AnalysisPatch, db: AsyncSessi
         raise HTTPException(status_code=404, detail="Analysis not found")
     if patch.tags is not None:
         a.tags = json.dumps(patch.tags)
-        a.updated_at = datetime.utcnow()
+        a.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return {"id": a.id, "tags": json.loads(a.tags)}
 
@@ -1594,7 +1640,7 @@ async def update_project(project_id: str, patch: ProjectPatch, db: AsyncSession 
             thesis=next_thesis,
             tickers=next_config.get("tickers"),
         )
-    p.updated_at = datetime.utcnow()
+    p.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return _project_detail(p)
 
@@ -1607,7 +1653,7 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     p.status = "archived"
-    p.updated_at = datetime.utcnow()
+    p.updated_at = datetime.now(timezone.utc)
     await db.commit()
     # Best-effort Chroma cleanup
     try:
@@ -1638,7 +1684,7 @@ async def patch_project_memory(project_id: str, body: ProjectMemoryPatch, db: As
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     p.memory_doc = sync_project_memory(
         body.memory_doc,
         now_iso=now.replace(tzinfo=timezone.utc).isoformat(timespec="seconds"),
@@ -1751,7 +1797,7 @@ async def upload_project_document(
             format_document_summary_entry(file.filename, summary, document_id=doc_id),
             mode="append",
         )
-        p.updated_at = datetime.utcnow()
+        p.updated_at = datetime.now(timezone.utc)
     except Exception as e:
         logger.warning(f"Document summary generation failed for {file.filename}: {e}")
 
@@ -1827,7 +1873,7 @@ async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession
             doc.filename,
             document_id=doc.id,
         )
-        project.updated_at = datetime.utcnow()
+        project.updated_at = datetime.now(timezone.utc)
 
     await db.delete(doc)
     await db.commit()

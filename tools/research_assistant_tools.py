@@ -112,6 +112,17 @@ class QuickFinancialDataTool(BaseTool):
                 else:
                     return f"${val:,.0f}"
 
+            # Helper to format share counts (no $ prefix, switches B/M/K)
+            def format_shares(val):
+                if val is None:
+                    return "N/A"
+                if val >= 1e9:
+                    return f"{val/1e9:.2f}B"
+                elif val >= 1e6:
+                    return f"{val/1e6:.2f}M"
+                else:
+                    return f"{val:,.0f}"
+
             # Process each requested metric
             show_all = 'all' in requested_metrics
 
@@ -125,8 +136,8 @@ class QuickFinancialDataTool(BaseTool):
                 result += f"**Revenue (TTM):** {format_number(key_metrics.get('latest_revenue'))}\n"
 
             if show_all or 'net_income' in requested_metrics:
-                net_income = key_metrics.get('latest_net_income', 0)
-                if net_income:
+                net_income = key_metrics.get('latest_net_income')
+                if net_income is not None:
                     result += f"**Net Income:** {format_number(net_income)}\n"
                 else:
                     result += f"**Net Income:** N/A\n"
@@ -143,16 +154,18 @@ class QuickFinancialDataTool(BaseTool):
             if show_all or 'shares' in requested_metrics:
                 shares = key_metrics.get('shares_outstanding')
                 if shares:
-                    result += f"**Shares Outstanding:** {shares/1e9:.2f}B\n"
+                    result += f"**Shares Outstanding:** {format_shares(shares)}\n"
 
             if show_all or 'pe_ratio' in requested_metrics:
                 price = stock_info.get('current_price') or 0
                 net_income = key_metrics.get('latest_net_income') or 0
-                shares = key_metrics.get('shares_outstanding') or 1  # Use 'or' to handle both None and 0
+                shares = key_metrics.get('shares_outstanding') or 1
                 if price > 0 and net_income > 0 and shares > 0:
                     eps = net_income / shares
                     pe = price / eps
                     result += f"**P/E Ratio:** {pe:.2f}x\n"
+                elif net_income < 0:
+                    result += f"**P/E Ratio:** N/A (negative earnings — company is currently unprofitable)\n"
                 else:
                     result += f"**P/E Ratio:** N/A\n"
 
@@ -435,12 +448,14 @@ class FinancialCalculatorTool(BaseTool):
                     if ps:
                         return f"**P/S Ratio for {ticker}:**\n- Market Cap: ${market_cap/1e9:.2f}B\n- Revenue: ${revenue/1e9:.2f}B\n- **P/S: {ps:.2f}x**"
 
-                # Debt to Equity
-                if 'debt' in calc_lower and 'equity' in calc_lower:
-                    equity = market_cap
+                # Debt to Equity (uses book equity from balance sheet — correct definition)
+                # Exclude when 'ebitda' is also present so "debt/ebitda" doesn't fall in here
+                if 'debt' in calc_lower and 'equity' in calc_lower and 'ebitda' not in calc_lower:
+                    equity = book_equity if book_equity > 0 else market_cap
+                    equity_label = "Book Equity" if book_equity > 0 else "Market Cap (book equity unavailable)"
                     de = debt / equity if equity > 0 else None
                     if de:
-                        return f"**Debt/Equity for {ticker}:**\n- Total Debt: ${debt/1e9:.2f}B\n- Market Cap: ${equity/1e9:.2f}B\n- **D/E: {de:.2f}x**"
+                        return f"**Debt/Equity for {ticker}:**\n- Total Debt: ${debt/1e9:.2f}B\n- {equity_label}: ${equity/1e9:.2f}B\n- **D/E: {de:.2f}x**"
 
                 # ROE (Return on Equity) - FIXED: now uses book equity instead of market cap
                 if 'roe' in calc_lower or 'return on equity' in calc_lower:
@@ -1224,7 +1239,7 @@ class CompareMultipleCompaniesTool(BaseTool):
             # ── revenue_history: multi-line chart over time ──────────────────
             if metric == "revenue_history":
                 hist_map = {}
-                all_years = set()
+                years_per_ticker = []
                 text_lines = []
                 for tick, info, m in company_data:
                     name = info.get('company_name', tick)
@@ -1232,11 +1247,12 @@ class CompareMultipleCompaniesTool(BaseTool):
                     hist_years = m.get('historical_years', [])
                     rev_map = {y: r for y, r in zip(hist_years, hist_rev) if r}
                     hist_map[tick] = {"name": name, "rev_map": rev_map}
-                    all_years.update(rev_map.keys())
+                    years_per_ticker.append(set(rev_map.keys()))
                     if hist_rev:
                         text_lines.append(f"- **{name}** ({tick}): latest revenue ${hist_rev[0]/1e9:.1f}B")
 
-                common_years = sorted(all_years)
+                # Use intersection so every chart row has data for all companies (no gaps)
+                common_years = sorted(set.intersection(*years_per_ticker) if years_per_ticker else set())
                 chart_rows = []
                 for y in common_years:
                     row: dict = {"period": y}

@@ -290,7 +290,13 @@ If a moat type does NOT apply or no data was found, omit it.
 Has {company} raised prices without meaningful customer loss? Give the most recent specific example (product name, price increase %, date) if available.
 
 **Moat Durability**
-Is the moat strengthening, stable, or at risk of erosion? Give one specific reason supporting your assessment."""
+Is the moat strengthening, stable, or at risk of erosion? Give one specific reason supporting your assessment.
+
+**Machine-readable summary (append at the very end of your response, after all other content):**
+```json
+{"moat_rating": "WIDE|NARROW|NONE"}
+```
+Replace WIDE|NARROW|NONE with exactly one of those three values matching your assessment."""
 
             structured = _structure_with_llm(raw, structure_prompt)
             return structured
@@ -370,7 +376,13 @@ Overall Capital Allocation Rating: [Excellent / Good / Fair / Poor] — one sent
 
 **Compensation & Governance**
 - Is pay tied to long-term performance metrics? [Yes/No, brief description]
-- Any governance red flags: [related-party transactions, board independence issues, activist investors]"""
+- Any governance red flags: [related-party transactions, board independence issues, activist investors]
+
+**Machine-readable summary (append at the very end of your response, after all other content):**
+```json
+{"management_quality": "EXCELLENT|GOOD|FAIR|POOR"}
+```
+Replace EXCELLENT|GOOD|FAIR|POOR with exactly one of those four values matching your Overall Capital Allocation Rating and leadership assessment."""
 
             structured = _structure_with_llm(raw, structure_prompt)
             return structured
@@ -383,6 +395,92 @@ Overall Capital Allocation Rating: [Excellent / Good / Fair / Poor] — one sent
         return self._run(company, ticker)
 
 
+class MultiplesValuationInput(BaseModel):
+    """Input for multiples-based valuation tool"""
+    company: str = Field(description="Company name (e.g., Apple Inc)")
+    ticker: str = Field(description="Stock ticker symbol (e.g., AAPL)")
+    sector: str = Field(description="Sector or industry (e.g., Technology Hardware)")
+
+
+class MultiplesValuationTool(BaseTool):
+    """Performs relative valuation using P/E, EV/EBITDA, P/S, and P/B multiples"""
+    name: str = "perform_multiples_valuation"
+    description: str = """Performs relative valuation by comparing the company's current trading
+    multiples against sector peers and computing an implied fair value. Covers:
+    - Current P/E, Forward P/E, EV/EBITDA, P/S, P/B vs. sector median
+    - Implied price per valuation method with assigned weights
+    - Weighted average fair value
+    - Analyst consensus price target and rating breakdown
+
+    Use this to anchor a price target to fundamentals rather than arbitrary multiples."""
+    args_schema: Type[BaseModel] = MultiplesValuationInput
+
+    def _run(self, company: str, ticker: str, sector: str) -> str:
+        """Perform multiples-based valuation"""
+        try:
+            tavily = get_tavily_client()
+
+            query = (
+                f"{company} ({ticker}) valuation multiples 2024 2025: "
+                f"(1) current trailing P/E ratio, forward P/E ratio, EV/EBITDA, Price/Sales, Price/Book for {ticker}, "
+                f"(2) sector median P/E, EV/EBITDA, P/S for {sector} peers — give specific numbers, "
+                f"(3) Wall Street analyst consensus price target for {ticker} — 12-month target, "
+                f"(4) analyst rating breakdown — number of Buy, Hold, Sell ratings, "
+                f"(5) current EPS (TTM and forward estimate), EBITDA, revenue for implied value math. "
+                f"Include specific dollar figures and named sources."
+            )
+
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
+
+            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker}) valuation into a clean, specific multiples analysis. Only use numbers actually found in the source data.
+
+Structure your output exactly as follows:
+
+**Current Multiples vs. Sector**
+| Metric | {ticker} | Sector Median | Premium / Discount |
+|--------|----------|---------------|-------------------|
+| P/E (TTM) | Xx | Xx | +/-X% |
+| Forward P/E | Xx | Xx | +/-X% |
+| EV/EBITDA | Xx | Xx | +/-X% |
+| P/S | Xx | Xx | +/-X% |
+| P/B | Xx | Xx | +/-X% |
+Fill with real data. Write "N/A" only if the metric is genuinely not found in the source.
+
+**Implied Fair Value by Method**
+For each method where you have both the company metric and the peer median, compute an implied price by applying the sector median multiple to the company's own earnings/EBITDA/sales/book. Show your math.
+| Method | Implied Price | Weight |
+|--------|--------------|--------|
+| P/E (sector median applied) | $XXX | 30% |
+| Forward P/E | $XXX | 30% |
+| EV/EBITDA | $XXX | 25% |
+| P/S | $XXX | 15% |
+If a method cannot be computed (missing data), omit that row and redistribute weights proportionally.
+
+**Weighted Fair Value: $XXX.XX**
+State the single weighted average price on its own line in exactly this format: "Weighted Fair Value: $XXX.XX"
+
+**Analyst Consensus**
+- 12-month consensus price target: $XXX
+- Rating breakdown: X Buy / X Hold / X Sell
+- Implied upside from consensus: +/-X%"""
+
+            structured = _structure_with_llm(raw, structure_prompt)
+            return structured
+
+        except Exception as e:
+            logger.error(f"Error in multiples valuation: {e}")
+            return f"Error performing multiples valuation: {str(e)}"
+
+    async def _arun(self, company: str, ticker: str, sector: str) -> str:
+        return self._run(company, ticker, sector)
+
+
 def get_equity_analyst_tools():
     """Return list of all equity analyst tools"""
     from tools.sec_tools import GetSECFilingsTool, AnalyzeSECFilingTool, GetSECFinancialsTool
@@ -391,6 +489,7 @@ def get_equity_analyst_tools():
         CompetitorAnalysisTool(),
         MoatAnalysisTool(),
         ManagementAnalysisTool(),
+        MultiplesValuationTool(),
         GetSECFilingsTool(),
         AnalyzeSECFilingTool(),
         GetSECFinancialsTool(),

@@ -125,7 +125,7 @@ class CalculatePortfolioMetricsTool(BaseTool):
                 market_value = shares * current_price
                 total_cost_position = shares * cost_basis
                 pnl = market_value - total_cost_position
-                pnl_pct = (pnl / total_cost_position * 100) if total_cost_position > 0 else 0
+                pnl_pct = (pnl / total_cost_position * 100) if total_cost_position > 0 else None  # None = zero/unknown cost basis
 
                 positions.append({
                     'ticker': ticker,
@@ -181,22 +181,23 @@ class CalculatePortfolioMetricsTool(BaseTool):
             output += "|--------|--------|-------|--------|-----|-------|\n"
 
             for pos in positions[:5]:
+                pnl_pct_str = f"{pos['pnl_pct']:+.1f}%" if pos['pnl_pct'] is not None else "N/A"
                 output += f"| **{pos['ticker']}** | {pos['shares']:,.0f} | ${pos['market_value']:,.0f} | "
-                output += f"{pos['weight']:.1f}% | ${pos['pnl']:,.0f} | {pos['pnl_pct']:+.1f}% |\n"
+                output += f"{pos['weight']:.1f}% | ${pos['pnl']:,.0f} | {pnl_pct_str} |\n"
 
-            # Winners and Losers
-            winners = sorted([p for p in positions if p['pnl'] > 0], key=lambda x: x['pnl_pct'], reverse=True)[:3]
-            losers = sorted([p for p in positions if p['pnl'] < 0], key=lambda x: x['pnl_pct'])[:3]
+            # Winners and Losers (exclude positions with no cost basis)
+            winners = sorted([p for p in positions if p['pnl'] > 0 and p['pnl_pct'] is not None], key=lambda x: x['pnl_pct'], reverse=True)[:3]
+            losers = sorted([p for p in positions if p['pnl'] < 0 and p['pnl_pct'] is not None], key=lambda x: x['pnl_pct'])[:3]
 
             if winners:
                 output += "\n**Top Winners:**\n"
                 for pos in winners:
-                    output += f"  • {pos['ticker']}: ${pos['pnl']:,.0f} ({pos['pnl_pct']:+.1f}%)\n"
+                    output += f"  • {pos['ticker']}: ${pos['pnl']:,.0f} ({pos['pnl_pct']:+.1f}%)\n"  # pnl_pct guaranteed non-None here
 
             if losers:
                 output += "\n**Top Losers:**\n"
                 for pos in losers:
-                    output += f"  • {pos['ticker']}: ${pos['pnl']:,.0f} ({pos['pnl_pct']:+.1f}%)\n"
+                    output += f"  • {pos['ticker']}: ${pos['pnl']:,.0f} ({pos['pnl_pct']:+.1f}%)\n"  # pnl_pct guaranteed non-None here
 
             output += f"\n**Next Steps:** Use `analyze_diversification` to check sector exposure or `identify_tax_loss_harvesting` for tax optimization."
 

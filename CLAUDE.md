@@ -7,12 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 An AI-powered financial analysis system with seven specialized agents built using LangChain and LangGraph:
 
 1. **DCF Agent** - Fast quantitative valuation using Discounted Cash Flow methodology
-2. **Equity Analyst Agent** - Comprehensive equity research reports (industry, competitors, moat, valuation)
-3. **LangGraph Equity Analyst** - **NEW!** Structured 10-step equity research workflow using LangGraph
-4. **Research Assistant Agent** - Interactive conversational research tool with context memory
-5. **Market Agent** - Market conditions, sentiment, regime classification, and sector analysis
-6. **Portfolio Agent** - Portfolio analysis with performance metrics, diversification, and tax optimization
-7. **Earnings Agent** - Comprehensive earnings analysis with quarterly trends, analyst estimates, surprises, and management commentary from earnings calls
+2. **LangGraph Equity Analyst** - Structured 10-step equity research workflow using LangGraph
+3. **Research Assistant Agent** - Interactive conversational research tool with context memory
+4. **Market Agent** - Market conditions, sentiment, regime classification, and sector analysis
+5. **Portfolio Agent** - Portfolio analysis with performance metrics, diversification, and tax optimization
+6. **Earnings Agent** - Comprehensive earnings analysis with quarterly trends, analyst estimates, surprises, and management commentary from earnings calls
 
 Most agents use the ReAct pattern for autonomous decision-making. The LangGraph Equity Analyst and Earnings Agent use structured graph workflows for deterministic, reproducible analysis.
 
@@ -39,7 +38,7 @@ npm install
 ### Environment Configuration
 Create `.env` file with:
 ```
-OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 FINANCIAL_DATASETS_API_KEY=your_financial_datasets_api_key_here
 PERPLEXITY_API_KEY=your_perplexity_api_key_here
 MASSIVE_API_KEY=your_massive_api_key_here  # Optional, for Market Agent
@@ -91,19 +90,17 @@ python main.py --mode dcf --ticker AAPL
 python main.py --mode dcf --interactive
 
 # Custom model
-python main.py --mode dcf --ticker GOOGL --model gpt-4o
+python main.py --mode dcf --ticker GOOGL --model claude-haiku-4-5-20251001
 ```
 
 ### Equity Research Analysis (Comprehensive Report)
 ```bash
-# Full equity research report (ReAct agent)
-python main.py --mode analyst --ticker AAPL
-
-# LangGraph equity research (structured 10-step workflow)
+# Full equity research report (LangGraph 10-step workflow)
+# --mode analyst and --mode graph are equivalent aliases
 python main.py --mode graph --ticker AAPL
+python main.py --mode analyst --ticker AAPL  # same as graph
 
-# Interactive modes
-python main.py --mode analyst --interactive
+# Interactive mode
 python main.py --mode graph --interactive
 ```
 
@@ -128,7 +125,7 @@ python main.py --mode market --interactive
 python main.py --mode portfolio
 
 # Custom model
-python main.py --mode portfolio --model gpt-4o
+python main.py --mode portfolio --model claude-haiku-4-5-20251001
 ```
 
 ### Default Mode
@@ -156,10 +153,9 @@ finance_dcf_agent/
 │   └── vite.config.ts              # Vite configuration
 ├── agents/              # Agent implementations
 │   ├── dcf_agent.py                    # DCF valuation agent (ReAct)
-│   ├── equity_analyst_agent.py         # Comprehensive research agent (ReAct)
-│   ├── equity_analyst_graph.py         # LangGraph equity analyst (✅ INTEGRATED)
+│   ├── equity_analyst_graph.py         # LangGraph equity analyst (structured 10-step workflow)
 │   ├── earnings_agent.py               # Earnings-focused agent (LangGraph)
-│   ├── research_assistant_agent.py     # Interactive conversational agent
+│   ├── finance_qa_agent.py     # Interactive conversational agent
 │   ├── market_agent.py                 # Market analysis agent
 │   └── portfolio_agent.py              # Portfolio analyzer agent
 ├── tools/               # LangChain tool implementations
@@ -189,18 +185,13 @@ The system uses **specialized agents** that share common infrastructure but have
 - Focus: Fast intrinsic value calculation with web-sourced parameters
 - Pattern: ReAct agent with 10 max iterations
 
-**Equity Analyst Agent** (`agents/equity_analyst_agent.py`)
-- Tools: All DCF tools + `analyze_industry`, `analyze_competitors`, `analyze_moat`
-- Focus: Comprehensive equity research like a professional analyst
-- Pattern: ReAct agent with extended workflow (industry → competitors → moat → valuation)
-
-**LangGraph Equity Analyst** (`agents/equity_analyst_graph.py`) ✅ **NEW**
-- Tools: Same as Equity Analyst Agent
+**LangGraph Equity Analyst** (`agents/equity_analyst_graph.py`)
+- Tools: DCF tools + `analyze_industry`, `analyze_competitors`, `analyze_moat`
 - Focus: Comprehensive equity research with **structured, deterministic workflow**
 - Pattern: LangGraph with 10 fixed steps (company info → financials → industry → competitors → moat → management → DCF → thesis → recommendation → report)
 - Benefits: Reproducible, debuggable, predictable execution order, better progress visibility
 
-**Research Assistant Agent** (`agents/research_assistant_agent.py`)
+**Research Assistant Agent** (`agents/finance_qa_agent.py`)
 - Tools: Financial lookups, calculations, comparisons, news, deep-dive analysis triggers
 - Focus: Interactive exploration with conversation memory
 - Pattern: Conversational agent with context retention and proactive suggestions
@@ -234,8 +225,8 @@ User Query → Agent (LLM) → Tool Selection → Tool Execution → Observation
 1. **Agent Layer** (`agents/*.py`):
    - Creates LangChain ReAct agent with `create_react_agent()`
    - Defines systematic prompt templates with workflow instructions
-   - Manages LLM (ChatOpenAI) and tool integration
-   - Default model: `gpt-5.2` (configurable via `--model`)
+   - Manages LLM (ChatAnthropic) and tool integration
+   - Default model: `claude-sonnet-4-5-20250929` (configurable via `--model`)
 
 2. **Tools Layer** (`tools/*.py`):
    - All tools inherit from LangChain's `BaseTool`
@@ -265,14 +256,17 @@ User Query → Agent (LLM) → Tool Selection → Tool Execution → Observation
 6. Present Bull/Base/Bear scenarios
 7. Investment recommendation (Buy >20% upside, Hold 0-20%, Sell <0%)
 
-**Equity Analyst Agent Workflow** (encoded in `agents/equity_analyst_agent.py:48-120`):
-1. Company overview and business model (`get_stock_info` + `search_web`)
-2. `analyze_industry` - Market size, Porter's 5 Forces, trends, benchmarks
-3. `analyze_competitors` - Top competitors, market share, positioning
-4. `analyze_moat` - Brand, network effects, switching costs, pricing power
-5. Financial analysis (`get_financial_metrics` + `perform_dcf_analysis`)
-6. Management quality assessment (`search_web`)
-7. Bull/Bear case scenarios and investment recommendation
+**LangGraph Equity Analyst Workflow** (10-step, `agents/equity_analyst_graph.py`):
+1. Company info (`get_stock_info`)
+2. Financials (`get_financial_metrics`)
+3. Industry analysis (`analyze_industry`)
+4. Competitor analysis (`analyze_competitors`)
+5. Moat evaluation (`analyze_moat`)
+6. Management quality (`search_web`)
+7. DCF valuation (`perform_dcf_analysis`)
+8. Investment thesis
+9. Recommendation (Buy/Hold/Sell)
+10. Final report
 
 **Research Assistant Features**:
 - Maintains conversation context across queries
@@ -368,24 +362,9 @@ Current versions are compatible:
 - `langchain`: 0.3.27
 - `langgraph`: 0.6.11
 
-#### When to Use `--mode analyst` vs `--mode graph`
+#### `--mode analyst` vs `--mode graph`
 
-Both modes produce comprehensive equity research reports. Choose based on your needs:
-
-**Use `--mode analyst` (ReAct) when:**
-- You want flexible, adaptive analysis
-- You need the agent to make context-aware decisions
-- You're okay with variable execution time and order
-- You want the agent to potentially skip irrelevant steps
-
-**Use `--mode graph` (LangGraph) when:**
-- You need consistent, reproducible results
-- You want to see exactly which step is executing
-- You prefer deterministic execution order
-- You want better debugging and observability
-- You're building automated workflows that need predictability
-
-Both modes use the same tools and provide similar depth of analysis.
+Both flags are equivalent aliases — both run the LangGraph 10-step equity analyst workflow. `--mode analyst` is kept for backwards compatibility.
 
 ## Development Commands
 
@@ -431,7 +410,7 @@ npm run lint
 python main.py --ticker AAPL
 
 # Deep equity research
-python main.py --mode analyst --ticker AAPL
+python main.py --mode graph --ticker AAPL
 
 # Interactive research
 python main.py --mode research
@@ -454,14 +433,14 @@ python test_api.py
 
 ### Using Different Models
 ```bash
-# Default model (gpt-5.2)
-python main.py --mode analyst --ticker AAPL
+# Default model (claude-sonnet-4-5-20250929)
+python main.py --mode graph --ticker AAPL
 
-# Use gpt-4o
-python main.py --mode analyst --ticker AAPL --model gpt-4o
+# Use a faster/cheaper model
+python main.py --mode graph --ticker AAPL --model claude-haiku-4-5-20251001
 
-# Use gpt-4
-python main.py --mode dcf --ticker MSFT --model gpt-4
+# Use Opus for deeper reasoning
+python main.py --mode dcf --ticker MSFT --model claude-opus-4-6
 ```
 
 ### Programmatic Usage
@@ -643,7 +622,7 @@ The `identify_tax_loss_harvesting` tool also accepts:
 - **Error handling**: Tools return error strings rather than raising exceptions
 - **Async methods**: All tools implement `_arun()` but delegate to `_run()` (not truly async)
 - **Max iterations**: ReAct agents limited to 10 iterations by default
-- **Tool usage issues**: Some models may refuse to use tools; try `gpt-4o` if issues occur
+- **Tool usage issues**: Some models may refuse to use tools; try `claude-sonnet-4-5-20250929` or `claude-opus-4-6` if issues occur
 - **Reasoning callback**: `agents/reasoning_callback.py` provides friendly tool descriptions for CLI output
 - **Streaming callback**: `backend/api_server.py` has `StreamingCallbackHandler` for web interface SSE
 - **Portfolio Agent**: Always runs in interactive mode, requires portfolio JSON input format
@@ -764,8 +743,8 @@ def critical_api_call():
 - Try different ticker to test if API is working
 
 ### Agent doesn't use tools / just responds without calling tools
-- Try using `--model gpt-4o` instead of `gpt-4-turbo-preview`
-- Check that OPENAI_API_KEY has sufficient credits
+- Try using `--model claude-haiku-4-5-20251001` for a faster, lighter model
+- Check that ANTHROPIC_API_KEY has sufficient credits
 - Verify prompt includes tool descriptions and usage instructions
 
 ### "API key not found"

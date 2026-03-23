@@ -7,6 +7,7 @@ primarily the 10-year Treasury yield (DGS10) for DCF risk-free rate.
 
 import os
 import time
+import threading
 import logging
 from typing import Optional
 from dotenv import load_dotenv
@@ -15,11 +16,13 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Singleton instance
+# Singleton instance + creation lock
 _fred_client_instance = None
+_fred_singleton_lock = threading.Lock()
 
-# Cache: (value, timestamp)
+# Cache: {key: (value, timestamp)} — guarded by _cache_lock
 _cache: dict = {}
+_cache_lock = threading.Lock()
 CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
@@ -52,10 +55,12 @@ class FredClient:
             logger.info("FRED client not configured (no API key)")
             return None
 
-        # Check cache
+        # Check cache (thread-safe read)
         cache_key = f"fred_{series}"
-        if cache_key in _cache:
-            cached_value, cached_time = _cache[cache_key]
+        with _cache_lock:
+            cached = _cache.get(cache_key)
+        if cached is not None:
+            cached_value, cached_time = cached
             if time.time() - cached_time < CACHE_TTL_SECONDS:
                 logger.info(f"FRED cache hit for {series}: {cached_value}")
                 return cached_value
@@ -69,8 +74,9 @@ class FredClient:
                 value = float(latest) / 100.0
                 logger.info(f"FRED {series}: {latest}% -> {value:.4f}")
 
-                # Cache it
-                _cache[cache_key] = (value, time.time())
+                # Cache it (thread-safe write)
+                with _cache_lock:
+                    _cache[cache_key] = (value, time.time())
                 return value
             else:
                 logger.warning(f"No data returned from FRED for series {series}")
@@ -82,8 +88,10 @@ class FredClient:
 
 
 def get_fred_client() -> FredClient:
-    """Get singleton FRED client instance."""
+    """Get singleton FRED client instance (double-checked locking, thread-safe)."""
     global _fred_client_instance
     if _fred_client_instance is None:
-        _fred_client_instance = FredClient()
+        with _fred_singleton_lock:
+            if _fred_client_instance is None:
+                _fred_client_instance = FredClient()
     return _fred_client_instance

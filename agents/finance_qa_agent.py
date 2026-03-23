@@ -15,6 +15,32 @@ import os
 import re
 import logging
 from typing import Optional, Dict
+
+# Tags that must never appear in user-facing output.
+# <thinking> blocks are internal reasoning and should be removed entirely.
+# <reflection> tags are just wrappers — keep their content but drop the tags.
+# </parameter>, </invoke> etc. are raw Anthropic tool-call XML that can leak
+# when the model mixes tool-call syntax into plain-text output.
+_THINKING_RE = re.compile(r'<thinking>.*?</thinking>', re.DOTALL | re.IGNORECASE)
+_WRAPPER_TAGS_RE = re.compile(
+    r'</?(?:reflection|parameter|invoke|function_calls|function|tool_use'
+    r'|tool_result|antml:[a-z_]+)[^>]*>',
+    re.IGNORECASE
+)
+
+
+def _strip_internal_tags(text: str) -> str:
+    """Remove internal reasoning/tool-call XML tags from agent output.
+
+    - Strips <thinking>…</thinking> blocks entirely (internal chain-of-thought).
+    - Strips <reflection>, </reflection> wrapper tags but keeps their content.
+    - Strips stray tool-call tags: </parameter>, </invoke>, <function_calls>, etc.
+    """
+    text = _THINKING_RE.sub('', text)
+    text = _WRAPPER_TAGS_RE.sub('', text)
+    # Collapse runs of blank lines that stripping may leave behind
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -60,7 +86,14 @@ COMMON_WORDS = {
 class FinanceQAAgent:
     """Interactive Finance Q&A agent with memory and proactive suggestions"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "claude-sonnet-4-5-20250929",
+        show_reasoning: bool = True,
+        project_id: Optional[str] = None,
+        db_session_factory=None,
+    ):
         """
         Initialize the Finance Q&A Agent
 
@@ -68,6 +101,10 @@ class FinanceQAAgent:
             api_key: Anthropic API key (or uses ANTHROPIC_API_KEY env var)
             model: LLM model to use (default: claude-sonnet-4-5-20250929)
             show_reasoning: Whether to show agent reasoning steps (default: True)
+            project_id: Optional project UUID — injected into the prompt so the agent
+                knows which project to use with load_project_document
+            db_session_factory: Optional synchronous SQLAlchemy session factory for
+                LoadProjectDocumentTool to query uploaded project documents
         """
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -75,6 +112,8 @@ class FinanceQAAgent:
 
         self.model_name = model
         self.show_reasoning = show_reasoning
+        self.project_id = project_id
+        self.db_session_factory = db_session_factory
 
         # Initialize LLM for conversational research
         self.llm_base = ChatAnthropic(
@@ -90,9 +129,11 @@ class FinanceQAAgent:
         # No stop-sequence hack needed for Anthropic models
         self.llm = self.llm_base
 
-        # Use only research assistant core tools (quick data, calculations, news, comparisons, date context)
-        # Removed DCF and Equity Analyst tools to reduce tool overload from 13 → 5 tools
-        self.tools = get_research_assistant_tools()
+        # Core research tools + document reading tools (SEC filing fetch, grep, section read)
+        from tools.document_tools import get_document_tools
+        self.tools = get_research_assistant_tools() + get_document_tools(
+            db_session_factory=db_session_factory
+        )
 
         # Set up memory for conversation context.
         # ConversationBufferWindowMemory keeps the last k turns without any LLM
@@ -136,8 +177,13 @@ class FinanceQAAgent:
         current_date = datetime.now().strftime("%B %d, %Y")
         current_year = datetime.now().year
 
+        # Inject project_id hint when available
+        project_hint = ""
+        if self.project_id:
+            project_hint = f"\n**ACTIVE PROJECT ID: {self.project_id}** — Use this value as `project_id` when calling `load_project_document`.\n"
+
         # Build the system message in parts to avoid f-string conflicts with template variables
-        intro = f"""You are a Finance Q&A assistant helping investors with quick data lookups, calculations, and company comparisons.
+        intro = f"""You are a Finance Q&A assistant helping investors with quick data lookups, calculations, and company comparisons.{project_hint}
 
 **YOUR CAPABILITIES:**
 You specialize in:
@@ -169,38 +215,6 @@ multi-line time-series, bar charts, and pie charts. Always call the appropriate 
 **TODAY'S DATE: {current_date}**
 **CURRENT YEAR: {current_year}**
 
-**CRITICAL: EXTERNALIZE YOUR THINKING**
-
-You MUST externalize your reasoning using XML tags so users can follow your thought process.
-
-**BEFORE EVERY ACTION**, wrap your reasoning in <thinking> tags:
-
-<thinking>
-I need to understand what the user is asking. They want to know about [topic].
-Let me break this down:
-- Key entities: [companies, metrics, time periods]
-- What data do I need? [specific data points]
-- Which tool should I use? [tool name and why]
-</thinking>
-
-**AFTER EVERY TOOL RESULT**, reflect using <reflection> tags:
-
-<reflection>
-The data shows [key findings]. This tells me [interpretation].
-Next, I should [next step] because [reasoning].
-</reflection>
-
-**PLANNING FORMAT:**
-
-When you need multiple steps, present your plan:
-
-<thinking>
-To answer this question, I'll follow this plan:
-1. [First action] - using [tool] to get [data]
-2. [Second action] - this will tell us [what]
-3. [Third action] - to complete the analysis
-</thinking>
-
 **TEMPORAL AWARENESS:**
 - Public companies report quarterly results 45-60 days after quarter end
 - Use get_date_context tool to determine what quarterly data is currently available
@@ -210,38 +224,43 @@ To answer this question, I'll follow this plan:
 
 User: "What's Tesla's revenue growth?"
 
-<thinking>
-The user wants Tesla's revenue growth rate. I need to:
-1. Get Tesla's financial data including historical revenue
-2. Calculate the year-over-year growth rate
-Let me start by fetching Tesla's financial metrics...
-</thinking>
-
-[Call get_quick_data tool]
-
-<reflection>
-Tesla's revenue was $96.8B in 2023 vs $81.5B in 2022.
-That's a growth rate of approximately 18.8%.
-I have the data needed to answer the user's question.
-</reflection>
-
-This externalized thinking helps users understand your reasoning process.
+1. Call get_quick_data for TSLA historical revenue.
+2. Calculate year-over-year growth and present the result with key numbers.
 
 **SEC FILING WORKFLOW:**
 
 When users ask about 10-K, 10-Q, MD&A, risk factors, guidance, or anything from an SEC filing:
 
-<thinking>
-The user wants SEC filing content. I should:
-1. Call analyze_sec_filing with the ticker, filing_type ("10-K" or "10-Q"), and sections ("mda", "risk_factors", "business", "guidance", or "all")
-I have this tool available and should use it immediately.
-</thinking>
+1. Call analyze_sec_filing with the ticker, filing_type ("10-K" or "10-Q"), and sections ("mda", "risk_factors", "business", "guidance", or "all").
+2. Summarise the key findings in plain prose.
 
 [Call analyze_sec_filing tool]
 
 **AVAILABLE SEC TOOLS:**
 - `get_sec_filings` — list recent 10-K/10-Q/8-K filings with dates and links
 - `analyze_sec_filing` — fetch and analyze filing content (MD&A, risk factors, guidance, business overview)
+
+**DOCUMENT READING FLOW — for questions about filing content or uploaded documents:**
+
+RULE: When a user asks what a document *says*, do NOT answer from memory. Always fetch and read the actual document first.
+RULE: `analyze_sec_filing` gives a quick pre-structured summary. Use the document tools below when the user wants specific quotes, exact numbers, or a section that the pre-structured summary doesn't cover.
+
+For SEC filings:
+
+Step 1: `fetch_and_cache_filing(ticker, filing_type)` — downloads the filing, returns file path
+Step 2a: `grep_filing(pattern, file_path)` — search for specific topics, keywords, or metrics
+Step 2b: `read_file_section(file_path, start_marker, end_marker)` — read a named section verbatim
+Step 2c: `read_full_filing(file_path)` — read entire document if under 50K characters
+Step 3: `follow_reference(file_path, reference)` — chase "See Note 12" or "Item 1A" style cross-references
+
+For uploaded project documents: `load_project_document(project_id, filename)` → then same Step 2/3 tools.
+
+Example:
+- User asks: "What does Apple's 10-K say about their AI strategy?"
+- Call fetch_and_cache_filing("AAPL", "10-K") → get file path
+- Call grep_filing("artificial intelligence|machine learning", file_path, context_lines=10)
+- Call read_file_section(file_path, "Research and Development", "Sales and Marketing")
+- Answer with real quotes and specific numbers from the filing
 
 **FINAL ANSWER FORMAT:**
 
@@ -264,7 +283,7 @@ Use markdown for structure: **bold** for key metrics, tables for comparisons, `#
 Remember to be helpful, accurate with dates, and stay within your scope of quick research."""
 
         # Tool calling agent doesn't need explicit JSON format instructions
-        # OpenAI handles function calling natively
+        # Anthropic handles function calling natively
         _chart_instructions = (
             "\n\n**CHART PLACEHOLDERS:**\n"
             "Some tool outputs include [CHART_INSTRUCTION: Place {{{{CHART:id}}}} ...].\n"
@@ -274,7 +293,7 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
         system_message = intro + _chart_instructions
 
         # Create tool calling prompt template
-        # This uses OpenAI's native function calling for reliable tool execution
+        # This uses Anthropic's native tool calling for reliable tool execution
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_message),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
@@ -282,7 +301,7 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        # Create tool calling agent (uses OpenAI's native function calling)
+        # Create tool calling agent (uses Anthropic's native tool calling)
         agent = create_tool_calling_agent(
             llm=self.llm,
             tools=self.tools,
@@ -331,14 +350,14 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
             if ticker not in COMMON_WORDS:
                 return ticker
 
-        # Strategy 4: Check for lowercase ticker-like patterns at the end of the message
-        # E.g., "Tell me about aapl" - look for standalone word that looks like a ticker
-        words = message.lower().split()
-        for word in reversed(words):  # Check from end of message first
-            # Remove punctuation
-            clean_word = re.sub(r'[^\w]', '', word)
-            if 2 <= len(clean_word) <= 5 and clean_word.isalpha() and clean_word.upper() not in COMMON_WORDS:
-                return clean_word.upper()
+        # Strategy 4: Lowercase ticker in an explicit "about <ticker>" or "for <ticker>"
+        # context at the end of the message — avoids treating generic English words as tickers.
+        # E.g., "Tell me about aapl" → AAPL, but "Tell me about revenue trends" → None
+        explicit_match = re.search(r'\b(?:about|for|analyze|research|check)\s+([a-z]{1,5})\s*[?.]?$', message.lower())
+        if explicit_match:
+            candidate = explicit_match.group(1).upper()
+            if candidate not in COMMON_WORDS:
+                return candidate
 
         return None
 
@@ -393,6 +412,9 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
             elif not isinstance(output, str):
                 output = str(output) if output else "I couldn't generate a response. Please try again."
 
+            # Strip any internal reasoning/tool-call XML tags that leaked into output
+            output = _strip_internal_tags(output)
+
             return output
 
         except Exception as e:
@@ -423,7 +445,13 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
         }
 
 
-def create_finance_qa_agent(api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> FinanceQAAgent:
+def create_finance_qa_agent(
+    api_key: Optional[str] = None,
+    model: str = "claude-sonnet-4-5-20250929",
+    show_reasoning: bool = True,
+    project_id: Optional[str] = None,
+    db_session_factory=None,
+) -> FinanceQAAgent:
     """
     Factory function to create a Finance Q&A Agent
 
@@ -431,11 +459,20 @@ def create_finance_qa_agent(api_key: Optional[str] = None, model: str = "claude-
         api_key: Anthropic API key (optional, uses env var if not provided)
         model: LLM model to use
         show_reasoning: Whether to display agent reasoning steps (default: True)
+        project_id: Optional project UUID to inject into the agent prompt
+        db_session_factory: Optional synchronous SQLAlchemy session factory for
+            loading uploaded project documents
 
     Returns:
         FinanceQAAgent instance
     """
-    return FinanceQAAgent(api_key=api_key, model=model, show_reasoning=show_reasoning)
+    return FinanceQAAgent(
+        api_key=api_key,
+        model=model,
+        show_reasoning=show_reasoning,
+        project_id=project_id,
+        db_session_factory=db_session_factory,
+    )
 
 
 def interactive_session(model: str = "claude-sonnet-4-5-20250929"):

@@ -8,7 +8,7 @@ Generates equity research reports focusing on:
 - Competitive comparison
 - Investment thesis with BUY/HOLD/SELL rating
 
-7-node workflow: data gathering (parallel) → analysis (1 LLM call) → thesis (1 LLM call) → report
+9-node workflow: data gathering (parallel) → analysis (1 LLM call) → thesis (1 LLM call) → report
 """
 from typing import TypedDict, List, Optional, Annotated
 import operator
@@ -101,7 +101,7 @@ class EarningsAgentExecutorAdapter:
                 with self._state_lock:
                     cached_state = dict(self.last_state) if self.last_state else None
                 if cached_state:
-                    return self._answer_followup(query, config)
+                    return self._answer_followup(query, cached_state, config)
 
             ticker = self._extract_ticker(query)
 
@@ -155,26 +155,30 @@ class EarningsAgentExecutorAdapter:
             logger.error(f"Error in earnings agent: {e}")
             return {"output": f"Error analyzing earnings: {str(e)}"}
 
-    def _answer_followup(self, question: str, config: Optional[dict] = None) -> dict:
+    def _answer_followup(self, question: str, state: dict, config: Optional[dict] = None) -> dict:
         """Answer follow-up using cached analysis state. Single LLM call."""
-        state = self.last_state
         logger.info(f"Answering follow-up for {state['ticker']}: {question[:80]}...")
 
         try:
+            def _safe_field(value: str, limit: int = 3000) -> str:
+                """Return field content only if it looks like real data, not an error string."""
+                text = (value or "")[:limit]
+                return text if text and not text.lower().startswith("error") else "(data unavailable)"
+
             prompt = f"""You are a senior equity research analyst. You just completed a comprehensive
 earnings analysis for {state['company_name']} ({state['ticker']}).
 
 ANALYSIS CONTEXT:
-{state['comprehensive_analysis']}
+{_safe_field(state['comprehensive_analysis'])}
 
 EARNINGS DATA:
-{state['earnings_history'][:3000]}
+{_safe_field(state['earnings_history'])}
 
 MANAGEMENT GUIDANCE:
-{state['earnings_guidance'][:3000]}
+{_safe_field(state['earnings_guidance'])}
 
 INVESTMENT THESIS:
-{state['investment_thesis']}
+{_safe_field(state['investment_thesis'])}
 
 The investor now asks: {question}
 
@@ -329,13 +333,13 @@ class EarningsAgent:
     """
     LangGraph-based earnings research agent.
 
-    7-node workflow:
+    9-node workflow:
     1. Fetch company info
-    2-4. Parallel: Fetch earnings history, analyst estimates, surprises+transcripts+peers
-    5. Aggregate (sync point)
-    6. Comprehensive analysis (1 LLM call)
-    7. Investment thesis + rating (1 LLM call)
-    8. Generate report
+    2-5. Parallel: Fetch earnings history, analyst estimates, surprises+transcripts+peers, SEC filings
+    6. Aggregate (sync point)
+    7. Comprehensive analysis (1 LLM call)
+    8. Investment thesis + rating (1 LLM call)
+    9. Generate report
     """
 
     def __init__(self, model: str = "claude-sonnet-4-5-20250929"):
@@ -426,7 +430,12 @@ class EarningsAgent:
         workflow.add_edge("fetch_sec_filings", "aggregate_data")
 
         # Phase 2: Sequential analysis → thesis → report
-        workflow.add_edge("aggregate_data", "comprehensive_analysis")
+        # Route from aggregate: skip LLM nodes entirely if critical data is missing
+        workflow.add_conditional_edges(
+            "aggregate_data",
+            self._route_after_aggregate,
+            {"analyze": "comprehensive_analysis", "error": "generate_report"},
+        )
         workflow.add_edge("comprehensive_analysis", "develop_thesis")
         workflow.add_edge("develop_thesis", "generate_report")
         workflow.add_edge("generate_report", END)
@@ -536,7 +545,7 @@ class EarningsAgent:
             logger.info(f"  → Earnings surprises fetched")
 
             self._emit_progress("fetch_guidance_and_news", "sub_progress", "Reading earnings call transcripts")
-            insights_tool = EarningsCallInsightsTool()
+            insights_tool = EarningsCallInsightsTool(model=self.model)
             result["earnings_guidance"] = insights_tool._run(ticker=state["ticker"], quarters=2)
             logger.info(f"  → Earnings call insights fetched")
 
@@ -602,6 +611,20 @@ class EarningsAgent:
     # Node 6: Aggregate (sync point)
     # ========================================================================
 
+    def _route_after_aggregate(self, state: EarningsAnalysisState) -> str:
+        """Route to analysis if critical data is available, otherwise skip to report."""
+        has_company = bool(state.get("company_name"))
+        has_price = state.get("current_price", 0) > 0
+        if not has_company or not has_price:
+            logger.warning(
+                f"Critical data missing for {state['ticker']} "
+                f"(company_name={state.get('company_name')!r}, "
+                f"current_price={state.get('current_price')}). "
+                "Skipping LLM analysis nodes."
+            )
+            return "error"
+        return "analyze"
+
     def aggregate_data(self, state: EarningsAnalysisState) -> dict:
         logger.info("[6/8] All data gathered, ready for analysis")
 
@@ -615,6 +638,25 @@ class EarningsAgent:
             "sec_filings": bool(state.get("sec_filings_summary")),
         }
         logger.info(f"  → Data: {has}")
+
+        # If critical data is absent, pre-fill analysis fields so generate_report
+        # receives an informative error instead of blank sections.
+        has_company = bool(state.get("company_name"))
+        has_price = state.get("current_price", 0) > 0
+        if not has_company or not has_price:
+            ticker = state["ticker"]
+            reason = []
+            if not has_company:
+                reason.append("company information could not be retrieved")
+            if not has_price:
+                reason.append("current price data is unavailable")
+            msg = f"Analysis unavailable for {ticker}: {' and '.join(reason)}."
+            return {
+                "comprehensive_analysis": msg,
+                "investment_thesis": msg,
+                "rating": "N/A",
+                "errors": [msg],
+            }
 
         return {}
 
@@ -802,15 +844,21 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
 
             # Price target
             result["price_target"] = 0.0
-            price_pattern = r'\$(\d+(?:\.\d{2})?)'
+            # Match dollar amounts not immediately followed by a financial magnitude
+            # suffix (B/M/T/K or billion/million/trillion) to avoid picking up
+            # revenue or market cap figures as per-share price targets.
+            price_pattern = r'\$(\d+(?:\.\d{2})?)(?!\s*(?:[BMTKbmtk]|billion|million|trillion)\b)'
             for line in thesis_text.split('\n'):
                 if 'TARGET' in line.upper() or 'PRICE TARGET' in line.upper():
                     prices_in_line = re.findall(price_pattern, line)
                     if prices_in_line:
-                        result["price_target"] = float(prices_in_line[0])
-                        break
+                        candidate = float(prices_in_line[0])
+                        if candidate > 0:
+                            result["price_target"] = candidate
+                            break
             else:
-                # Fallback: first reasonable price in the text
+                # Fallback: first per-share-sized price in the text (excludes
+                # magnitude-suffixed figures like $125B or $3M)
                 for p in re.findall(price_pattern, thesis_text):
                     p_float = float(p)
                     if state['current_price'] > 0 and 0.5 * state['current_price'] < p_float < 3.0 * state['current_price']:
@@ -861,7 +909,7 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             return {
                 "investment_thesis": "Error developing investment thesis",
                 "rating": "HOLD",
-                "price_target": state['current_price'],
+                "price_target": state['current_price'] if state['current_price'] > 0 else 0.0,
                 "key_catalysts": ["Unable to determine catalysts"],
                 "key_risks": ["Unable to determine risks"],
                 "errors": [f"Thesis error: {str(e)}"],
@@ -888,11 +936,12 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             if state['errors']:
                 errors_md = "\n## Analysis Notes\n\n" + "\n".join(f"- {e}" for e in state['errors']) + "\n"
 
-            report = f"""# {state['company_name']} ({state['ticker']}) — Earnings Research Report
+            display_name = state['company_name'] or state['ticker']
+            report = f"""# {display_name} ({state['ticker']}) — Earnings Research Report
 
 **{state['sector']}** | {state['industry']} | {time.strftime('%B %d, %Y')}
 
-**Rating:** {state.get('rating', 'N/A')} &nbsp;|&nbsp; **Price Target (12M):** ${state['price_target']:.2f} &nbsp;|&nbsp; **Current Price:** ${state['current_price']:.2f} &nbsp;|&nbsp; **Implied Return:** {upside_pct:+.1f}% &nbsp;|&nbsp; **Market Cap:** ${state['market_cap']/1e9:.2f}B
+**Rating:** {state.get('rating', 'N/A')} &nbsp;|&nbsp; **Price Target (12M):** ${state['price_target']:.2f} &nbsp;|&nbsp; **Current Price:** ${state['current_price']:.2f} &nbsp;|&nbsp; **Implied Return:** {upside_pct:+.1f}% &nbsp;|&nbsp; **Market Cap:** {"${:.2f}B".format(state['market_cap']/1e9) if state['market_cap'] > 0 else "N/A"}
 
 ---
 

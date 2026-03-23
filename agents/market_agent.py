@@ -6,6 +6,7 @@ Provides comprehensive market overview to inform investment decisions.
 """
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.memory import ConversationBufferWindowMemory
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools.market_tools import get_market_tools
@@ -42,12 +43,40 @@ You are an expert market strategist who provides thorough, well-researched analy
 - get_sector_rotation: Detailed sector performance and rotation analysis
 - get_market_news: Latest market news and developments
 - classify_market_regime: In-depth market regime classification
+- get_macro_context: Treasury yields, yield curve (inversion status), Fed funds rate, CPI, GDP growth
+- get_sentiment_score: Composite 0-100 Fear & Greed score built from 5 weighted signals (VIX level, VIX trend, market momentum, breadth, new highs/lows)
+- get_historical_context: 52-week historical context for VIX, S&P 500, and Nasdaq — current value, 52W high/low, and percentile rank
 
-*Stock Screening Tools (NEW):*
-- screen_stocks: Custom screening with flexible criteria (revenue, P/E, profitability, debt)
+*Stock Screening Tools:*
+- screen_stocks: Custom screening with flexible criteria (revenue, P/E, profitability, debt, revenue growth)
 - get_value_stocks: Pre-filtered value opportunities (low P/E < 15, profitable, large cap)
 - get_growth_stocks: Pre-filtered growth opportunities (strong revenue, profitable)
 - get_dividend_stocks: Pre-filtered dividend-paying companies (DPS > 0, profitable)
+
+**SENTIMENT SCORE WORKFLOW:**
+Always call get_sentiment_score when users ask about:
+- "What is market sentiment?"
+- "Fear and greed index"
+- "How is the market feeling?"
+- "Is the market greedy or fearful?"
+- During a full daily briefing (always include alongside get_market_overview)
+The sentiment score is the FIRST thing to show in a daily briefing — it sets the tone for everything else.
+
+**MACRO CONTEXT WORKFLOW:**
+Always call get_macro_context when users ask about:
+- Interest rates, Fed policy, rate cuts/hikes
+- Yield curve, recession signals
+- Inflation, CPI readings
+- "What's the macro environment?"
+- During a full daily briefing (combine with get_market_overview)
+
+**HISTORICAL CONTEXT WORKFLOW:**
+Always call get_historical_context when users ask about:
+- "Is the market cheap or expensive vs recent history?"
+- "Where does VIX sit historically?"
+- "How does today's level compare to the 52-week range?"
+- "Is volatility elevated or suppressed?"
+- During a full daily briefing (adds depth to every metric)
 
 **OUTPUT FORMATTING:**
 - Start with an executive summary paragraph
@@ -166,12 +195,21 @@ class MarketAnalysisAgent:
         # Get market analysis tools
         self.tools = get_market_tools()
 
+        # Initialize conversation memory (keep last 8 exchanges)
+        self.memory = ConversationBufferWindowMemory(
+            k=8,
+            memory_key="chat_history",
+            return_messages=True,
+            output_key="output",
+        )
+
         # Initialize reasoning callback
         self.reasoning_callback = StreamingReasoningCallback(verbose=show_reasoning)
 
         # Create chat prompt with tool calling pattern
         prompt = ChatPromptTemplate.from_messages([
             ("system", MARKET_AGENT_PROMPT),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
@@ -189,8 +227,13 @@ class MarketAnalysisAgent:
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=10
+            max_iterations=10,
+            memory=self.memory,
         )
+
+    def reset_conversation(self) -> None:
+        """Clear conversation memory"""
+        self.memory.clear()
 
     def analyze(self, query: str) -> str:
         """
@@ -325,32 +368,25 @@ class MarketAnalysisAgent:
         Returns:
             Daily market briefing
         """
-        query = """Provide a comprehensive daily market briefing covering:
+        query = """Provide a comprehensive daily market briefing. Call these tools in order:
+        1. get_sentiment_score — lead with the Fear & Greed score to set the tone
+        2. get_market_overview — indices, VIX, breadth, regime
+        3. get_historical_context — 52-week percentile context for VIX and indices
+        4. get_sector_rotation — leading and lagging sectors
+        5. get_macro_context — yield curve, Fed rate, inflation
+        6. get_market_news — key catalysts and headlines
 
-        **MARKET OVERVIEW**
-        - Major indices performance
-        - Market breadth and internals
-        - Volatility levels
+        Structure the output as:
 
-        **SECTOR ROTATION**
-        - Leading and lagging sectors
-        - Rotation patterns (cyclical vs defensive, growth vs value)
+        **SENTIMENT** — Fear & Greed score with label and component breakdown
+        **MARKET OVERVIEW** — indices, VIX, regime classification
+        **HISTORICAL CONTEXT** — where each metric sits vs its 52-week range
+        **SECTOR ROTATION** — leaders, laggards, rotation signals
+        **MACRO CONTEXT** — rates, yield curve, inflation
+        **NEWS & CATALYSTS** — market-moving developments
+        **INVESTOR TAKEAWAYS** — specific actionable positioning recommendations
 
-        **MARKET REGIME**
-        - Current regime classification (BULL/BEAR/NEUTRAL)
-        - Risk appetite (RISK_ON/RISK_OFF)
-
-        **NEWS & CATALYSTS**
-        - Key market-moving news
-        - Economic developments
-
-        **INVESTOR TAKEAWAYS**
-        - What this means for portfolio positioning
-        - Specific actionable recommendations
-        - Key risks to monitor
-
-        Format this as a professional morning briefing that an investor would read
-        before markets open. Be concise but comprehensive.
+        Format as a professional morning briefing. Be comprehensive but analytical — every number needs context.
         """
         return self.analyze(query)
 

@@ -13,12 +13,30 @@ import requests
 import logging
 from dotenv import load_dotenv
 from shared.tavily_client import get_tavily_client, EARNINGS_DOMAINS
+from shared.retry_utils import retry_with_backoff, RetryConfig
 
 # Load environment variables
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# FMP retry policy: matches CLAUDE.md spec (max 3, base 2s, max 60s)
+_FMP_RETRY = RetryConfig(max_attempts=3, base_delay=2.0, max_delay=60.0)
+
+
+@retry_with_backoff(_FMP_RETRY)
+def _fmp_get(url: str, params: dict, timeout: int = 10) -> requests.Response:
+    """Make an FMP API GET request, retrying on 429 and 5xx errors only.
+
+    Raises HTTPError for 429/5xx so the retry decorator kicks in.
+    Returns the response for all other status codes (caller handles 4xx).
+    """
+    response = requests.get(url, params=params, timeout=timeout)
+    # Only raise for retryable errors — let callers handle 4xx manually
+    if response.status_code == 429 or response.status_code >= 500:
+        response.raise_for_status()
+    return response
 
 
 # ============================================================================
@@ -149,6 +167,9 @@ class GetQuarterlyEarningsTool(BaseTool):
             logger.error(f"Error in get_quarterly_earnings: {e}")
             return f"Error fetching quarterly earnings for {ticker}: {str(e)}"
 
+
+    async def _arun(self, ticker: str, quarters: int = 8) -> str:
+        return self._run(ticker, quarters)
     def _format_quarterly_earnings(self, data: Dict, ticker: str, quarters: int) -> str:
         """Format quarterly data into readable analysis"""
         income_statements = data.get("income_statements", [])
@@ -163,7 +184,7 @@ class GetQuarterlyEarningsTool(BaseTool):
 
         # Header
         output.append(f"{'Quarter':<12} {'Revenue ($M)':<15} {'YoY%':<10} {'Net Income':<15} {'EPS':<10} {'Op Margin%':<12}")
-        output.append("-" * 70)
+        output.append("")
 
         # Process each quarter
         for i, stmt in enumerate(income_statements[:quarters]):
@@ -191,7 +212,7 @@ class GetQuarterlyEarningsTool(BaseTool):
         # Add cash flow summary
         output.append("")
         output.append("CASH FLOW SUMMARY:")
-        output.append("-" * 80)
+        output.append("")
 
         for i, cf_stmt in enumerate(cash_flow_statements[:quarters]):
             quarter = cf_stmt.get("fiscal_period", "Unknown")
@@ -206,7 +227,7 @@ class GetQuarterlyEarningsTool(BaseTool):
         # Growth trend analysis
         output.append("")
         output.append("KEY INSIGHTS:")
-        output.append("-" * 80)
+        output.append("")
 
         # Calculate average growth rates
         if len(income_statements) >= 5:
@@ -215,16 +236,18 @@ class GetQuarterlyEarningsTool(BaseTool):
 
             if four_q_ago:
                 yoy_avg = ((recent_q - four_q_ago) / four_q_ago) * 100
-                output.append(f"Average YoY Revenue Growth: {yoy_avg:.1f}%")
+                output.append(f"Latest Quarter YoY Revenue Growth: {yoy_avg:.1f}%")
 
-        # Margin trend
+        # Margin trend (only when both endpoints have positive revenue)
         if len(income_statements) >= 2:
-            recent_margin = (income_statements[0].get("operating_income", 0) or 0) / (income_statements[0].get("revenue", 1) or 1) * 100
-            older_margin = (income_statements[-1].get("operating_income", 0) or 0) / (income_statements[-1].get("revenue", 1) or 1) * 100
-            margin_change = recent_margin - older_margin
-
-            trend = "expanding" if margin_change > 0 else "contracting"
-            output.append(f"Operating Margin Trend: {trend} ({margin_change:+.1f} percentage points)")
+            recent_rev = income_statements[0].get("revenue", 0) or 0
+            older_rev = income_statements[-1].get("revenue", 0) or 0
+            if recent_rev > 0 and older_rev > 0:
+                recent_margin = (income_statements[0].get("operating_income", 0) or 0) / recent_rev * 100
+                older_margin = (income_statements[-1].get("operating_income", 0) or 0) / older_rev * 100
+                margin_change = recent_margin - older_margin
+                trend = "expanding" if margin_change > 0 else "contracting"
+                output.append(f"Operating Margin Trend: {trend} ({margin_change:+.1f} percentage points)")
 
         return "\n".join(output)
 
@@ -263,24 +286,38 @@ class GetAnalystEstimatesTool(BaseTool):
             logger.error(f"Error in get_analyst_estimates: {e}")
             return f"Error fetching analyst estimates for {ticker}: {str(e)}"
 
+
+    async def _arun(self, ticker: str) -> str:
+        return self._run(ticker)
+
     def _fetch_from_fmp(self, ticker: str, api_key: str) -> str:
         """Fetch analyst estimates from FMP /stable/analyst-estimates endpoint"""
         try:
             base_url = "https://financialmodelingprep.com/stable/analyst-estimates"
 
             # Fetch quarterly estimates (forward quarters)
-            quarterly_resp = requests.get(base_url, params={
+            quarterly_resp = _fmp_get(base_url, params={
                 "symbol": ticker, "period": "quarter", "limit": 6, "apikey": api_key
-            }, timeout=10)
-            quarterly_resp.raise_for_status()
+            })
+            if quarterly_resp.status_code != 200:
+                logger.warning(f"FMP analyst estimates returned {quarterly_resp.status_code} for {ticker}, falling back")
+                return self._search_analyst_estimates(ticker)
             quarterly_data = quarterly_resp.json()
+            if not isinstance(quarterly_data, list):
+                logger.warning(f"Unexpected FMP analyst estimates format for {ticker}, falling back")
+                return self._search_analyst_estimates(ticker)
 
             # Fetch annual estimates (forward years)
-            annual_resp = requests.get(base_url, params={
+            annual_resp = _fmp_get(base_url, params={
                 "symbol": ticker, "period": "annual", "limit": 3, "apikey": api_key
-            }, timeout=10)
-            annual_resp.raise_for_status()
-            annual_data = annual_resp.json()
+            })
+            if annual_resp.status_code != 200:
+                logger.warning(f"FMP annual estimates returned {annual_resp.status_code} for {ticker}")
+                annual_data = []
+            else:
+                annual_data = annual_resp.json()
+                if not isinstance(annual_data, list):
+                    annual_data = []
 
             if not quarterly_data and not annual_data:
                 logger.warning(f"No FMP analyst estimates for {ticker}, using web search fallback")
@@ -298,9 +335,9 @@ class GetAnalystEstimatesTool(BaseTool):
         output.append("")
 
         output.append("**Forward Quarterly Estimates:**")
-        output.append("-" * 70)
+        output.append("")
         output.append(f"{'Period':<15} {'Revenue Est ($M)':<20} {'EPS Est':<15} {'# Analysts':<12}")
-        output.append("-" * 80)
+        output.append("")
 
         for estimate in data[:4]:
             date = estimate.get("date", "Unknown")
@@ -316,7 +353,7 @@ class GetAnalystEstimatesTool(BaseTool):
             latest = data[0]
             output.append("")
             output.append("CONSENSUS SUMMARY:")
-            output.append("-" * 80)
+            output.append("")
             output.append(f"Next Quarter EPS: ${latest.get('estimatedEpsAvg', 0):.2f}")
             output.append(f"Next Quarter Revenue: ${(latest.get('estimatedRevenueAvg', 0) or 0) / 1_000_000:,.1f}M")
             output.append(f"Analysts Covering: {latest.get('numberAnalystEstimatedRevenue', 0)}")
@@ -331,9 +368,9 @@ class GetAnalystEstimatesTool(BaseTool):
         # Quarterly estimates
         if quarterly:
             output.append("**Forward Quarterly Estimates:**")
-            output.append("-" * 90)
+            output.append("")
             output.append(f"{'Period':<15} {'Revenue Avg ($M)':<20} {'Rev High ($M)':<18} {'EPS Avg':<12} {'EPS High':<12} {'# Analysts':<10}")
-            output.append("-" * 90)
+            output.append("")
 
             for est in quarterly[:6]:
                 date = est.get("date", "Unknown")
@@ -351,9 +388,9 @@ class GetAnalystEstimatesTool(BaseTool):
         if annual:
             output.append("")
             output.append("FORWARD ANNUAL ESTIMATES:")
-            output.append("-" * 90)
+            output.append("")
             output.append(f"{'Period':<15} {'Revenue Avg ($M)':<20} {'Rev High ($M)':<18} {'EPS Avg':<12} {'EPS High':<12} {'# Analysts':<10}")
-            output.append("-" * 90)
+            output.append("")
 
             for est in annual[:3]:
                 date = est.get("date", "Unknown")
@@ -372,7 +409,7 @@ class GetAnalystEstimatesTool(BaseTool):
             latest = quarterly[0]
             output.append("")
             output.append("CONSENSUS SUMMARY (Next Quarter):")
-            output.append("-" * 80)
+            output.append("")
             output.append(f"EPS Estimate:  ${latest.get('epsAvg', 0):.2f}  (Low: ${latest.get('epsLow', 0):.2f}  High: ${latest.get('epsHigh', 0):.2f})")
             rev_avg = (latest.get('revenueAvg', 0) or 0) / 1e6
             rev_low = (latest.get('revenueLow', 0) or 0) / 1e6
@@ -387,7 +424,7 @@ class GetAnalystEstimatesTool(BaseTool):
         # Append chart block
         try:
             chart_data_list = []
-            for est in quarterly:
+            for est in reversed(quarterly):
                 date = est.get("date", "")
                 eps_avg = est.get("epsAvg", 0) or 0
                 eps_high = est.get("epsHigh", 0) or 0
@@ -470,6 +507,10 @@ class GetEarningsSurprisesTool(BaseTool):
             logger.error(f"Error in get_earnings_surprises: {e}")
             return f"Error fetching earnings surprises for {ticker}: {str(e)}"
 
+
+    async def _arun(self, ticker: str, quarters: int = 8) -> str:
+        return self._run(ticker, quarters)
+
     def _fetch_from_fmp(self, ticker: str, api_key: str, quarters: int) -> str:
         """Fetch historical earnings surprises from FMP /stable/earnings endpoint"""
         try:
@@ -480,11 +521,13 @@ class GetEarningsSurprisesTool(BaseTool):
                 "apikey": api_key
             }
 
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
+            response = _fmp_get(url, params=params)
+            if response.status_code != 200:
+                logger.warning(f"FMP earnings returned {response.status_code} for {ticker}, falling back")
+                return self._search_earnings_surprises(ticker, quarters)
             all_data = response.json()
 
-            if not all_data:
+            if not isinstance(all_data, list) or not all_data:
                 logger.warning(f"No FMP earnings data for {ticker}, using web search fallback")
                 return self._search_earnings_surprises(ticker, quarters)
 
@@ -500,11 +543,13 @@ class GetEarningsSurprisesTool(BaseTool):
             # Append chart block
             try:
                 chart_data_list = []
-                for item in historical[:quarters]:
+                for item in reversed(historical[:quarters]):
                     period = item.get("date", "")
                     eps_actual = item.get("epsActual") or 0
                     eps_estimated = item.get("epsEstimated") or 0
-                    beat = eps_actual >= eps_estimated
+                    # Use same 1% threshold as the text summary for consistency
+                    surprise_pct = ((eps_actual - eps_estimated) / abs(eps_estimated) * 100) if eps_estimated else 0
+                    beat = surprise_pct > 1
                     chart_data_list.append({"period": period, "eps_actual": eps_actual, "eps_estimate": eps_estimated, "beat": beat})
                 if chart_data_list:
                     chart_id = f"earnings_surprises_{ticker.upper()}"
@@ -539,7 +584,7 @@ class GetEarningsSurprisesTool(BaseTool):
         output.append("")
 
         output.append(f"{'Date':<12} {'Actual EPS':<15} {'Est EPS':<15} {'Surprise':<15} {'Surprise %':<12}")
-        output.append("-" * 70)
+        output.append("")
 
         beats = 0
         misses = 0
@@ -599,7 +644,7 @@ class GetEarningsSurprisesTool(BaseTool):
         output = [f"## Earnings Surprises: {ticker}\n"]
         output.append("")
         output.append(f"{'Date':<12} {'Actual EPS':<15} {'Est EPS':<15} {'Surprise':<15} {'Surprise %':<12}")
-        output.append("-" * 60)
+        output.append("")
 
         beats = 0
         misses = 0
@@ -706,6 +751,9 @@ class AnalyzeEarningsGuidanceTool(BaseTool):
             logger.error(f"Error analyzing guidance: {e}")
             return f"Error analyzing earnings guidance for {ticker}: {str(e)}"
 
+    async def _arun(self, ticker: str) -> str:
+        return self._run(ticker)
+
 
 # ============================================================================
 # Tool 5: Compare Peer Earnings
@@ -757,6 +805,9 @@ class ComparePeerEarningsTool(BaseTool):
             logger.error(f"Error in peer comparison: {e}")
             return f"Error comparing peer earnings for {ticker}: {str(e)}"
 
+    async def _arun(self, ticker: str, peers: Optional[List[str]] = None) -> str:
+        return self._run(ticker, peers)
+
 
 # ============================================================================
 # Tool 6: Get Price Targets (NEW)
@@ -787,7 +838,7 @@ class GetPriceTargetTool(BaseTool):
                 try:
                     url = "https://financialmodelingprep.com/stable/price-target-consensus"
                     params = {"symbol": ticker, "apikey": fmp_key}
-                    response = requests.get(url, params=params, timeout=10)
+                    response = _fmp_get(url, params=params)
                     response.raise_for_status()
                     data = response.json()
                     if data and isinstance(data, list) and len(data) > 0:
@@ -811,6 +862,9 @@ class GetPriceTargetTool(BaseTool):
             logger.error(f"Error in get_price_targets: {e}")
             return f"Error fetching price targets for {ticker}: {str(e)}"
 
+
+    async def _arun(self, ticker: str) -> str:
+        return self._run(ticker)
     def _format_price_targets(self, data: Dict, ticker: str) -> str:
         """Format price target data"""
         output = [f"## Analyst Price Targets: {ticker}\n"]
@@ -822,7 +876,7 @@ class GetPriceTargetTool(BaseTool):
         target_median = data.get("targetMedian", 0)
 
         output.append("PRICE TARGET SUMMARY:")
-        output.append("-" * 80)
+        output.append("")
         output.append(f"Target High:       ${target_high:>8.2f}")
         output.append(f"Target Median:     ${target_median:>8.2f}")
         output.append(f"Target Consensus:  ${target_consensus:>8.2f}")
@@ -873,7 +927,7 @@ class GetAnalystRatingsTool(BaseTool):
                 try:
                     url = "https://financialmodelingprep.com/stable/grades"
                     params = {"symbol": ticker, "limit": limit, "apikey": fmp_key}
-                    response = requests.get(url, params=params, timeout=10)
+                    response = _fmp_get(url, params=params)
                     response.raise_for_status()
                     data = response.json()
                     if data and isinstance(data, list) and len(data) > 0:
@@ -897,13 +951,16 @@ class GetAnalystRatingsTool(BaseTool):
             logger.error(f"Error in get_analyst_ratings: {e}")
             return f"Error fetching analyst ratings for {ticker}: {str(e)}"
 
+
+    async def _arun(self, ticker: str, limit: int = 15) -> str:
+        return self._run(ticker, limit)
     def _format_analyst_ratings(self, data: List[Dict], ticker: str) -> str:
         """Format analyst ratings data"""
         output = [f"## Recent Analyst Ratings: {ticker}\n"]
         output.append("")
 
         output.append(f"{'Date':<12} {'Firm':<25} {'Previous':<15} {'New Grade':<15} {'Action':<10}")
-        output.append("-" * 70)
+        output.append("")
 
         upgrades = 0
         downgrades = 0
@@ -934,7 +991,7 @@ class GetAnalystRatingsTool(BaseTool):
         if total > 0:
             output.append("")
             output.append("RATING SUMMARY:")
-            output.append("-" * 80)
+            output.append("")
             output.append(f"Upgrades:   {upgrades:>3} ({upgrades/total*100:>5.1f}%)")
             output.append(f"Maintains:  {maintains:>3} ({maintains/total*100:>5.1f}%)")
             output.append(f"Downgrades: {downgrades:>3} ({downgrades/total*100:>5.1f}%)")
@@ -963,6 +1020,7 @@ class EarningsCallInsightsTool(BaseTool):
     """Tool for analyzing earnings call transcripts and extracting key insights"""
 
     name: str = "get_earnings_call_insights"
+    model: str = "claude-sonnet-4-5-20250929"
     description: str = """Analyzes earnings call transcripts to extract management insights, guidance, and sentiment.
 
     Use this tool when you need:
@@ -992,8 +1050,8 @@ class EarningsCallInsightsTool(BaseTool):
         try:
             # Validate inputs
             ticker = ticker.strip().upper()
-            if not ticker or len(ticker) > 5:
-                return f"Error: Invalid ticker format '{ticker}'. Please use 1-5 uppercase letters."
+            if not ticker or len(ticker) > 10:
+                return f"Error: Invalid ticker format '{ticker}'. Please provide a valid ticker symbol."
 
             if quarters < 1 or quarters > 8:
                 return f"Error: quarters must be between 1-8. Received: {quarters}"
@@ -1031,6 +1089,9 @@ class EarningsCallInsightsTool(BaseTool):
             logger.error(f"Error in earnings insights tool: {e}", exc_info=True)
             return f"Error analyzing earnings call for {ticker}: {str(e)}"
 
+
+    async def _arun(self, ticker: str, query: Optional[str] = None, quarters: int = 1) -> str:
+        return self._run(ticker, query, quarters)
     def _get_fmp_earnings_dates(self, ticker: str, api_key: str, limit: int = 8) -> List[tuple]:
         """Get (year, quarter) tuples for recent earnings from FMP /stable/earnings.
 
@@ -1041,7 +1102,7 @@ class EarningsCallInsightsTool(BaseTool):
             url = "https://financialmodelingprep.com/stable/earnings"
             params = {"symbol": ticker, "limit": limit * 2, "apikey": api_key}
 
-            response = requests.get(url, params=params, timeout=10)
+            response = _fmp_get(url, params=params)
             response.raise_for_status()
             data = response.json()
 
@@ -1049,25 +1110,31 @@ class EarningsCallInsightsTool(BaseTool):
                 return []
 
             results = []
+            seen = set()
             for entry in data:
                 # Skip future quarters (no actual EPS yet)
                 if entry.get("epsActual") is None:
                     continue
 
-                date_str = entry.get("date", "")
-                if not date_str:
-                    continue
-
-                # Parse date to derive calendar quarter
-                # The quarter param for transcripts = calendar quarter of reporting date
-                try:
-                    parts = date_str.split("-")
-                    year = int(parts[0])
-                    month = int(parts[1])
-                    quarter = (month - 1) // 3 + 1
-                    results.append((year, quarter))
-                except (ValueError, IndexError):
-                    continue
+                # Try fiscalDateEnding first (closer to the actual period the transcript
+                # covers), then fall back to the reporting date. FMP's transcript API
+                # indexes by fiscal year/quarter, so fiscalDateEnding gives a better
+                # calendar-quarter signal for non-standard fiscal years.
+                for date_field in ("fiscalDateEnding", "date"):
+                    date_str = entry.get(date_field, "")
+                    if not date_str:
+                        continue
+                    try:
+                        parts = date_str.split("-")
+                        year = int(parts[0])
+                        month = int(parts[1])
+                        quarter = (month - 1) // 3 + 1
+                        pair = (year, quarter)
+                        if pair not in seen:
+                            seen.add(pair)
+                            results.append(pair)
+                    except (ValueError, IndexError):
+                        continue
 
             return results[:limit]
 
@@ -1099,7 +1166,7 @@ class EarningsCallInsightsTool(BaseTool):
                 }
 
                 logger.info(f"Fetching transcript for {ticker} Q{quarter} {year} from FMP")
-                response = requests.get(url, params=params, timeout=30)
+                response = _fmp_get(url, params=params, timeout=30)
 
                 if response.status_code in [401, 402, 403]:
                     logger.info(f"FMP transcript access denied ({response.status_code}) for {ticker}")
@@ -1158,7 +1225,7 @@ class EarningsCallInsightsTool(BaseTool):
                 }
 
                 logger.info(f"Fetching transcript for {ticker} Q{quarter} {year}")
-                response = requests.get(url, params=params, timeout=30)
+                response = _fmp_get(url, params=params, timeout=30)
 
                 if response.status_code in [401, 402, 403]:
                     logger.info(f"FMP transcript access denied ({response.status_code}) for {ticker}")
@@ -1253,12 +1320,15 @@ class EarningsCallInsightsTool(BaseTool):
 
                 context = f"{company_name} ({ticker}) - {quarter} {year} Earnings Call ({date})"
             else:
+                # Per-transcript limit: give a single transcript the same headroom
+                # as the single-quarter path; split the budget across multiple ones.
+                per_transcript_limit = 100000 if len(transcript_data) == 1 else 25000
                 transcript_parts = []
                 for t in transcript_data:
                     q = t.get('quarter', 'Unknown')
                     y = t.get('year', 'Unknown')
                     content = t.get('content', '')
-                    transcript_parts.append(f"\n\n## {q} {y} Earnings Call\n\n{content[:25000]}")
+                    transcript_parts.append(f"\n\n## {q} {y} Earnings Call\n\n{content[:per_transcript_limit]}")
 
                 transcript_text = "\n".join(transcript_parts)
                 context = f"{company_name} ({ticker}) - Last {quarters} Quarters"
@@ -1302,7 +1372,7 @@ TRANSCRIPT(S):
             logger.info(f"Sending transcript to Claude for analysis (length: {len(transcript_text)} chars)")
 
             llm = ChatAnthropic(
-                model="claude-sonnet-4-5-20250929",
+                model=self.model,
                 temperature=0.2,
                 max_tokens=4000,
             )

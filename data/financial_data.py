@@ -29,6 +29,7 @@ class FinancialDataFetcher:
     _shared_cache = {}
     _cache_lock = threading.RLock()  # Thread-safe cache access
     _instance_lock = threading.Lock()  # Thread-safe singleton initialization
+    _thread_local = threading.local()  # Per-thread error state (avoids cross-request races)
 
     def __new__(cls, api_key: Optional[str] = None):
         """Singleton pattern to ensure cache is shared across all instances (thread-safe)"""
@@ -48,8 +49,15 @@ class FinancialDataFetcher:
         Args:
             api_key: Financial Datasets API key (if not provided, will use FINANCIAL_DATASETS_API_KEY env var)
         """
-        # Only initialize once (singleton pattern)
+        # Only initialize once (singleton pattern).
+        # If a different explicit key is passed after initialisation (e.g., in tests or
+        # multi-key scenarios), update the key so it is not silently ignored.
         if self._initialized:
+            resolved_key = api_key or os.getenv("FINANCIAL_DATASETS_API_KEY")
+            if resolved_key and resolved_key != self.api_key:
+                logger.info("FinancialDataFetcher: updating API key on existing singleton instance.")
+                self.api_key = resolved_key
+                self.headers["X-API-KEY"] = self.api_key
             return
 
         self.api_key = api_key or os.getenv("FINANCIAL_DATASETS_API_KEY")
@@ -69,10 +77,16 @@ class FinancialDataFetcher:
         # Use class-level shared cache instead of instance cache
         self.cache = self._shared_cache
         self.cache_ttl = 900  # 15 minutes TTL for financial data
-        # Track last API error for better diagnostics in tools
-        # Values: None, "not_found", "auth_failure", "api_failure"
-        self.last_error_type: Optional[str] = None
         self._initialized = True
+
+    @property
+    def last_error_type(self) -> Optional[str]:
+        """Per-thread error type — prevents concurrent requests from overwriting each other."""
+        return getattr(self._thread_local, 'last_error_type', None)
+
+    @last_error_type.setter
+    def last_error_type(self, value: Optional[str]) -> None:
+        self._thread_local.last_error_type = value
 
     def _get_from_cache(self, cache_key: str) -> Optional[Dict]:
         """Retrieve data from cache if valid (thread-safe)"""
@@ -472,9 +486,13 @@ class FinancialDataFetcher:
                 metrics["latest_interest_expense"] = interest_expenses[0] if interest_expenses else 0
                 metrics["historical_years"] = fiscal_years
 
-                # Calculate effective tax rate
-                if pretax_incomes[0] > 0 and income_taxes[0] > 0:
-                    metrics["effective_tax_rate"] = abs(income_taxes[0]) / pretax_incomes[0]
+                # Calculate effective tax rate.
+                # Allow negative income_taxes (tax benefit/credit) when pretax income is
+                # positive — the downstream tool clamps negative effective rates to 0%.
+                # Only fall back to the 21% default when pretax income is zero or negative,
+                # since dividing by a non-positive pretax figure produces a meaningless rate.
+                if pretax_incomes[0] > 0:
+                    metrics["effective_tax_rate"] = income_taxes[0] / pretax_incomes[0]
                 else:
                     metrics["effective_tax_rate"] = 0.21  # Default to US federal rate
 
@@ -648,21 +666,34 @@ class FinancialDataFetcher:
             return {}
 
     def calculate_historical_growth_rate(self, values: List[float]) -> float:
-        """Calculate CAGR from historical values"""
+        """Calculate CAGR from historical values.
+
+        Values are expected newest-first (index 0 = most recent year).
+        Zeros and negatives are excluded from the endpoints, but the actual
+        time span (number of years between the first and last usable value) is
+        preserved.  The previous approach used len(clean_values)-1 as the
+        exponent, which underestimates the period when negatives exist mid-series
+        and therefore overstates the growth rate.
+        """
         if not values or len(values) < 2:
             return 0.0
 
-        # Remove zeros and negatives
-        clean_values = [v for v in values if v > 0]
-        if len(clean_values) < 2:
+        # Find the most-recent and oldest indices that have positive values.
+        # Preserving the original indices keeps the time span correct.
+        indexed = [(i, v) for i, v in enumerate(values) if v > 0]
+        if len(indexed) < 2:
+            return 0.0
+
+        # index 0 = most recent, higher index = older
+        recent_idx, recent_val = indexed[0]    # smallest index → newest
+        oldest_idx, oldest_val = indexed[-1]   # largest index → oldest
+
+        num_years = oldest_idx - recent_idx    # actual elapsed years
+        if num_years <= 0:
             return 0.0
 
         try:
-            beginning_value = clean_values[-1]
-            ending_value = clean_values[0]
-            num_years = len(clean_values) - 1
-
-            cagr = (pow(ending_value / beginning_value, 1 / num_years) - 1)
+            cagr = (pow(recent_val / oldest_val, 1 / num_years) - 1)
             return round(cagr, 4)
         except (ZeroDivisionError, ValueError, OverflowError) as e:
             logger.warning(f"CAGR calculation failed: {e}")

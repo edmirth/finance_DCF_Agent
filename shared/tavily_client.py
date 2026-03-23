@@ -7,6 +7,7 @@ Replaces Perplexity API calls across all tool files.
 
 import os
 import logging
+import threading
 from typing import Optional, Dict, List, Any
 from dotenv import load_dotenv
 from shared.retry_utils import retry_with_backoff, RetryConfig
@@ -15,8 +16,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Singleton instance
+# Singleton instance + creation lock
 _tavily_client_instance = None
+_tavily_singleton_lock = threading.Lock()
 
 # Curated domain lists by topic
 FINANCE_DOMAINS = [
@@ -208,8 +210,10 @@ class TavilySearchClient:
 
 
 def get_tavily_client() -> TavilySearchClient:
-    """Get singleton Tavily client instance."""
+    """Get singleton Tavily client instance (double-checked locking, thread-safe)."""
     global _tavily_client_instance
     if _tavily_client_instance is None:
-        _tavily_client_instance = TavilySearchClient()
+        with _tavily_singleton_lock:
+            if _tavily_client_instance is None:
+                _tavily_client_instance = TavilySearchClient()
     return _tavily_client_instance

@@ -125,6 +125,9 @@ export interface StockQuote {
   marketCap: number;
   open: number;
   previousClose: number;
+  pe?: number | null;
+  eps?: number | null;
+  beta?: number | null;
 }
 
 export interface ChartDataPoint {

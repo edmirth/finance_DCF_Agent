@@ -4,10 +4,10 @@ Supports SQLite (default) and PostgreSQL (set DATABASE_URL env var).
 """
 import os
 import logging
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,15 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+# Synchronous engine and session factory for use in tool _run() methods
+# (which run in threadpool and cannot use async sessions)
+_sync_db_url = _db_url.replace("+aiosqlite", "").replace("+asyncpg", "+psycopg2").replace("+aiopg", "+psycopg2")
+sync_engine = create_engine(
+    _sync_db_url,
+    connect_args={"check_same_thread": False} if "sqlite" in _sync_db_url else {},
+)
+SyncSessionLocal = sessionmaker(bind=sync_engine, autocommit=False, autoflush=False)
+
 
 class Base(DeclarativeBase):
     pass
@@ -42,8 +51,11 @@ async def init_db() -> None:
         # Idempotent migration: add chart_specs column if it doesn't exist yet
         try:
             await conn.execute(text("ALTER TABLE messages ADD COLUMN chart_specs TEXT"))
-        except OperationalError:
-            pass  # Column already exists
+        except OperationalError as e:
+            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                pass  # Column already exists — expected on re-start
+            else:
+                logger.error(f"Unexpected OperationalError adding chart_specs column: {e}")
         except Exception as e:
             logger.error(f"Unexpected error adding chart_specs column: {e}")
         # Idempotent migration: create project tables if they don't exist yet

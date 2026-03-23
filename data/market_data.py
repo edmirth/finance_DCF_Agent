@@ -40,6 +40,10 @@ class MarketDataProvider(ABC):
         """Get VIX and other volatility measures"""
         pass
 
+    def get_historical_context(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Get 52-week historical context. Override in subclasses that support it."""
+        return {}
+
 
 class MassiveMarketData(MarketDataProvider):
     """
@@ -132,8 +136,8 @@ class MassiveMarketData(MarketDataProvider):
                     "price": value,
                     "change": round(change, 2),
                     "change_pct": round(change_pct, 2),
-                    "52w_high": session.get("high", value),
-                    "52w_low": session.get("low", value),
+                    "52w_high": None,   # session.high is intraday, not 52-week (Bug #12)
+                    "52w_low": None,
                     "volume": session.get("volume", 0)
                 }
 
@@ -275,10 +279,12 @@ class MassiveMarketData(MarketDataProvider):
 
             headers = {"Authorization": f"Bearer {self.api_key}"}
 
-            # Fetch aggregate bars for each sector
+            # Fetch aggregate bars for each sector — throttled to avoid rate limits (Bug #6)
+            import time
             for ticker in sectors.keys():
                 for timeframe, from_date in dates.items():
                     try:
+                        time.sleep(0.1)  # 100ms between requests to respect rate limits
                         url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}"
                         response = requests.get(url, headers=headers, params={"adjusted": "true"}, timeout=5)
 
@@ -319,7 +325,7 @@ class MassiveMarketData(MarketDataProvider):
             "XLU": {"name": "Utilities", "1D": -0.3, "5D": 0.2, "1M": 1.2, "3M": 2.8, "YTD": 4.5}
         }
 
-    def get_market_breadth(self) -> Dict[str, Any]:
+    def get_market_breadth(self, indices: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Get market breadth indicators
 
@@ -336,7 +342,8 @@ class MassiveMarketData(MarketDataProvider):
         Returns advance/decline, new highs/lows, etc.
         """
         # Use estimated breadth based on index performance
-        indices = self.get_indices()
+        if indices is None:
+            indices = self.get_indices()
 
         # Estimate breadth based on how many major indices are positive
         # Filter out metadata keys (e.g. _placeholder) which are not index dicts
@@ -376,9 +383,9 @@ class MassiveMarketData(MarketDataProvider):
                 "ratio": round(hl_ratio, 2)
             },
             "percentage_above_200ma": {
-                "sp500": round(50 + (adv_ratio - 1) * 20, 1),
-                "nasdaq": round(50 + (adv_ratio - 1) * 18, 1),
-                "russell2000": round(50 + (adv_ratio - 1) * 15, 1)
+                "sp500": round(max(0.0, min(100.0, 50 + (adv_ratio - 1) * 20)), 1),
+                "nasdaq": round(max(0.0, min(100.0, 50 + (adv_ratio - 1) * 18)), 1),
+                "russell2000": round(max(0.0, min(100.0, 50 + (adv_ratio - 1) * 15)), 1)
             },
             "_estimated": True,
             "note": "WARNING: Breadth metrics are ESTIMATED from index performance (not real advance/decline data). Do not rely on these for trading decisions."
@@ -476,6 +483,10 @@ class MassiveMarketData(MarketDataProvider):
             }
         }
 
+    def get_historical_context(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Massive.com does not provide 52-week historical context — return placeholder."""
+        return {"_placeholder": True}
+
 
 class FMPMarketData(MarketDataProvider):
     """
@@ -519,7 +530,8 @@ class FMPMarketData(MarketDataProvider):
             request_params.update(params)
 
         response = requests.get(url, params=request_params, timeout=10)
-        response.raise_for_status()
+        if response.status_code not in (200, 400, 401, 403, 404):
+            response.raise_for_status()
         return response.json()
 
     def get_indices(self) -> Dict[str, Any]:
@@ -624,6 +636,10 @@ class FMPMarketData(MarketDataProvider):
         try:
             data = self._fmp_get("historical-price-eod/full", {"symbol": ticker})
 
+            # FMP /full endpoint returns {"symbol": "XLK", "historical": [...]} (Bug #7)
+            if isinstance(data, dict) and "historical" in data:
+                data = data["historical"]
+
             if not data or not isinstance(data, list) or len(data) < 2:
                 return None
 
@@ -679,8 +695,8 @@ class FMPMarketData(MarketDataProvider):
             vix_quote = data[0]
             vix_value = vix_quote.get("price", 0) or 0
             change = vix_quote.get("change", 0) or 0
-            prev_close = vix_quote.get("previousClose", vix_value) or vix_value
-            change_pct = (change / prev_close * 100) if prev_close else 0
+            # Use FMP's pre-calculated percentage directly (consistent with get_indices) (Bug #5)
+            change_pct = vix_quote.get("changesPercentage") or vix_quote.get("changePercentage", 0) or 0
 
             # Classify VIX level
             if vix_value < 15:
@@ -719,16 +735,9 @@ class FMPMarketData(MarketDataProvider):
             logger.error(f"Error fetching VIX from FMP: {e}")
             return MassiveMarketData()._get_volatility_placeholder()
 
-    def get_market_breadth(self) -> Dict[str, Any]:
-        """
-        Estimate market breadth based on index performance.
-
-        True breadth data (advance/decline) requires fetching thousands of stocks.
-        We estimate from index data, same approach as MassiveMarketData.
-        """
+    def _estimate_breadth_from_indices(self) -> Dict[str, Any]:
+        """Fallback: estimate breadth from index performance when real data is unavailable."""
         indices = self.get_indices()
-
-        # Estimate breadth based on how many major indices are positive
         index_dicts = {k: v for k, v in indices.items() if isinstance(v, dict)}
         positive_indices = sum(1 for idx in index_dicts.values() if idx.get("change_pct", 0) > 0)
         total_indices = len(index_dicts)
@@ -764,13 +773,174 @@ class FMPMarketData(MarketDataProvider):
                 "ratio": round(hl_ratio, 2)
             },
             "percentage_above_200ma": {
-                "sp500": round(50 + (adv_ratio - 1) * 20, 1),
-                "nasdaq": round(50 + (adv_ratio - 1) * 18, 1),
-                "russell2000": round(50 + (adv_ratio - 1) * 15, 1)
+                "sp500": round(max(0.0, min(100.0, 50 + (adv_ratio - 1) * 20)), 1),
+                "nasdaq": round(max(0.0, min(100.0, 50 + (adv_ratio - 1) * 18)), 1),
+                "russell2000": round(max(0.0, min(100.0, 50 + (adv_ratio - 1) * 15)), 1)
             },
             "_estimated": True,
             "note": "WARNING: Breadth metrics are ESTIMATED from index performance (not real advance/decline data). Do not rely on these for trading decisions."
         }
+
+    def get_market_breadth(self) -> Dict[str, Any]:
+        """
+        Get real market breadth data from FMP /stable/market-breadth.
+
+        Falls back to index-based estimation if endpoint is unavailable.
+        """
+        if self.use_placeholder:
+            return MassiveMarketData().get_market_breadth()
+
+        try:
+            data = self._fmp_get("market-breadth")
+
+            if data and isinstance(data, list) and len(data) > 0:
+                latest = data[0]
+
+                # FMP field names (handle variations across API versions)
+                advancing = (
+                    latest.get("advancing") or
+                    latest.get("advancingStocks") or
+                    latest.get("advance") or 0
+                )
+                declining = (
+                    latest.get("declining") or
+                    latest.get("decliningStocks") or
+                    latest.get("decline") or 0
+                )
+                unchanged = (
+                    latest.get("unchanged") or
+                    latest.get("unchangedStocks") or 0
+                )
+                new_highs = (
+                    latest.get("newHighs") or
+                    latest.get("new52WeekHighs") or
+                    latest.get("highs") or 0
+                )
+                new_lows = (
+                    latest.get("newLows") or
+                    latest.get("new52WeekLows") or
+                    latest.get("lows") or 0
+                )
+
+                if advancing and declining:
+                    ad_ratio = advancing / declining if declining > 0 else 2.5
+                    hl_ratio = (
+                        new_highs / new_lows if new_lows > 0
+                        else (5.0 if new_highs > 0 else 1.0)
+                    )
+
+                    # % above 200MA if provided
+                    pct_above = (
+                        latest.get("percentAbove200Dma") or
+                        latest.get("pctAbove200") or None
+                    )
+                    sp500_pct = (
+                        round(max(0.0, min(100.0, float(pct_above))), 1)
+                        if pct_above is not None
+                        else round(max(0.0, min(100.0, 50 + (ad_ratio - 1) * 20)), 1)
+                    )
+
+                    logger.info(
+                        f"Real breadth from FMP: {advancing} adv, {declining} dec, "
+                        f"{new_highs} new highs, {new_lows} new lows"
+                    )
+
+                    return {
+                        "nyse_advance_decline": {
+                            "advancing": int(advancing),
+                            "declining": int(declining),
+                            "unchanged": int(unchanged),
+                            "ratio": round(ad_ratio, 2),
+                        },
+                        "nasdaq_advance_decline": {
+                            "advancing": int(advancing),
+                            "declining": int(declining),
+                            "unchanged": int(unchanged),
+                            "ratio": round(ad_ratio * 0.95, 2),
+                            "_derived_from_nyse": True,
+                        },
+                        "new_highs_lows": {
+                            "new_52w_highs": int(new_highs),
+                            "new_52w_lows": int(new_lows),
+                            "ratio": round(hl_ratio, 2),
+                        },
+                        "percentage_above_200ma": {
+                            "sp500": sp500_pct,
+                            "nasdaq": round(max(0.0, min(100.0, 50 + (ad_ratio - 1) * 18)), 1),
+                            "russell2000": round(max(0.0, min(100.0, 50 + (ad_ratio - 1) * 15)), 1),
+                        },
+                        "_estimated": False,
+                    }
+
+            logger.warning("FMP market-breadth returned no usable data, falling back to estimation")
+
+        except Exception as e:
+            logger.warning(f"FMP market-breadth unavailable ({e}), falling back to estimation")
+
+        return self._estimate_breadth_from_indices()
+
+    def get_historical_context(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Fetch 52-week historical context for key market metrics.
+
+        For each symbol returns current value, 52W high/low, and percentile rank
+        (0% = at 52W low, 100% = at 52W high).
+
+        Args:
+            symbols: List of FMP-compatible symbols. Defaults to ['^VIX', '^GSPC', '^IXIC'].
+
+        Returns:
+            Dict keyed by symbol with historical context data.
+        """
+        if self.use_placeholder:
+            return {"_placeholder": True}
+
+        if symbols is None:
+            symbols = ["^VIX", "^GSPC", "^IXIC"]
+
+        result: Dict[str, Any] = {}
+        for symbol in symbols:
+            try:
+                data = self._fmp_get("historical-price-eod/full", {"symbol": symbol})
+
+                # Unwrap FMP envelope (same pattern as _get_historical_returns)
+                if isinstance(data, dict) and "historical" in data:
+                    data = data["historical"]
+
+                if not data or not isinstance(data, list) or len(data) < 20:
+                    logger.debug(f"Insufficient historical data for {symbol}")
+                    continue
+
+                # Newest first; take up to 260 trading days (~52 weeks)
+                prices = data[:260]
+                closes = [p.get("close") for p in prices if p.get("close") is not None]
+                if not closes:
+                    continue
+
+                current = closes[0]
+                high_52w = max(closes)
+                low_52w = min(closes)
+
+                if high_52w > low_52w:
+                    percentile = ((current - low_52w) / (high_52w - low_52w)) * 100
+                else:
+                    percentile = 50.0
+
+                result[symbol] = {
+                    "current": round(current, 2),
+                    "52w_high": round(high_52w, 2),
+                    "52w_low": round(low_52w, 2),
+                    "percentile": round(percentile, 1),
+                }
+                logger.info(
+                    f"Historical context {symbol}: {current:.2f} "
+                    f"(52W {low_52w:.2f}-{high_52w:.2f}, {percentile:.0f}th pct)"
+                )
+
+            except Exception as e:
+                logger.debug(f"Could not fetch historical context for {symbol}: {e}")
+
+        return result
 
 
 class MarketDataFetcher:
@@ -803,6 +973,12 @@ class MarketDataFetcher:
         """Get volatility measures"""
         return self.provider.get_volatility_index()
 
+    def get_historical_context(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Get 52-week historical context for key market metrics"""
+        if hasattr(self.provider, "get_historical_context"):
+            return self.provider.get_historical_context(symbols)
+        return {}
+
     def calculate_market_regime(self) -> Dict[str, Any]:
         """
         Calculate current market regime based on multiple factors
@@ -816,12 +992,21 @@ class MarketDataFetcher:
             }
         """
         indices = self.get_indices()
-        breadth = self.get_market_breadth()
+        # Pass pre-fetched indices to avoid redundant API call in MassiveMarketData
+        try:
+            breadth = self.provider.get_market_breadth(indices=indices)
+        except TypeError:
+            breadth = self.provider.get_market_breadth()
         vix = self.get_volatility_index()
 
-        # Simple regime classification based on multiple factors
+        # Trend: majority of indices positive (more robust than single SPX day change)
+        # Use .get() to avoid KeyError if SPX is missing from API response (Bug #4)
+        index_dicts = {k: v for k, v in indices.items() if isinstance(v, dict)}
+        positive_count = sum(1 for v in index_dicts.values() if v.get("change_pct", 0) > 0)
+        trend_bullish = positive_count >= max(1, len(index_dicts) // 2)  # majority positive (Bug #3)
+
         signals = {
-            "trend": "BULLISH" if indices["SPX"]["change_pct"] > 0 else "BEARISH",
+            "trend": "BULLISH" if trend_bullish else "BEARISH",
             "breadth": "POSITIVE" if breadth["nyse_advance_decline"]["ratio"] > 1.5 else "NEGATIVE",
             "volatility": vix["VIX"]["level"],
             "high_low_ratio": breadth["new_highs_lows"]["ratio"]
@@ -856,7 +1041,10 @@ class MarketDataFetcher:
             "risk_mode": "RISK_ON" if risk_on else "RISK_OFF",
             "confidence": confidence,
             "signals": signals,
-            "summary": self._get_regime_summary(regime, "RISK_ON" if risk_on else "RISK_OFF")
+            "summary": self._get_regime_summary(regime, "RISK_ON" if risk_on else "RISK_OFF"),
+            "_indices": indices,
+            "_breadth": breadth,
+            "_vix": vix,
         }
 
     def _get_regime_summary(self, regime: str, risk_mode: str) -> str:

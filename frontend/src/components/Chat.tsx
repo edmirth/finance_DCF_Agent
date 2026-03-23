@@ -232,12 +232,18 @@ function Chat({
     // Track the resolved agent type for post-stream logic
     let resolvedAgentType = agent.id;
 
+    // Any message sent after the first is a follow-up in the same conversation.
+    // The backend uses this to tighten ticker detection (avoids showing a chart
+    // for a random company when the user asks "what about their AI strategy?").
+    const isFollowup = messages.length > 0;
+
     streamMessage(
       {
         message: messageToSend,
         agent_type: agent.id, // 'auto' or specific agent id
         model: 'claude-sonnet-4-5-20250929',
         session_id: sessionId.current,
+        is_followup: isFollowup,
         ...(projectId ? { project_id: projectId } : {}),
       },
       (event) => {

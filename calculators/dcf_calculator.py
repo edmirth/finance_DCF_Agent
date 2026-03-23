@@ -211,6 +211,19 @@ class DCFCalculator:
         # === BULL CASE ===
         # Higher growth, better margins, lower risk
         bull_terminal = min(base_assumptions.terminal_growth_rate * 1.2, MAX_TERMINAL_GROWTH)
+        # NWC efficiency adjustment must respect the sign of base NWC.
+        # For positive NWC (cash tied up): bull = smaller absolute value (0.9×).
+        # For negative NWC (cash surplus, e.g. Apple): bull = larger absolute value
+        # (more negative = even better cash generation), so we multiply by 1.1.
+        # Using the same scalar blindly would invert the intended direction.
+        base_nwc = base_assumptions.nwc_to_revenue
+        if base_nwc >= 0:
+            bull_nwc = base_nwc * 0.9   # less cash tied up
+            bear_nwc = base_nwc * 1.1   # more cash tied up
+        else:
+            bull_nwc = base_nwc * 1.1   # more negative = larger cash source
+            bear_nwc = base_nwc * 0.9   # less negative = smaller cash source
+
         bull = DCFAssumptions(
             # Growth: More optimistic trajectory
             near_term_growth_rate=base_assumptions.near_term_growth_rate * 1.25,
@@ -222,7 +235,7 @@ class DCFCalculator:
             # Capital intensity: More efficient
             capex_to_revenue=base_assumptions.capex_to_revenue * 0.9,
             depreciation_to_revenue=base_assumptions.depreciation_to_revenue,
-            nwc_to_revenue=base_assumptions.nwc_to_revenue * 0.9,
+            nwc_to_revenue=bull_nwc,
             # Risk: Lower
             risk_free_rate=base_assumptions.risk_free_rate,
             market_risk_premium=base_assumptions.market_risk_premium * 0.9,
@@ -246,7 +259,7 @@ class DCFCalculator:
             # Capital intensity: Less efficient
             capex_to_revenue=base_assumptions.capex_to_revenue * 1.1,
             depreciation_to_revenue=base_assumptions.depreciation_to_revenue,
-            nwc_to_revenue=base_assumptions.nwc_to_revenue * 1.1,
+            nwc_to_revenue=bear_nwc,
             # Risk: Higher
             risk_free_rate=base_assumptions.risk_free_rate,
             market_risk_premium=base_assumptions.market_risk_premium * 1.1,
@@ -262,7 +275,7 @@ class DCFCalculator:
         self,
         current_revenue: float,
         assumptions: DCFAssumptions
-    ) -> tuple[List[float], List[float]]:
+    ) -> "tuple[List[float], List[float]]":
         """
         Project revenues using forward-looking growth rates.
 
@@ -348,7 +361,7 @@ class DCFCalculator:
         wacc: float,
         terminal_growth_rate: float,
         min_spread: float = 0.01
-    ) -> float:
+    ) -> "tuple[float, float]":
         """
         Calculate terminal value using Gordon Growth Model (Perpetuity Method).
 
@@ -361,6 +374,10 @@ class DCFCalculator:
             wacc: Weighted average cost of capital (or cost of equity for levered DCF)
             terminal_growth_rate: Perpetual growth rate
             min_spread: Minimum spread between WACC and terminal growth (default 1%)
+
+        Returns:
+            Tuple of (terminal_value, effective_wacc) — effective_wacc may differ from
+            the input wacc when the min-spread floor was applied.
         """
         # Validate Gordon Growth Model constraint
         if wacc <= terminal_growth_rate:
@@ -369,7 +386,8 @@ class DCFCalculator:
                 f"This violates the Gordon Growth Model. Adjust assumptions."
             )
 
-        # Bug #2 Fix: Validate minimum spread to prevent extreme terminal values
+        effective_wacc = wacc
+        # Validate minimum spread to prevent extreme terminal values
         spread = wacc - terminal_growth_rate
         if spread < min_spread:
             logger.warning(
@@ -378,8 +396,8 @@ class DCFCalculator:
                 f"This may produce unreliably high terminal values. "
                 f"Adjusting spread to minimum {min_spread:.2%}."
             )
-            # Adjust wacc to enforce minimum spread
-            wacc = terminal_growth_rate + min_spread
+            # Adjust effective_wacc to enforce minimum spread
+            effective_wacc = terminal_growth_rate + min_spread
 
         # Warn if final FCF is negative
         if final_fcf < 0:
@@ -390,9 +408,9 @@ class DCFCalculator:
 
         # Terminal value calculation
         terminal_fcf = final_fcf * (1 + terminal_growth_rate)
-        terminal_value = terminal_fcf / (wacc - terminal_growth_rate)
+        terminal_value = terminal_fcf / (effective_wacc - terminal_growth_rate)
 
-        return terminal_value
+        return terminal_value, effective_wacc
 
     def calculate_present_value(
         self,
@@ -494,11 +512,16 @@ class DCFCalculator:
             )
 
         # === CALCULATE TERMINAL VALUE ===
-        terminal_value = self.calculate_terminal_value(
+        # effective_wacc may differ from wacc if min-spread floor was applied
+        terminal_value, effective_wacc = self.calculate_terminal_value(
             projected_fcf[-1], wacc, assumptions.terminal_growth_rate
         )
 
         # === DISCOUNT CASH FLOWS ===
+        # NOTE: always discount terminal value at the same rate as operating FCFs (wacc),
+        # not effective_wacc. effective_wacc only governs the Gordon Growth denominator
+        # (terminal multiplier) when the min-spread floor is applied; using it here as
+        # the time-value discount rate would double-penalise the terminal value.
         pv_fcf = self.calculate_present_value(projected_fcf, wacc)
         pv_terminal = terminal_value / ((1 + wacc) ** assumptions.projection_years)
 
@@ -550,30 +573,35 @@ class DCFCalculator:
         results = {}
 
         for scenario_name, assumptions in scenarios.items():
-            result = self.perform_dcf(
-                ticker=ticker,
-                current_revenue=current_revenue,
-                current_price=current_price,
-                shares_outstanding=shares_outstanding,
-                total_debt=total_debt,
-                cash=cash,
-                assumptions=assumptions,
-                scenario_name=scenario_name.capitalize()
-            )
-            results[scenario_name] = result
+            try:
+                result = self.perform_dcf(
+                    ticker=ticker,
+                    current_revenue=current_revenue,
+                    current_price=current_price,
+                    shares_outstanding=shares_outstanding,
+                    total_debt=total_debt,
+                    cash=cash,
+                    assumptions=assumptions,
+                    scenario_name=scenario_name.capitalize()
+                )
+                results[scenario_name] = result
+            except ValueError as e:
+                logger.warning(
+                    f"{ticker}: Skipping {scenario_name} scenario — {e}"
+                )
 
         return results
 
     def format_dcf_analysis(self, results: Dict[str, DCFResult]) -> str:
         """Format DCF results into a readable analysis."""
         output = []
-        output.append("=" * 80)
+        output.append("")
         output.append("DCF VALUATION ANALYSIS")
-        output.append("=" * 80)
+        output.append("")
 
         for scenario_name, result in results.items():
             output.append(f"\n{scenario_name.upper()} SCENARIO")
-            output.append("-" * 80)
+            output.append("")
             output.append(f"Current Stock Price: ${result.current_price:,.2f}")
             output.append(f"Intrinsic Value per Share: ${result.intrinsic_value_per_share:,.2f}")
             output.append(f"Upside Potential: {result.upside_potential:.2f}%")
@@ -610,13 +638,13 @@ class DCFCalculator:
             output.append(f"  - Cost of Debt: {result.assumptions.cost_of_debt * 100:.2f}%")
             output.append("")
 
-        output.append("=" * 80)
+        output.append("")
 
         # Investment recommendation
         base_result = results.get("base")
         if base_result:
             output.append("\nINVESTMENT RECOMMENDATION")
-            output.append("-" * 80)
+            output.append("")
             if base_result.upside_potential > 20:
                 output.append("BUY: Stock appears significantly undervalued")
             elif base_result.upside_potential > 0:
@@ -781,8 +809,10 @@ class DCFCalculator:
             )
 
         # === CALCULATE TERMINAL VALUE (using FCFE and Cost of Equity) ===
-        terminal_fcfe = projected_fcfe[-1] * (1 + assumptions.terminal_growth_rate)
-        terminal_value = terminal_fcfe / (cost_of_equity - assumptions.terminal_growth_rate)
+        # Reuse calculate_terminal_value to get min-spread protection and effective rate
+        terminal_value, effective_cost_of_equity = self.calculate_terminal_value(
+            projected_fcfe[-1], cost_of_equity, assumptions.terminal_growth_rate
+        )
 
         # Warn if terminal FCFE is negative
         if projected_fcfe[-1] < 0:
@@ -792,6 +822,8 @@ class DCFCalculator:
             )
 
         # === DISCOUNT CASH FLOWS (at Cost of Equity) ===
+        # Same rationale as unlevered DCF: discount at the base cost_of_equity, not
+        # the floored effective_cost_of_equity, which only controls the TV multiplier.
         pv_fcfe = self.calculate_present_value(projected_fcfe, cost_of_equity)
         pv_terminal = terminal_value / ((1 + cost_of_equity) ** assumptions.projection_years)
 
@@ -848,17 +880,25 @@ class DCFCalculator:
         results = {}
 
         for scenario_name, assumptions in scenarios.items():
-            result = self.perform_levered_dcf(
-                ticker=ticker,
-                current_revenue=current_revenue,
-                current_price=current_price,
-                shares_outstanding=shares_outstanding,
-                total_debt=total_debt,
-                cash=cash,
-                interest_expense=interest_expense,
-                assumptions=assumptions,
-                scenario_name=scenario_name.capitalize()
-            )
-            results[scenario_name] = result
+            try:
+                result = self.perform_levered_dcf(
+                    ticker=ticker,
+                    current_revenue=current_revenue,
+                    current_price=current_price,
+                    shares_outstanding=shares_outstanding,
+                    total_debt=total_debt,
+                    cash=cash,
+                    interest_expense=interest_expense,
+                    assumptions=assumptions,
+                    scenario_name=scenario_name.capitalize()
+                )
+                results[scenario_name] = result
+            except ValueError as e:
+                # A scenario may violate the Gordon Growth Model constraint
+                # (e.g., bull case pushes cost of equity below terminal growth rate).
+                # Log a warning and skip that scenario so the remaining ones still run.
+                logger.warning(
+                    f"{ticker}: Skipping {scenario_name} scenario in levered DCF — {e}"
+                )
 
         return results

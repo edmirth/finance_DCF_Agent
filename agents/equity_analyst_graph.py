@@ -7,6 +7,9 @@ from langchain_anthropic import ChatAnthropic
 from langchain.tools import BaseTool
 from tools.dcf_tools import get_dcf_tools
 from tools.equity_analyst_tools import get_equity_analyst_tools
+from tools.earnings_tools import get_earnings_tools
+import json
+import operator
 import os
 import re
 import logging
@@ -49,12 +52,19 @@ class EquityAnalystState(TypedDict):
     management_quality: str  # POOR, FAIR, GOOD, EXCELLENT
     capital_allocation: str
 
-    # Step 7: DCF valuation
-    dcf_results: dict
-    intrinsic_value: float
-    upside_potential: float
+    # Parallel earnings analysis
+    earnings_snapshot: str
+    earnings_beat_rate: Optional[float]  # None = no structured data available
 
-    # Step 8: Investment thesis
+    # Step 7: SEC filing analysis
+    sec_filing_analysis: str
+
+    # Step 8: Multiples valuation
+    multiples_valuation: str
+    fair_value: float
+    valuation_upside: float
+
+    # Step 9: Investment thesis
     bull_case: List[str]
     bear_case: List[str]
     base_case: str
@@ -64,12 +74,18 @@ class EquityAnalystState(TypedDict):
     price_target: float
     conviction: str  # HIGH, MEDIUM, LOW
 
+    # (reserved for future DCF integration)
+    dcf_results: dict
+    intrinsic_value: float
+    upside_potential: float
+
     # Output
     final_report: str
 
     # Metadata
-    analysis_steps: List[str]
-    errors: List[str]
+    # Annotated with operator.add so parallel branches concatenate instead of overwriting
+    analysis_steps: Annotated[List[str], operator.add]
+    errors: Annotated[List[str], operator.add]
     current_step: str
 
 
@@ -91,7 +107,22 @@ class EquityAnalystGraph:
         # Get all tools
         self.dcf_tools = {tool.name: tool for tool in get_dcf_tools()}
         self.analyst_tools = {tool.name: tool for tool in get_equity_analyst_tools()}
-        self.all_tools = {**self.dcf_tools, **self.analyst_tools}
+        self.earnings_tools = {tool.name: tool for tool in get_earnings_tools()}
+
+        # Detect and log silent name collisions before merging
+        all_sources = [("dcf", self.dcf_tools), ("analyst", self.analyst_tools), ("earnings", self.earnings_tools)]
+        seen: dict = {}
+        for source_name, tool_dict in all_sources:
+            for name in tool_dict:
+                if name in seen:
+                    logger.warning(
+                        f"Tool name collision: '{name}' defined in both '{seen[name]}' and '{source_name}'. "
+                        f"'{source_name}' version will be used."
+                    )
+                seen[name] = source_name
+
+        # analyst_tools overwrites dcf_tools on collision; earnings_tools overwrites both
+        self.all_tools = {**self.dcf_tools, **self.analyst_tools, **self.earnings_tools}
 
         # Build graph
         self.graph = self._build_graph()
@@ -102,26 +133,46 @@ class EquityAnalystGraph:
         # Create graph
         workflow = StateGraph(EquityAnalystState)
 
-        # Add nodes (each is a step in the analysis)
-        # Note: DCF node removed — tool not working properly yet
+        # Add nodes
         workflow.add_node("get_company_info", self.get_company_info)
         workflow.add_node("get_financial_metrics", self.get_financial_metrics)
+        # Parallel qualitative research nodes (Steps 3a-3e)
         workflow.add_node("analyze_industry", self.analyze_industry)
         workflow.add_node("analyze_competitors", self.analyze_competitors)
         workflow.add_node("analyze_moat", self.analyze_moat)
         workflow.add_node("analyze_management", self.analyze_management)
+        workflow.add_node("fetch_earnings_snapshot", self.fetch_earnings_snapshot)
+        # Fan-in sync point
+        workflow.add_node("sync_qualitative", self.sync_qualitative)
+        # Sequential nodes
+        workflow.add_node("analyze_sec_filings", self.analyze_sec_filings)
+        workflow.add_node("perform_multiples_valuation", self.perform_multiples_valuation)
         workflow.add_node("develop_thesis", self.develop_thesis)
         workflow.add_node("make_recommendation", self.make_recommendation)
         workflow.add_node("format_report", self.format_report)
 
-        # Define the workflow
+        # Workflow edges
         workflow.set_entry_point("get_company_info")
         workflow.add_edge("get_company_info", "get_financial_metrics")
+
+        # Fan-out: all five qualitative nodes run in parallel after financials
         workflow.add_edge("get_financial_metrics", "analyze_industry")
-        workflow.add_edge("analyze_industry", "analyze_competitors")
-        workflow.add_edge("analyze_competitors", "analyze_moat")
-        workflow.add_edge("analyze_moat", "analyze_management")
-        workflow.add_edge("analyze_management", "develop_thesis")
+        workflow.add_edge("get_financial_metrics", "analyze_competitors")
+        workflow.add_edge("get_financial_metrics", "analyze_moat")
+        workflow.add_edge("get_financial_metrics", "analyze_management")
+        workflow.add_edge("get_financial_metrics", "fetch_earnings_snapshot")
+
+        # Fan-in: all five converge at the sync point
+        workflow.add_edge("analyze_industry", "sync_qualitative")
+        workflow.add_edge("analyze_competitors", "sync_qualitative")
+        workflow.add_edge("analyze_moat", "sync_qualitative")
+        workflow.add_edge("analyze_management", "sync_qualitative")
+        workflow.add_edge("fetch_earnings_snapshot", "sync_qualitative")
+
+        # Sequential tail
+        workflow.add_edge("sync_qualitative", "analyze_sec_filings")
+        workflow.add_edge("analyze_sec_filings", "perform_multiples_valuation")
+        workflow.add_edge("perform_multiples_valuation", "develop_thesis")
         workflow.add_edge("develop_thesis", "make_recommendation")
         workflow.add_edge("make_recommendation", "format_report")
         workflow.add_edge("format_report", END)
@@ -130,9 +181,11 @@ class EquityAnalystGraph:
 
     def get_company_info(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 1: Get basic company information"""
-        logger.info(f"[Step 1/8] Getting company info for {state['ticker']}")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 1/10] Getting company info for {state['ticker']}")
         state["current_step"] = "Company Info"
-        state["analysis_steps"].append("✓ Company Info")
+        _new_steps.append("Company Info")
 
         try:
             tool = self.all_tools["get_stock_info"]
@@ -156,20 +209,24 @@ class EquityAnalystGraph:
 
         except Exception as e:
             logger.error(f"Error in get_company_info: {e}")
-            state["errors"].append(f"Company info error: {str(e)}")
+            _new_errors.append(f"Company info error: {str(e)}")
 
         # Validate critical fields — use ticker as fallback for company_name
         if not state.get("company_name"):
             state["company_name"] = state["ticker"]
             logger.warning(f"company_name not found, using ticker '{state['ticker']}' as fallback")
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def get_financial_metrics(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 2: Get financial metrics"""
-        logger.info(f"[Step 2/8] Getting financial metrics")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 2/10] Getting financial metrics")
         state["current_step"] = "Financial Metrics"
-        state["analysis_steps"].append("✓ Financial Metrics")
+        _new_steps.append("Financial Metrics")
 
         try:
             tool = self.all_tools["get_financial_metrics"]
@@ -186,59 +243,71 @@ class EquityAnalystGraph:
 
         except Exception as e:
             logger.error(f"Error in get_financial_metrics: {e}")
-            state["errors"].append(f"Financial metrics error: {str(e)}")
+            _new_errors.append(f"Financial metrics error: {str(e)}")
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def analyze_industry(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 3: Industry analysis"""
-        logger.info(f"[Step 3/8] Analyzing industry")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 3/10] Analyzing industry")
         state["current_step"] = "Industry Analysis"
-        state["analysis_steps"].append("✓ Industry Analysis")
+        _new_steps.append("Industry Analysis")
 
         try:
             tool = self.all_tools["analyze_industry"]
             result = tool.invoke({
                 "company": state["company_name"],
                 "ticker": state["ticker"],
-                "sector": state["sector"]
+                "sector": state["sector"] or state["industry"] or "General",  # fallback if unparsed (#6)
             })
             state["industry_analysis"] = result
 
         except Exception as e:
             logger.error(f"Error in analyze_industry: {e}")
-            state["errors"].append(f"Industry analysis error: {str(e)}")
+            _new_errors.append(f"Industry analysis error: {str(e)}")
             state["industry_analysis"] = "Industry analysis unavailable"
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def analyze_competitors(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 4: Competitive analysis"""
-        logger.info(f"[Step 4/8] Analyzing competitors")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 4/10] Analyzing competitors")
         state["current_step"] = "Competitive Analysis"
-        state["analysis_steps"].append("✓ Competitive Analysis")
+        _new_steps.append("Competitive Analysis")
 
         try:
             tool = self.all_tools["analyze_competitors"]
             result = tool.invoke({
                 "company": state["company_name"],
                 "ticker": state["ticker"],
-                "industry": state["industry"]
+                "industry": state["industry"] or state["sector"] or "General",  # fallback if unparsed (#6)
             })
             state["competitive_position"] = result
 
         except Exception as e:
             logger.error(f"Error in analyze_competitors: {e}")
-            state["errors"].append(f"Competitor analysis error: {str(e)}")
+            _new_errors.append(f"Competitor analysis error: {str(e)}")
             state["competitive_position"] = "Competitor analysis unavailable"
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def analyze_moat(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 5: Moat analysis"""
-        logger.info(f"[Step 5/8] Analyzing competitive moat")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 5/10] Analyzing competitive moat")
         state["current_step"] = "Moat Analysis"
-        state["analysis_steps"].append("✓ Moat Analysis")
+        _new_steps.append("Moat Analysis")
 
         try:
             tool = self.all_tools["analyze_moat"]
@@ -247,28 +316,61 @@ class EquityAnalystGraph:
                 "ticker": state["ticker"]
             })
 
-            # Determine moat strength from result
-            if "Wide Moat" in result or "wide moat" in result.lower():
+            # Try JSON parsing first (structured output from tool)
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', result, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(1))
+                    moat_val = parsed.get("moat_rating", "").upper()
+                    if moat_val in ("WIDE", "NARROW", "NONE"):
+                        state["moat_strength"] = moat_val
+                        state["moat_sources"] = []
+                        state["analysis_steps"] = _new_steps
+                        state["errors"] = _new_errors
+                        return state  # skip regex fallback
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+            # Fallback: moat-specific phrase matching only — no bare word patterns
+            # that would match unrelated text ("wide range", "narrow margins", etc.)
+            result_lower = result.lower()
+            if (
+                "wide moat" in result_lower
+                or re.search(r'moat\s*(?:rating|strength|classification)\s*[:\-]\s*wide', result_lower)
+            ):
                 state["moat_strength"] = "WIDE"
-            elif "Narrow Moat" in result or "narrow moat" in result.lower():
+            elif (
+                "narrow moat" in result_lower
+                or re.search(r'moat\s*(?:rating|strength|classification)\s*[:\-]\s*narrow', result_lower)
+            ):
                 state["moat_strength"] = "NARROW"
-            else:
+            elif (
+                "no moat" in result_lower
+                or re.search(r'moat\s*(?:rating|strength|classification)\s*[:\-]\s*none', result_lower)
+            ):
                 state["moat_strength"] = "NONE"
+            else:
+                # No clear moat signal found — mark unknown rather than guessing
+                state["moat_strength"] = "UNKNOWN"
 
             state["moat_sources"] = []  # Would parse from result
 
         except Exception as e:
             logger.error(f"Error in analyze_moat: {e}")
-            state["errors"].append(f"Moat analysis error: {str(e)}")
+            _new_errors.append(f"Moat analysis error: {str(e)}")
             state["moat_strength"] = "UNKNOWN"
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def analyze_management(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 6: Management analysis"""
-        logger.info(f"[Step 6/8] Analyzing management quality")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 6/10] Analyzing management quality")
         state["current_step"] = "Management Analysis"
-        state["analysis_steps"].append("✓ Management Analysis")
+        _new_steps.append("Management Analysis")
 
         try:
             tool = self.all_tools["analyze_management"]
@@ -298,151 +400,231 @@ class EquityAnalystGraph:
             if not is_relevant:
                 logger.warning(f"Management analysis may not be relevant to {state['ticker']}")
                 state["management_quality"] = "UNKNOWN"
-            elif _has_word(result_lower, ["excellent", "exceptional", "outstanding", "best-in-class"]):
-                state["management_quality"] = "EXCELLENT"
-            elif _has_word(result_lower, ["strong leadership", "strong management", "good management", "effective leadership", "capable", "proven track record", "well-regarded"]):
-                state["management_quality"] = "GOOD"
-            elif _has_word(result_lower, ["fair", "adequate", "mixed", "average"]):
-                state["management_quality"] = "FAIR"
-            elif _has_word(result_lower, ["poor", "weak leadership", "weak management", "concerning", "questionable"]):
-                state["management_quality"] = "POOR"
             else:
-                state["management_quality"] = "UNKNOWN"
+                # Try JSON parsing first (structured output from tool)
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', result, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group(1))
+                        mgmt_val = parsed.get("management_quality", "").upper()
+                        if mgmt_val in ("EXCELLENT", "GOOD", "FAIR", "POOR"):
+                            state["management_quality"] = mgmt_val
+                            state["analysis_steps"] = _new_steps
+                            state["errors"] = _new_errors
+                            return state  # skip keyword fallback
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+                # Fallback: keyword matching
+                if _has_word(result_lower, ["excellent", "exceptional", "outstanding", "best-in-class"]):
+                    state["management_quality"] = "EXCELLENT"
+                elif _has_word(result_lower, ["strong leadership", "strong management", "good management", "effective leadership", "capable", "proven track record", "well-regarded"]):
+                    state["management_quality"] = "GOOD"
+                elif _has_word(result_lower, ["adequate management", "mixed record", "average management", "mediocre", "inconsistent"]):
+                    # Avoid bare "fair"/"average" — too common in financial text (e.g. "fair value", "average revenue")
+                    state["management_quality"] = "FAIR"
+                elif _has_word(result_lower, ["poor management", "weak leadership", "weak management", "concerning", "questionable"]):
+                    state["management_quality"] = "POOR"
+                else:
+                    state["management_quality"] = "UNKNOWN"
 
         except Exception as e:
             logger.error(f"Error in analyze_management: {e}")
-            state["errors"].append(f"Management analysis error: {str(e)}")
+            _new_errors.append(f"Management analysis error: {str(e)}")
             state["management_quality"] = "UNKNOWN"
+
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
+        return state
+
+    @staticmethod
+    def _strip_chart_blocks(text: str) -> str:
+        """Remove ---CHART_DATA--- blocks and CHART_INSTRUCTION lines from tool output.
+
+        Earnings tools append raw JSON chart specs and instruction comments to their
+        output for the frontend SSE layer to consume. These must be stripped before
+        the text is inserted into the report or used in LLM prompts.
+        """
+        # Remove multiline chart data blocks: ---CHART_DATA:id---\n...\n---END_CHART_DATA:id---
+        text = re.sub(
+            r'\n---CHART_DATA:[^\n]+---\n.*?\n---END_CHART_DATA:[^\n]+---',
+            '',
+            text,
+            flags=re.DOTALL,
+        )
+        # Remove single-line chart instruction comments
+        text = re.sub(r'\n\[CHART_INSTRUCTION:[^\]]+\]', '', text)
+        return text
+
+    def fetch_earnings_snapshot(self, state: EquityAnalystState) -> EquityAnalystState:
+        """Parallel Step: Fetch quarterly earnings, surprises, and call insights"""
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Parallel] Fetching earnings snapshot for {state['ticker']}")
+        _new_steps.append("Earnings Snapshot")
+
+        parts = []
+
+        # 1. Quarterly earnings (4 quarters)
+        try:
+            tool = self.all_tools.get("get_quarterly_earnings")
+            if tool:
+                result = tool.invoke({"ticker": state["ticker"], "quarters": 4})
+                parts.append(self._strip_chart_blocks(result))
+        except Exception as e:
+            logger.warning(f"get_quarterly_earnings failed: {e}")
+            _new_errors.append(f"Quarterly earnings error: {str(e)}")
+
+        # 2. Earnings surprises (6 quarters) — parse beat rate before stripping
+        try:
+            tool = self.all_tools.get("get_earnings_surprises")
+            if tool:
+                result = tool.invoke({"ticker": state["ticker"], "quarters": 6})
+                # Parse beat rate from raw output before stripping (chart blocks don't affect this)
+                match = re.search(r'Beats:\s*(\d+)/(\d+)', result)
+                if match:
+                    beats = int(match.group(1))
+                    total = int(match.group(2))
+                    if total > 0:
+                        state["earnings_beat_rate"] = beats / total
+                parts.append(self._strip_chart_blocks(result))
+        except Exception as e:
+            logger.warning(f"get_earnings_surprises failed: {e}")
+            _new_errors.append(f"Earnings surprises error: {str(e)}")
+
+        # 3. Earnings call insights (most recent quarter)
+        try:
+            tool = self.all_tools.get("get_earnings_call_insights")
+            if tool:
+                result = tool.invoke({"ticker": state["ticker"], "quarters": 1})
+                parts.append(self._strip_chart_blocks(result))
+        except Exception as e:
+            logger.warning(f"get_earnings_call_insights failed: {e}")
+            _new_errors.append(f"Earnings call insights error: {str(e)}")
+
+        state["earnings_snapshot"] = "\n\n---\n\n".join(parts) if parts else "Earnings data unavailable"
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
+        return state
+
+    def sync_qualitative(self, state: EquityAnalystState) -> EquityAnalystState:
+        """Fan-in sync point — waits for all parallel qualitative nodes to complete"""
+        logger.info(f"[Sync] Parallel qualitative analysis complete for {state['ticker']}")
+        state["current_step"] = "Qualitative Sync"
+
+        # Warn for any parallel fields still at defaults — helps surface silent failures
+        checks = {
+            "industry_analysis": ("", "analyze_industry"),
+            "competitive_position": ("", "analyze_competitors"),
+            "moat_strength": ("", "analyze_moat"),
+            "capital_allocation": ("", "analyze_management"),
+            "earnings_snapshot": ("", "fetch_earnings_snapshot"),
+        }
+        for field, (default_val, node_name) in checks.items():
+            if state.get(field) == default_val:
+                logger.warning(f"[Sync] Field '{field}' is still at default — '{node_name}' may have failed silently")
 
         return state
 
-    def _parse_market_param(self, text: str, label: str) -> Optional[float]:
-        """Extract a numeric value from get_market_parameters output by label."""
-        for line in text.split("\n"):
-            if label in line:
-                # Find the first number after the label (e.g. "Beta:  1.15")
-                match = re.search(r'[\d.]+', line.split(label)[-1])
-                if match:
-                    try:
-                        return float(match.group())
-                    except ValueError:
-                        pass
-        return None
-
-    def perform_dcf(self, state: EquityAnalystState) -> EquityAnalystState:
-        """Step 7: DCF valuation using real market parameters"""
-        logger.info(f"[Step 7/9] Performing DCF analysis")
-        state["current_step"] = "DCF Valuation"
-        state["analysis_steps"].append("✓ DCF Valuation")
+    def perform_multiples_valuation(self, state: EquityAnalystState) -> EquityAnalystState:
+        """Relative valuation via P/E, EV/EBITDA, P/S, P/B multiples (runs after qualitative sync)"""
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 6] Performing multiples valuation for {state['ticker']}")
+        state["current_step"] = "Multiples Valuation"
+        _new_steps.append("Multiples Valuation")
 
         try:
-            # Fetch real market parameters (beta, risk-free rate, growth rates)
-            market_params_tool = self.all_tools["get_market_parameters"]
-            market_params_result = market_params_tool.invoke({
+            tool = self.all_tools.get("perform_multiples_valuation")
+            if tool is None:
+                raise KeyError("perform_multiples_valuation tool not available")
+
+            result = tool.invoke({
+                "company": state["company_name"],
                 "ticker": state["ticker"],
-                "company_name": state.get("company_name", ""),
-                "industry": state.get("industry", ""),
+                "sector": state.get("sector") or state.get("industry") or "General",
             })
+            state["multiples_valuation"] = result
 
-            # Parse actual values from the structured output
-            beta = self._parse_market_param(market_params_result, "Beta:")
-            risk_free_rate = self._parse_market_param(market_params_result, "Risk-Free Rate:")
-            near_term_growth = self._parse_market_param(market_params_result, "Near-Term Growth Rate:")
-            industry_growth = self._parse_market_param(market_params_result, "Industry Growth Rate:")
-
-            # If near-term growth wasn't found by get_market_parameters,
-            # try a direct web search for analyst consensus as a second attempt
-            if near_term_growth is None:
-                logger.info(f"Near-term growth not found via market params, trying direct web search")
-                try:
-                    search_tool = self.all_tools["search_web"]
-                    growth_search = search_tool.invoke({
-                        "query": f"{state['ticker']} {state.get('company_name', '')} analyst consensus revenue growth rate forecast 2025 2026"
-                    })
-                    # Try to extract a percentage from the search result
-                    pct_matches = re.findall(r'(\d+\.?\d*)\s*%', growth_search)
-                    for pct_str in pct_matches:
-                        pct = float(pct_str) / 100
-                        if 0.01 <= pct <= 0.50:  # Reasonable growth range: 1% to 50%
-                            near_term_growth = pct
-                            logger.info(f"Extracted near-term growth from web search: {pct:.1%}")
-                            break
-                except Exception as e:
-                    logger.warning(f"Web search fallback for growth rate failed: {e}")
-
-            # Final fallback: use historical CAGR
-            historical_cagr = state.get("historical_growth", {}).get("revenue_cagr")
-            if near_term_growth is None and historical_cagr and historical_cagr > 0:
-                near_term_growth = historical_cagr
-                logger.warning(f"Using historical CAGR as fallback for near-term growth: {historical_cagr:.1%}")
-
-            # Build DCF params with parsed values, fallback to sensible defaults
-            dcf_params = {
-                "ticker": state["ticker"],
-                "beta": beta if beta is not None else 1.0,
-                "risk_free_rate": risk_free_rate if risk_free_rate is not None else 0.045,
-                "near_term_growth_rate": near_term_growth if near_term_growth is not None else 0.08,
-                "long_term_growth_rate": industry_growth if industry_growth is not None else 0.05,
-                "terminal_growth_rate": 0.025,
-                "market_risk_premium": 0.055,
-            }
-
-            logger.info(f"DCF params for {state['ticker']}: beta={dcf_params['beta']}, rfr={dcf_params['risk_free_rate']}, growth={dcf_params['near_term_growth_rate']}")
-
-            # Perform DCF with real parameters
-            dcf_tool = self.all_tools["perform_dcf_analysis"]
-            result = dcf_tool.invoke(dcf_params)
-
-            state["dcf_results"] = {"raw": result, "params": dcf_params}
-
-            # Extract base-case intrinsic value explicitly
-            # The DCF output contains multiple scenarios (BASE, BULL, BEAR).
-            # Find the BASE section and extract its intrinsic value to avoid
-            # depending on dict insertion order.
-            base_value = None
-            base_marker = result.upper().find("BASE SCENARIO")
-            if base_marker != -1:
-                base_section = result[base_marker:]
-                iv_marker = base_section.find("Intrinsic Value per Share: $")
-                if iv_marker != -1:
-                    value_str = base_section[iv_marker + len("Intrinsic Value per Share: $"):].split("\n")[0]
-                    base_value = float(value_str.replace(",", ""))
-
-            # Fallback: if BASE section not found, use the first occurrence
-            if base_value is None and "Intrinsic Value per Share: $" in result:
-                value_str = result.split("Intrinsic Value per Share: $")[1].split("\n")[0]
-                base_value = float(value_str.replace(",", ""))
-
-            if base_value is not None:
-                state["intrinsic_value"] = base_value
-                if state.get("current_price", 0) > 0:
-                    state["upside_potential"] = (state["intrinsic_value"] / state["current_price"] - 1) * 100
+            # Parse "Weighted Fair Value: $XXX.XX" from the structured output
+            match = re.search(r'Weighted Fair Value:\s*\$([0-9,]+\.?\d*)', result)
+            if match:
+                fair_value = float(match.group(1).replace(",", ""))
+                state["fair_value"] = fair_value
+                current_price = state.get("current_price", 0)
+                if current_price > 0:
+                    state["valuation_upside"] = (fair_value / current_price - 1) * 100
 
         except Exception as e:
-            logger.error(f"Error in perform_dcf: {e}")
-            state["errors"].append(f"DCF error: {str(e)}")
-            state["intrinsic_value"] = 0
-            state["upside_potential"] = 0
+            logger.error(f"Error in perform_multiples_valuation: {e}")
+            _new_errors.append(f"Multiples valuation error: {str(e)}")
+            state["multiples_valuation"] = "Multiples valuation unavailable"
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
+        return state
+
+    def analyze_sec_filings(self, state: EquityAnalystState) -> EquityAnalystState:
+        """Step 7: Analyze SEC filings (10-K/10-Q) for MD&A, risks, and guidance"""
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 7/10] Analyzing SEC filings for {state['ticker']}")
+        state["current_step"] = "SEC Filing Analysis"
+        _new_steps.append("SEC Filing Analysis")
+
+        try:
+            tool = self.all_tools.get("analyze_sec_filing")
+            if tool is None:
+                raise KeyError("analyze_sec_filing tool not available")
+
+            result = tool.invoke({
+                "ticker": state["ticker"],
+                "filing_type": "10-K",
+                "sections": "all",
+            })
+            state["sec_filing_analysis"] = result
+
+        except Exception as e:
+            logger.error(f"Error in analyze_sec_filings: {e}")
+            _new_errors.append(f"SEC filing analysis error: {str(e)}")
+            state["sec_filing_analysis"] = "SEC filing analysis unavailable"
+
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def develop_thesis(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 8: Develop investment thesis"""
-        logger.info(f"[Step 7/8] Developing investment thesis")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 8/10] Developing investment thesis")
         state["current_step"] = "Investment Thesis"
-        state["analysis_steps"].append("✓ Investment Thesis")
+        _new_steps.append("Investment Thesis")
+
+        fair_value = state.get("fair_value", 0)
+        valuation_upside = state.get("valuation_upside", 0)
+        valuation_context = (
+            f"Multiples Fair Value: ${fair_value:.2f} ({valuation_upside:+.1f}% vs. current price)"
+            if fair_value > 0 else "Multiples valuation unavailable"
+        )
 
         # Use LLM to synthesize bull/bear cases from all analysis
         prompt = f"""Based on the following analysis for {state['company_name']} ({state['ticker']}),
-        develop a concise bull case (3 points) and bear case (3 points):
+        develop a concise bull case (3 points) and bear case (3 points).
+
+        Use specific numbers and named factors — not generic statements.
 
         Industry: {state.get('industry_analysis', 'N/A')[:500]}
         Competitive Position: {state.get('competitive_position', 'N/A')[:500]}
         Moat: {state.get('moat_strength', 'UNKNOWN')}
         Management: {state.get('management_quality', 'UNKNOWN')}
+        Valuation: {valuation_context}
+        SEC Filing Highlights: {state.get('sec_filing_analysis', 'N/A')[:500]}
+        Financial Metrics: {state.get('financial_metrics', {}).get('raw', 'N/A')[:400]}
+        Earnings Trend: {state.get('earnings_snapshot', 'N/A')[:500]}
         Current Price: ${state.get('current_price', 0):.2f}
 
-        Format as:
+        Format exactly as:
         BULL CASE:
         1. [point]
         2. [point]
@@ -478,15 +660,18 @@ class EquityAnalystGraph:
                             points.append(cleaned)
                 return points
 
+            # Parse sections — handle any ordering of BULL/BEAR in LLM output (#7)
             if bull_idx != -1:
-                bull_end = bear_idx if bear_idx > bull_idx else len(thesis)
-                # Skip past the "BULL CASE:" header line
+                # Bull section ends at bear section (only if bear comes after bull)
+                bull_end = bear_idx if (bear_idx != -1 and bear_idx > bull_idx) else len(thesis)
                 bull_section = thesis[bull_idx:bull_end]
                 bull_section = bull_section.split("\n", 1)[1] if "\n" in bull_section else ""
                 state["bull_case"] = _extract_points(bull_section) or ["Analysis incomplete"]
 
             if bear_idx != -1:
-                bear_section = thesis[bear_idx:]
+                # Bear section ends at bull section (only if bull comes after bear)
+                bear_end = bull_idx if (bull_idx != -1 and bull_idx > bear_idx) else len(thesis)
+                bear_section = thesis[bear_idx:bear_end]
                 bear_section = bear_section.split("\n", 1)[1] if "\n" in bear_section else ""
                 state["bear_case"] = _extract_points(bear_section) or ["Analysis incomplete"]
 
@@ -494,22 +679,27 @@ class EquityAnalystGraph:
 
         except Exception as e:
             logger.error(f"Error in develop_thesis: {e}")
-            state["errors"].append(f"Thesis development error: {str(e)}")
+            _new_errors.append(f"Thesis development error: {str(e)}")
             state["bull_case"] = ["Analysis incomplete"]
             state["bear_case"] = ["Analysis incomplete"]
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def make_recommendation(self, state: EquityAnalystState) -> EquityAnalystState:
-        """Step 8: Make final recommendation based on qualitative analysis"""
-        logger.info(f"[Step 8/8] Making recommendation")
+        """Step 9: Make final recommendation based on qualitative analysis"""
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 9/10] Making recommendation")
         state["current_step"] = "Recommendation"
-        state["analysis_steps"].append("✓ Recommendation")
+        _new_steps.append("Recommendation")
 
-        # Score-based recommendation from qualitative factors
-        # Each factor contributes to a composite score
-        score = 0  # Range roughly -4 to +4
+        # Composite score across four independent signals
+        # Range: moat [-1,+2] + management [-2,+2] + financials [-1,+1] + valuation [-2,+2] = [-6, +7]
+        score = 0
 
+        # Signal 1: Moat quality
         moat = state.get("moat_strength", "UNKNOWN")
         if moat == "WIDE":
             score += 2
@@ -517,7 +707,9 @@ class EquityAnalystGraph:
             score += 1
         elif moat == "NONE":
             score -= 1
+        # UNKNOWN is neutral
 
+        # Signal 2: Management quality
         mgmt = state.get("management_quality", "UNKNOWN")
         if mgmt == "EXCELLENT":
             score += 2
@@ -525,38 +717,78 @@ class EquityAnalystGraph:
             score += 1
         elif mgmt == "POOR":
             score -= 2
-        elif mgmt == "FAIR":
-            pass  # Neutral — average management is not a negative signal
+        # FAIR and UNKNOWN are neutral
 
-        # Bull/bear case balance
-        bull_count = len(state.get("bull_case", []))
-        bear_count = len(state.get("bear_case", []))
-        if bull_count > bear_count:
-            score += 1
-        elif bear_count > bull_count:
-            score -= 1
+        # Signal 3: Financial health (revenue CAGR from Step 2)
+        cagr = state.get("historical_growth", {}).get("revenue_cagr")
+        if cagr is not None:
+            if cagr > 0.15:
+                score += 1   # Strong growth (>15% CAGR)
+            elif cagr < 0:
+                score -= 1   # Revenue declining
 
-        if score >= 3:
+        # Signal 4: Relative valuation (multiples upside vs. fair value)
+        valuation_upside = state.get("valuation_upside", None)
+        if valuation_upside is not None:
+            if valuation_upside > 25:
+                score += 2   # Significantly undervalued
+            elif valuation_upside > 10:
+                score += 1   # Moderately undervalued
+            elif valuation_upside < -25:
+                score -= 2   # Significantly overvalued
+            elif valuation_upside < -10:
+                score -= 1   # Moderately overvalued
+
+        # Signal 5: Earnings beat rate (consistency at meeting expectations)
+        beat_rate = state.get("earnings_beat_rate")
+        if beat_rate is not None and beat_rate > 0.0:
+            if beat_rate >= 0.75:
+                score += 1   # Consistently beats expectations
+            elif beat_rate <= 0.25:
+                score -= 1   # Frequently misses expectations
+
+        if score >= 4:
             state["rating"] = "BUY"
             state["conviction"] = "HIGH"
         elif score >= 1:
             state["rating"] = "BUY"
             state["conviction"] = "MEDIUM"
-        elif score >= -1:
+        elif score >= -2:
             state["rating"] = "HOLD"
             state["conviction"] = "MEDIUM"
         else:
             state["rating"] = "SELL"
-            state["conviction"] = "HIGH" if score <= -3 else "MEDIUM"
+            state["conviction"] = "HIGH" if score <= -5 else "MEDIUM"
 
-        state["price_target"] = state.get("current_price", 0)
+        # Price target: use multiples fair value if available, else fall back to rating-based estimate
+        fair_value = state.get("fair_value", 0)
+        current_price = state.get("current_price", 0)
+        if fair_value > 0:
+            state["price_target"] = round(fair_value, 2)
+        elif current_price > 0:
+            multipliers = {
+                ("BUY", "HIGH"): 1.25,
+                ("BUY", "MEDIUM"): 1.15,
+                ("HOLD", "MEDIUM"): 1.05,
+                ("SELL", "HIGH"): 0.80,
+                ("SELL", "MEDIUM"): 0.85,
+            }
+            mult = multipliers.get((state["rating"], state["conviction"]), 1.0)
+            state["price_target"] = round(current_price * mult, 2)
+        else:
+            state["price_target"] = 0.0
 
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
     def format_report(self, state: EquityAnalystState) -> EquityAnalystState:
         """Step 10: Format final report"""
-        logger.info(f"Formatting final report")
+        _new_steps: list = []
+        _new_errors: list = []
+        logger.info(f"[Step 10/10] Formatting final report")
         state["current_step"] = "Complete"
+        _new_steps.append("Report")
 
         ticker = state["ticker"]
         company_name = state.get("company_name", ticker)
@@ -565,8 +797,6 @@ class EquityAnalystGraph:
         conviction = state.get("conviction", "N/A")
         moat_strength = state.get("moat_strength", "Unknown")
         management_quality = state.get("management_quality", "Unknown")
-        intrinsic_value = state.get("intrinsic_value", 0.0)
-        upside_potential = state.get("upside_potential", 0.0)
         date_str = datetime.now().strftime("%B %d, %Y")
 
         # Warnings as blockquote
@@ -586,34 +816,46 @@ class EquityAnalystGraph:
         # Base case / executive summary
         base_case = state.get("base_case", "")
         if not base_case:
-            upside_sign = "+" if upside_potential >= 0 else ""
             base_case = (
                 f"{company_name} earns a **{rating}** rating with **{conviction}** conviction. "
                 f"The company has a **{moat_strength}** competitive moat and **{management_quality}** "
-                f"management quality. Base case intrinsic value is ${intrinsic_value:.2f} "
-                f"({upside_sign}{upside_potential:.1f}% vs. current price)."
+                f"management quality."
             )
 
-        # Industry, competitive, management sections
+        # Valuation section
+        fair_value = state.get("fair_value", 0)
+        valuation_upside = state.get("valuation_upside", 0)
+        price_target = state.get("price_target", 0)
+        multiples_md = state.get("multiples_valuation", "") or "_Multiples valuation unavailable._"
+
+        if fair_value > 0:
+            upside_sign = "+" if valuation_upside >= 0 else ""
+            valuation_summary = (
+                f"**Multiples Fair Value:** ${fair_value:.2f} &nbsp;|&nbsp; "
+                f"**Current Price:** ${current_price:.2f} &nbsp;|&nbsp; "
+                f"**Implied Upside:** {upside_sign}{valuation_upside:.1f}%\n\n"
+            )
+        else:
+            valuation_summary = ""
+
+        # Price target line for recommendation section
+        if price_target > 0:
+            pt_source = "multiples valuation" if fair_value > 0 else "rating-based estimate"
+            pt_line = f"**Price Target:** ${price_target:.2f} ({pt_source})"
+        else:
+            pt_line = "_Price target unavailable._"
+
+        # Industry, competitive, management, earnings, SEC sections
         industry_md = state.get("industry_analysis", "") or "_Industry analysis unavailable._"
         competitive_md = state.get("competitive_position", "") or "_Competitor analysis unavailable._"
         mgmt_md = state.get("capital_allocation", "") or "_Management analysis unavailable._"
-
-        # DCF valuation line
-        if intrinsic_value > 0 and current_price > 0:
-            upside_sign = "+" if upside_potential >= 0 else ""
-            dcf_md = (
-                f"**Intrinsic Value (Base Case):** ${intrinsic_value:.2f}  |  "
-                f"**Current Price:** ${current_price:.2f}  |  "
-                f"**Upside:** {upside_sign}{upside_potential:.1f}%"
-            )
-        else:
-            dcf_md = "DCF valuation unavailable due to data fetch errors."
+        earnings_md = state.get("earnings_snapshot", "") or "_Earnings data unavailable._"
+        sec_md = state.get("sec_filing_analysis", "") or "_SEC filing analysis unavailable._"
 
         report = f"""# {company_name} ({ticker})
 ## Equity Research Report · {date_str}
 
-**Rating:** {rating} &nbsp;|&nbsp; **Conviction:** {conviction} &nbsp;|&nbsp; **Current Price:** ${current_price:.2f} &nbsp;|&nbsp; **Moat:** {moat_strength} &nbsp;|&nbsp; **Management:** {management_quality}
+**Rating:** {rating} &nbsp;|&nbsp; **Conviction:** {conviction} &nbsp;|&nbsp; **Current Price:** ${current_price:.2f} &nbsp;|&nbsp; **Price Target:** ${price_target:.2f} &nbsp;|&nbsp; **Moat:** {moat_strength} &nbsp;|&nbsp; **Management:** {management_quality}
 
 {warnings_md}---
 
@@ -641,9 +883,21 @@ class EquityAnalystGraph:
 
 ---
 
-## DCF Valuation
+## Earnings Snapshot
 
-{dcf_md}
+{earnings_md}
+
+---
+
+## Valuation
+
+{valuation_summary}{multiples_md}
+
+---
+
+## SEC Filing Highlights
+
+{sec_md}
 
 ---
 
@@ -663,14 +917,18 @@ class EquityAnalystGraph:
 
 **Rating: {rating}** &nbsp;|&nbsp; **Conviction: {conviction}**
 
+{pt_line}
+
 ---
 
 *This report was generated by the AI Equity Analyst (LangGraph) on {date_str}. Based on publicly available data. Not investment advice.*"""
 
         state["final_report"] = report
+        state["analysis_steps"] = _new_steps
+        state["errors"] = _new_errors
         return state
 
-    def analyze(self, ticker: str) -> dict:
+    def analyze(self, ticker: str, config: Optional[dict] = None) -> dict:
         """Run the complete analysis"""
         # Initialize state
         initial_state = {
@@ -692,6 +950,12 @@ class EquityAnalystGraph:
             "moat_sources": [],
             "management_quality": "",
             "capital_allocation": "",
+            "earnings_snapshot": "",
+            "earnings_beat_rate": None,
+            "sec_filing_analysis": "",
+            "multiples_valuation": "",
+            "fair_value": 0.0,
+            "valuation_upside": 0.0,
             "dcf_results": {},
             "intrinsic_value": 0.0,
             "upside_potential": 0.0,
@@ -707,8 +971,8 @@ class EquityAnalystGraph:
             "final_report": ""
         }
 
-        # Run the graph
-        final_state = self.graph.invoke(initial_state)
+        # Run the graph — forward callbacks config if provided (#12)
+        final_state = self.graph.invoke(initial_state, config=config or {})
 
         return final_state
 
@@ -727,12 +991,15 @@ class EquityAnalystGraphAdapter:
         self.graph_agent = graph_agent
         self._owner = owner  # GraphWrapper — provides _emit_chart_data
 
-    def _extract_ticker(self, query: str) -> str:
-        """Extract ticker from user query using multi-pattern matching with blacklist."""
+    def _extract_ticker(self, query: str) -> Optional[str]:
+        """Extract ticker from user query using multi-pattern matching with blacklist.
+
+        Returns the ticker string, or None if no recognizable ticker is found.
+        """
         from backend.config import TICKER_BLACKLIST, COMPANY_TICKER_MAP
 
         if not query:
-            return "AAPL"
+            return None
 
         query_lower = query.lower()
 
@@ -741,15 +1008,19 @@ class EquityAnalystGraphAdapter:
         if match:
             return match.group(1).upper()
 
-        # Pattern 2: Ticker with context keyword (e.g. "AAPL stock", "MSFT analysis")
+        # Pattern 2: Ticker with context keyword (e.g. "AAPL stock", "MSFT Analysis")
+        # Apply IGNORECASE for the keyword suffix only — then verify the captured
+        # ticker group is actually uppercase so "apple stock" doesn't become "APPLE".
         match = re.search(
-            r'\b([A-Z]{2,5})\b\s*(?:stock|shares|earnings|analysis|price|chart|valuation)',
-            query, re.IGNORECASE,
+            r'\b([A-Za-z]{2,5})\b\s*(?:stock|shares|earnings|analysis|price|chart|valuation)',
+            query,
+            re.IGNORECASE,
         )
         if match:
-            ticker = match.group(1).upper()
-            if ticker not in TICKER_BLACKLIST:
-                return ticker
+            candidate = match.group(1)
+            # Accept only if the ticker was written in all-caps in the original query
+            if candidate == candidate.upper() and candidate not in TICKER_BLACKLIST:
+                return candidate.upper()
 
         # Pattern 3: Company name mapping (e.g. "Apple", "Tesla")
         for company, ticker in COMPANY_TICKER_MAP.items():
@@ -763,7 +1034,7 @@ class EquityAnalystGraphAdapter:
             if ticker not in TICKER_BLACKLIST:
                 return ticker
 
-        return "AAPL"  # Default fallback
+        return None  # No ticker found — caller must handle
 
     def invoke(self, inputs: dict, config: dict = None):
         """
@@ -779,10 +1050,14 @@ class EquityAnalystGraphAdapter:
         query = inputs.get("input", "")
         ticker = self._extract_ticker(query)
 
+        if ticker is None:
+            logger.warning(f"[LangGraph] No ticker found in query: '{query}'")
+            return {"output": "No stock ticker found in your query. Please specify a ticker (e.g. AAPL, MSFT) or company name."}
+
         logger.info(f"[LangGraph] Analyzing {ticker}")
 
-        # Run the graph
-        final_state = self.graph_agent.analyze(ticker)
+        # Run the graph — forward config (includes callbacks for streaming) (#12)
+        final_state = self.graph_agent.analyze(ticker, config=config)
 
         # Emit chart data from all tool outputs collected in state
         if self._owner is not None:
@@ -838,7 +1113,11 @@ def create_equity_analyst_graph(api_key: str = None, model: str = "claude-sonnet
             """Direct CLI interface - extracts ticker and runs analysis"""
             adapter = EquityAnalystGraphAdapter(self.graph, owner=self)
             ticker = adapter._extract_ticker(query)
+            if ticker is None:
+                return f"Could not identify a ticker symbol in: '{query}'. Please specify a ticker (e.g., 'Analyze AAPL')."
             final_state = self.graph.analyze(ticker)
             return final_state.get("final_report", "Analysis failed")
+
+
 
     return GraphWrapper(graph)

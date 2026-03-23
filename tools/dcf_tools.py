@@ -6,7 +6,6 @@ from typing import Optional, Type, List, Dict
 from pydantic import BaseModel, Field
 from data.financial_data import FinancialDataFetcher
 from calculators.dcf_calculator import DCFCalculator, DCFAssumptions
-from tools.equity_analyst_tools import CompetitorAnalysisTool
 from shared.tavily_client import get_tavily_client
 from data.fred_client import get_fred_client
 import json
@@ -103,7 +102,7 @@ class DCFAnalysisInput(BaseModel):
     )
     shares_outstanding: Optional[float] = Field(
         default=None,
-        description="Shares outstanding in millions (e.g., 15441.0). Pass this from get_financial_metrics. Used when API returns 0."
+        description="Shares outstanding as absolute count (e.g., 15441000000 for Apple). Pass this from get_financial_metrics. Used when API returns 0."
     )
 
 
@@ -179,27 +178,39 @@ class GetFinancialMetricsTool(BaseTool):
             return f"Error: Could not fetch financial metrics for ticker {ticker}"
 
         # --- Margins: prefer API-provided values, fall back to manual calculation ---
-        latest_rev = metrics.get('latest_revenue', 0) or 1
         has_rev = metrics.get('latest_revenue', 0) > 0
+        latest_rev = metrics.get('latest_revenue', 0) if has_rev else 0
 
-        gross_margin = metrics.get('gross_margin') or (
+        # Use `is None` instead of falsy `or` so that a legitimate 0.0 margin
+        # returned by the API (breakeven company) is not silently discarded and
+        # replaced by a possibly-different manual recalculation.
+        _gross_margin_api = metrics.get('gross_margin')
+        gross_margin = _gross_margin_api if _gross_margin_api is not None else (
             metrics.get('latest_gross_profit', 0) / latest_rev if has_rev else None
         )
-        operating_margin = metrics.get('operating_margin') or (
+        _operating_margin_api = metrics.get('operating_margin')
+        operating_margin = _operating_margin_api if _operating_margin_api is not None else (
             metrics.get('latest_ebit', 0) / latest_rev if has_rev else 0
         )
-        net_margin = metrics.get('net_margin') or (
+        _net_margin_api = metrics.get('net_margin')
+        net_margin = _net_margin_api if _net_margin_api is not None else (
             metrics.get('latest_net_income', 0) / latest_rev if has_rev else 0
         )
         fcf_margin = metrics.get('latest_fcf', 0) / latest_rev if has_rev else 0
 
         # --- DCF driver ratios: still derived from raw statements ---
-        capex_to_revenue = metrics.get('latest_capex', 0) / latest_rev if has_rev else 0
+        # abs() on capex guards against APIs that return CapEx as a negative cash-outflow.
+        # The data layer already applies abs(), but we repeat it here defensively so this
+        # tool stays correct even if the upstream convention ever changes.
+        capex_to_revenue = abs(metrics.get('latest_capex', 0) or 0) / latest_rev if has_rev else 0
         da_to_revenue = metrics.get('latest_depreciation_amortization', 0) / latest_rev if has_rev else 0
         nwc_to_revenue = metrics.get('net_working_capital', 0) / latest_rev if has_rev else 0
+        # Explicit None-safe check: metrics.get('total_debt') can return None when the key
+        # exists but the value is null/None, which would make `> 0` raise TypeError.
+        total_debt_val = metrics.get('total_debt') or 0
         cost_of_debt = (
-            metrics.get('latest_interest_expense', 0) / metrics.get('total_debt', 1)
-            if metrics.get('total_debt', 0) > 0 else 0.05
+            metrics.get('latest_interest_expense', 0) / total_debt_val
+            if total_debt_val > 0 else 0.05
         )
 
         # --- Growth rates: prefer API, fall back to manual CAGR ---
@@ -518,18 +529,13 @@ class PerformDCFAnalysisTool(BaseTool):
 
             # Extract required values — prefer explicitly-passed values over API data
             current_revenue = metrics.get('latest_revenue', 0)
-            api_price = info.get('current_price', 0)
-            if api_price > 0:
-                current_price = api_price
-            elif current_price is None or current_price <= 0:
-                current_price = 0
-            api_shares = metrics.get('shares_outstanding', 0)
-            if api_shares > 0:
-                shares_outstanding = api_shares
-            elif shares_outstanding is None or shares_outstanding <= 0:
-                shares_outstanding = 0
-            total_debt = metrics.get('total_debt', 0)
-            cash = metrics.get('cash_and_equivalents', 0)
+            # Prefer explicitly-passed values; fall back to API data only when not supplied
+            if not current_price or current_price <= 0:
+                current_price = info.get('current_price', 0) or 0
+            if not shares_outstanding or shares_outstanding <= 0:
+                shares_outstanding = metrics.get('shares_outstanding', 0) or 0
+            total_debt = metrics.get('total_debt') or 0
+            cash = metrics.get('cash_and_equivalents') or 0
 
             # Validate data
             if current_revenue <= 0 or shares_outstanding <= 0:
@@ -555,19 +561,26 @@ DO NOT use historical CAGR - use forward-looking analyst estimates."""
 
             # 3. EBIT margin
             if ebit_margin is None:
-                latest_ebit = metrics.get('latest_ebit', 0)
-                if latest_ebit > 0 and current_revenue > 0:
+                latest_ebit = metrics.get('latest_ebit')
+                if latest_ebit is not None and current_revenue > 0:
                     ebit_margin = latest_ebit / current_revenue
-                    logger.info(f"Calculated EBIT margin: {ebit_margin:.2%}")
+                    if ebit_margin < 0:
+                        logger.warning(f"Negative EBIT margin for {ticker_clean}: {ebit_margin:.2%}. Proceeding with DCF using negative margin.")
+                    else:
+                        logger.info(f"Calculated EBIT margin: {ebit_margin:.2%}")
                 else:
                     return f"Error: Cannot calculate EBIT margin for {ticker_clean}. Missing EBIT or revenue data."
 
             # 4. Tax rate
             if tax_rate is None:
                 tax_rate = metrics.get('effective_tax_rate')
-                if tax_rate is None or tax_rate <= 0:
+                if tax_rate is None:
                     tax_rate = 0.21  # Default to US corporate rate
                     logger.info(f"Tax rate not available, using default: {tax_rate:.2%}")
+                elif tax_rate < 0:
+                    # Negative effective tax rate is valid (tax credits/benefits); clamp to 0
+                    logger.warning(f"Negative effective tax rate ({tax_rate:.2%}) for {ticker_clean}, clamping to 0.")
+                    tax_rate = 0.0
                 else:
                     logger.info(f"Using effective tax rate: {tax_rate:.2%}")
 
@@ -579,12 +592,17 @@ DO NOT use historical CAGR - use forward-looking analyst estimates."""
             # 5. CapEx to revenue
             if capex_to_revenue is None:
                 latest_capex = metrics.get('latest_capex', 0)
+                # Some APIs return CapEx as negative (cash outflow convention) — take absolute value
+                latest_capex = abs(latest_capex) if latest_capex is not None else 0
                 if latest_capex > 0 and current_revenue > 0:
                     capex_to_revenue = latest_capex / current_revenue
                     logger.info(f"Calculated CapEx/Revenue: {capex_to_revenue:.2%}")
                 else:
                     capex_to_revenue = 0.05  # Default 5%
                     logger.warning(f"CapEx not available for {ticker_clean}, using default: {capex_to_revenue:.2%}")
+            elif capex_to_revenue < 0:
+                logger.warning(f"Negative capex_to_revenue ({capex_to_revenue:.2%}) for {ticker_clean}, using absolute value.")
+                capex_to_revenue = abs(capex_to_revenue)
 
             # 6. Depreciation to revenue
             if depreciation_to_revenue is None:
@@ -772,9 +790,8 @@ To fix: Lower terminal growth rate or increase market risk premium."""
 
                 # Add levered DCF methodology note to output
                 methodology_note = f"""
-================================================================================
-METHODOLOGY: LEVERED DCF (FCFE Method)
-================================================================================
+### Methodology: Levered DCF (FCFE Method)
+
 D/E Ratio: {debt_to_equity:.2f} (> {LEVERAGE_THRESHOLD} threshold)
 
 Why Levered DCF?
@@ -783,7 +800,7 @@ Why Levered DCF?
 - Discounted at Cost of Equity ({cost_of_equity:.2%}), not WACC
 
 FCFE = UFCF - Interest(1-T) + Net Borrowing
-================================================================================
+
 """
             else:
                 results = calculator.analyze_with_scenarios(
@@ -796,14 +813,13 @@ FCFE = UFCF - Interest(1-T) + Net Borrowing
                     base_assumptions=assumptions
                 )
                 methodology_note = f"""
-================================================================================
-METHODOLOGY: UNLEVERED DCF (UFCF Method)
-================================================================================
+### Methodology: Unlevered DCF (UFCF Method)
+
 D/E Ratio: {debt_to_equity:.2f} (< {LEVERAGE_THRESHOLD} threshold)
 
 UFCF = NOPAT + D&A - CapEx - ΔNWC
 Discounted at WACC ({calculated_wacc:.2%})
-================================================================================
+
 """
 
             # Format results
@@ -896,8 +912,12 @@ class GetMarketParametersTool(BaseTool):
             # IMPORTANT: Don't blindly take numbers[0] — it's often a year
             # or maturity period (e.g., "10" from "10-year Treasury").
 
-            # Strategy 1: For percentage data, find numbers directly adjacent to %
-            if '%' in answer or 'percent' in answer.lower():
+            # Strategy 1: For percentage data types only, extract numbers adjacent to %.
+            # Restricting to known percentage types prevents beta queries from
+            # accidentally returning a percentage mentioned elsewhere in the answer
+            # (e.g., "Beta is 1.2, stock up 15% this year" → 0.15 mistaken for beta).
+            PERCENTAGE_DATA_TYPES = {'risk_free_rate', 'growth_rate', 'industry_growth'}
+            if data_type in PERCENTAGE_DATA_TYPES and ('%' in answer or 'percent' in answer.lower()):
                 pct_matches = re.findall(r'(\d+\.?\d*)\s*(?:%|percent)', answer, re.IGNORECASE)
                 for pct_str in pct_matches:
                     value = float(pct_str) / 100
@@ -927,8 +947,9 @@ class GetMarketParametersTool(BaseTool):
                 # Auto-convert if value looks like a percentage (> 1 for rates)
                 if data_type in ['risk_free_rate', 'growth_rate', 'industry_growth']:
                     if value > 1:
+                        original = value
                         value = value / 100
-                        logger.info(f"Auto-converted {data_type} from {value*100}% to {value}")
+                        logger.info(f"Auto-converted {data_type} from {original}% to {value}")
 
                 validated = self._validate_value(value, data_type)
                 if validated is not None:
@@ -966,9 +987,11 @@ class GetMarketParametersTool(BaseTool):
         try:
             ticker_clean = ticker.upper().strip()
 
+            # Single fetcher instance shared across all API calls in this method
+            fetcher = FinancialDataFetcher()
+
             # Get company name if not provided
             if not company_name:
-                fetcher = FinancialDataFetcher()
                 info = fetcher.get_stock_info(ticker_clean)
                 company_name = info.get('company_name', ticker_clean) if info else ticker_clean
                 industry = info.get('industry', industry) if info else industry
@@ -988,7 +1011,6 @@ class GetMarketParametersTool(BaseTool):
             # 1. Beta: Try Financial Datasets API first, then Tavily search fallback
             # Note: Financial Datasets API returns beta=1.0 as default (not real data),
             # so we only trust non-default values from it
-            fetcher = FinancialDataFetcher()
             metrics = fetcher.get_key_metrics(ticker_clean)
             api_beta = metrics.get('beta') if metrics else None
             if api_beta and api_beta != 1.0:
@@ -997,7 +1019,6 @@ class GetMarketParametersTool(BaseTool):
             else:
                 beta_query = f"What is the current beta coefficient for {company_name} ({ticker_clean}) stock?"
                 beta = self._query_tavily_for_number(beta_query, 'beta')
-                beta = self._validate_value(beta, 'beta')
                 if beta is not None:
                     results['beta'] = round(beta, 2)
                     results['sources'].append(f"Beta: Tavily web search")
@@ -1082,10 +1103,24 @@ class GetMarketParametersTool(BaseTool):
             output.append(f'    "ticker": "{ticker_clean}",')
             output.append(f'    "beta": {results["beta"]},')
             output.append(f'    "risk_free_rate": {results["risk_free_rate"]},')
-            output.append(f'    "near_term_growth_rate": {results["near_term_growth_rate"] if results["near_term_growth_rate"] else "REQUIRED"},')
+            near_term = results["near_term_growth_rate"] if results["near_term_growth_rate"] else "REQUIRED"
+            near_term_val = near_term if isinstance(near_term, float) else f'"{near_term}"'
+            output.append(f'    "near_term_growth_rate": {near_term_val},')
             output.append(f'    "long_term_growth_rate": {results["industry_growth_rate"]},')
+            # Suggest MRP based on beta: higher beta = higher risk premium.
+            # Agent prompt instructs manual override, but providing a beta-calibrated
+            # starting point prevents the LLM from always copying a stale 5.5%.
+            beta_val = results.get("beta") or 1.0
+            if beta_val <= 0.8:
+                suggested_mrp = 0.050   # Low-beta defensive / mega-cap
+            elif beta_val <= 1.2:
+                suggested_mrp = 0.055   # Average-risk large-cap
+            elif beta_val <= 1.5:
+                suggested_mrp = 0.065   # Above-average risk / growth
+            else:
+                suggested_mrp = 0.070   # High-beta / speculative
             output.append(f'    "terminal_growth_rate": 0.025,')
-            output.append(f'    "market_risk_premium": 0.055')
+            output.append(f'    "market_risk_premium": {suggested_mrp}  // adjust: 5.0-5.5% mega-cap, 5.5-6.5% large-cap, 6.5-7.5% mid-cap, 7.5%+ high-risk')
             output.append(f'}}')
             output.append(f"```")
 
@@ -1212,15 +1247,13 @@ Your custom UFCF-based DCF is still the primary valuation method."""
                     output.append(f"  Error: {fmp_levered_dcf['error']}")
 
             output.append("")
-            output.append("-" * 70)
-            output.append("METHODOLOGY NOTE:")
+            output.append("### Methodology Note")
             output.append("")
             output.append("Your custom DCF uses explicit UFCF formula with forward-looking growth")
             output.append("projections. FMP uses undocumented methodology.")
             output.append("")
             output.append("Use FMP values as a sanity check, not as the primary valuation.")
             output.append("If divergence exceeds 20%, investigate assumption differences.")
-            output.append("-" * 70)
 
             return "\n".join(output)
 
@@ -1235,7 +1268,7 @@ Your custom UFCF-based DCF is still the primary valuation method."""
 
 class PerformMultiplesValuationTool(BaseTool):
     """Tool to perform multiples-based valuation as alternative/complement to DCF"""
-    name: str = "perform_multiples_valuation"
+    name: str = "perform_multiples_valuation_dcf"
     description: str = """Perform a multiples-based valuation using P/E, EV/EBITDA, P/S, and P/B ratios.
 
     WHEN TO USE MULTIPLES vs DCF:
@@ -1606,10 +1639,10 @@ class DCFReportInput(BaseModel):
     base_intrinsic_value: float = Field(default=0, description="Base case intrinsic value per share")
     bull_intrinsic_value: float = Field(default=0, description="Bull case intrinsic value per share")
     bear_intrinsic_value: float = Field(default=0, description="Bear case intrinsic value per share")
-    base_upside: float = Field(default=0, description="Base case upside/downside percentage")
-    bull_upside: float = Field(default=0, description="Bull case upside/downside percentage")
-    bear_upside: float = Field(default=0, description="Bear case upside/downside percentage")
-    rating: str = Field(default="HOLD", description="Investment rating (BUY, HOLD, or SELL)")
+    base_upside: Optional[float] = Field(default=None, description="Base case upside/downside percentage. Omit to auto-calculate from base_intrinsic_value and current_price.")
+    bull_upside: Optional[float] = Field(default=None, description="Bull case upside/downside percentage. Omit to auto-calculate.")
+    bear_upside: Optional[float] = Field(default=None, description="Bear case upside/downside percentage. Omit to auto-calculate.")
+    rating: str = Field(default="", description="Investment rating (BUY, HOLD, or SELL). Leave empty to auto-determine from base_upside.")
     conviction: str = Field(default="Medium", description="Conviction level (High, Medium, Low)")
     # Assumptions - all optional with defaults
     near_term_growth_rate: float = Field(default=0.05, description="Near-term growth rate (Years 1-2)")
@@ -1670,7 +1703,7 @@ class FormatDCFReportTool(BaseTool):
         base_upside: float = 0,
         bull_upside: float = 0,
         bear_upside: float = 0,
-        rating: str = "HOLD",
+        rating: str = "",
         conviction: str = "Medium",
         near_term_growth_rate: float = 0.05,
         long_term_growth_rate: float = 0.04,
@@ -1713,26 +1746,36 @@ class FormatDCFReportTool(BaseTool):
                 if market_cap == 0:
                     market_cap = info.get('market_cap', 0)
 
-        # Calculate upside if values provided but upside not
-        if base_intrinsic_value > 0 and current_price > 0 and base_upside == 0:
+        # Auto-calculate upside only when not explicitly provided (None sentinel).
+        # Using `is None` instead of `== 0` prevents overwriting a legitimate 0%
+        # upside that the agent intentionally passes (intrinsic value ≈ current price).
+        if base_upside is None and base_intrinsic_value > 0 and current_price > 0:
             base_upside = ((base_intrinsic_value - current_price) / current_price) * 100
-        if bull_intrinsic_value > 0 and current_price > 0 and bull_upside == 0:
+        if bull_upside is None and bull_intrinsic_value > 0 and current_price > 0:
             bull_upside = ((bull_intrinsic_value - current_price) / current_price) * 100
-        if bear_intrinsic_value > 0 and current_price > 0 and bear_upside == 0:
+        if bear_upside is None and bear_intrinsic_value > 0 and current_price > 0:
             bear_upside = ((bear_intrinsic_value - current_price) / current_price) * 100
+        # Coerce None to 0.0 for downstream formatting (report template expects a number)
+        base_upside = base_upside if base_upside is not None else 0.0
+        bull_upside = bull_upside if bull_upside is not None else 0.0
+        bear_upside = bear_upside if bear_upside is not None else 0.0
 
-        # Auto-determine rating based on base_upside if not explicitly set
-        if rating == "HOLD" and base_upside != 0:
+        # Auto-determine rating from base_upside only when no explicit rating was provided
+        if not rating:
             if base_upside > 15:
                 rating = "BUY"
             elif base_upside < -15:
                 rating = "SELL"
+            else:
+                rating = "HOLD"
 
-        # Normalize values that might be passed as percentages instead of decimals
-        # If values seem like percentages (> 1), convert to decimal
-        if near_term_growth_rate > 1:
+        # Normalize values that are clearly passed as whole-number percentages.
+        # Use conservative thresholds to avoid corrupting legitimate large values:
+        # - Growth rates: threshold 5 (500% growth is implausible; 1.5 = 150% is valid)
+        # - Rate/margin fields: threshold 1 (values >1 can only be percentages here)
+        if near_term_growth_rate > 5:
             near_term_growth_rate = near_term_growth_rate / 100
-        if long_term_growth_rate > 1:
+        if long_term_growth_rate > 5:
             long_term_growth_rate = long_term_growth_rate / 100
         if terminal_growth_rate > 1:
             terminal_growth_rate = terminal_growth_rate / 100
