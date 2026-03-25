@@ -66,9 +66,9 @@ Modes:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["dcf", "analyst", "graph", "research", "market", "portfolio", "earnings"],
+        choices=["dcf", "analyst", "graph", "research", "market", "portfolio", "earnings", "arena"],
         default="dcf",
-        help="Agent mode: 'dcf', 'analyst', 'graph', 'research', 'market', 'portfolio', or 'earnings' (default: dcf)"
+        help="Agent mode: 'dcf', 'analyst', 'graph', 'research', 'market', 'portfolio', 'earnings', or 'arena' (default: dcf)"
     )
 
     parser.add_argument(
@@ -88,6 +88,14 @@ Modes:
         "--interactive",
         action="store_true",
         help="Run in interactive mode"
+    )
+
+    parser.add_argument(
+        "--query-mode",
+        choices=["full_ic", "quick_screen", "risk_check", "macro_view", "valuation"],
+        default="full_ic",
+        dest="query_mode",
+        help="Arena query mode — controls which agents activate (default: full_ic)"
     )
 
     args = parser.parse_args()
@@ -158,6 +166,38 @@ Modes:
         except Exception as e:
             print(f"Error initializing earnings agent: {e}")
             sys.exit(1)
+    elif args.mode == "arena":
+        import re
+        from arena.run import run_arena
+
+        if args.ticker:
+            ticker = args.ticker.upper()
+            query = f"Should we open a position on {ticker} this quarter?"
+        elif args.interactive:
+            query = input("\nArena query: ").strip()
+            match = re.search(r'\b([A-Z]{2,5})\b', query)
+            ticker = match.group(1) if match else input("Ticker symbol: ").strip().upper()
+        else:
+            print("Arena mode requires --ticker or --interactive")
+            sys.exit(1)
+
+        query_mode = getattr(args, "query_mode", "full_ic")
+
+        print(f"{'='*60}")
+        print(f"  FINANCE AGENT ARENA")
+        print(f"  Query:  {query}")
+        print(f"  Ticker: {ticker}")
+        print(f"  Mode:   {query_mode}")
+        print(f"{'='*60}\n")
+
+        result = run_arena(query=query, ticker=ticker, query_mode=query_mode)
+
+        print(result["investment_memo"])
+
+        print("\nDEBATE LOG:")
+        for e in result["debate_log"]:
+            print(f"  R{e['round']} | {e['agent']:15} | {e['action']:20} | {e['content'][:75]}")
+        return
     else:
         print(f"Error: Unknown mode '{args.mode}'")
         sys.exit(1)
