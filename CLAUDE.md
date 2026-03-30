@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An AI-powered financial analysis system with seven specialized agents built using LangChain and LangGraph:
+An AI-powered financial analysis system with two subsystems:
 
+**Single-stock agents** (LangChain/LangGraph, CLI + web interface):
 1. **DCF Agent** - Fast quantitative valuation using Discounted Cash Flow methodology
 2. **LangGraph Equity Analyst** - Structured 10-step equity research workflow using LangGraph
 3. **Research Assistant Agent** - Interactive conversational research tool with context memory
@@ -13,7 +14,11 @@ An AI-powered financial analysis system with seven specialized agents built usin
 5. **Portfolio Agent** - Portfolio analysis with performance metrics, diversification, and tax optimization
 6. **Earnings Agent** - Comprehensive earnings analysis with quarterly trends, analyst estimates, surprises, and management commentary from earnings calls
 
-Most agents use the ReAct pattern for autonomous decision-making. The LangGraph Equity Analyst and Earnings Agent use structured graph workflows for deterministic, reproducible analysis.
+**Finance Agent Arena** (`arena/`) — Multi-agent debate system:
+- Five specialist agents (fundamental, risk, quant, macro, sentiment) debate investment theses
+- PM node orchestrates debate rounds, computes consensus, and synthesises final investment memo
+- Sequential LangGraph graph ensures each agent sees prior agents' full findings before reasoning
+- Uses Anthropic SDK directly (not LangChain) with `claude-haiku-4-5-20251001` for all agent LLM calls
 
 ## Setup and Environment
 
@@ -366,6 +371,59 @@ Current versions are compatible:
 
 Both flags are equivalent aliases — both run the LangGraph 10-step equity analyst workflow. `--mode analyst` is kept for backwards compatibility.
 
+### Finance Agent Arena Architecture
+
+The Arena (`arena/`) is a separate multi-agent debate system that runs independently from the single-stock agents.
+
+**Entry point**: `arena/run.py:run_arena(query, ticker, query_mode)`
+
+**Graph structure** (`arena/graph.py`):
+```
+START → pm → sequence_start → <agent_node> → sequence_advance → sequence_start (loop)
+                            → sequence_done → pm (next round)
+         → output → END
+```
+
+Each agent runs in its own LangGraph super-step, so agent N+1 reads agent N's committed `raw_outputs` — this is the "peer context" guarantee.
+
+**Shared state** (`arena/state.py:ThesisState`): All nodes read/write a single `TypedDict`. Key fields:
+- `raw_outputs` — `{agent_name: full findings text}`, last-write-wins, read by subsequent agents
+- `agent_signals` — `{agent_name: AgentSignal}` with `view`, `reasoning`, `confidence`
+- `agent_questions/agent_answers` — cross-agent Q&A dicts
+- `debate_log`, `signal_history`, `conflicts` — append-only via `operator.add`
+
+**PM node** (`arena/pm.py`): On first pass sets `active_agents` from `ARENA_CONFIG["query_modes"]`. On subsequent passes computes `consensus_score = alignment_ratio × avg_confidence`, detects conflicts, synthesises thesis via Haiku LLM call, and sets `next_action` ("debate" | "finalise" | "escalate_to_human").
+
+**Agent nodes** (`arena/fundamental_agent.py`, `quant_agent.py`, etc.): Each fetches real financial data (FinancialDataFetcher + Tavily web search), runs analysis, and returns an `AgentSignal`. Never raises — errors produce a neutral fallback signal.
+
+**Config** (`arena/config.py:ARENA_CONFIG`):
+- `consensus_threshold: 0.7` — stops debate early when reached
+- `max_rounds: 2` — hard cap on debate rounds
+- `query_modes` — maps mode names to ordered agent lists
+- `recursion_limit: 100` set at invoke time (default 25 is too low for full IC run)
+
+**Progress events** (`arena/progress.py`): `emit_arena_event()` emits SSE-style events (`arena_dispatch`, `arena_signal`, `arena_conflict`, `arena_synthesis`) consumed by the frontend Arena page.
+
+### SEC EDGAR Integration
+
+**Client**: `data/sec_edgar.py` — `SECEdgarClient` singleton, no API key required, sets `User-Agent` header per SEC requirements. Use `www.sec.gov/files/company_tickers.json` (not `data.sec.gov`) for CIK lookup.
+
+**Tools** (`tools/sec_tools.py`): `GetSECFilingsTool`, `AnalyzeSECFilingTool`, `GetSECFinancialsTool`
+- Revenue concept: use `RevenueFromContractWithCustomerExcludingAssessedTax` (ASC 606), fallback to `Revenues`
+- Available in: Equity Analyst (13 tools total), Finance Q&A (7 tools total), Earnings Agent (parallel node 5)
+
+### Database Persistence Layer
+
+**Engine**: SQLite (`finance_agent.db` in project root). Set `DATABASE_URL` env var to use Postgres.
+
+**New files**: `backend/database.py` (engine + `init_db()`), `backend/models.py` (5 ORM tables: `sessions`, `messages`, `analyses`, `watchlists`, `watchlist_tickers`)
+
+**REST endpoints** in `api_server.py`: `/sessions`, `/analyses`, `/watchlists` + sub-resources. DCF/analyst/earnings/graph responses are auto-saved to the `analyses` table.
+
+**Frontend**: `frontend/src/pages/LibraryPage.tsx` at `/library` route. Session URL synced to `?session=<uuid>` query param for bookmark/restore. Sidebar shows last 10 sessions.
+
+**Python 3.9 compat**: use `Optional[str]` not `str | None`; add `from __future__ import annotations` at top of file.
+
 ## Development Commands
 
 ### Backend Development
@@ -429,6 +487,24 @@ python test_setup.py
 
 # Test Financial Datasets API responses
 python test_api.py
+
+# Run all tests
+pytest tests/
+
+# Run a single test file
+pytest tests/test_arena_level2_sequential.py -v
+
+# Run a specific test
+pytest tests/test_arena_level1_peer_context.py::test_peer_context_injected -v
+```
+
+### Terminal Data Monitor
+```bash
+# Interactive terminal monitor for data flow and API health
+venv/bin/python eval_monitor.py health
+venv/bin/python eval_monitor.py flow --agent dcf
+venv/bin/python eval_monitor.py eval AAPL
+venv/bin/python eval_monitor.py monitor AAPL --agent dcf
 ```
 
 ### Using Different Models
@@ -807,3 +883,21 @@ def critical_api_call():
 - Web search accuracy depends on source quality
 - No consideration of macroeconomic scenarios in DCF
 - ReAct agents can hit max iteration limits on complex queries
+
+## Skill routing
+
+When the user's request matches an available skill, ALWAYS invoke it using the Skill
+tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
+The skill has specialized workflows that produce better results than ad-hoc answers.
+
+Key routing rules:
+- Product ideas, "is this worth building", brainstorming → invoke office-hours
+- Bugs, errors, "why is this broken", 500 errors → invoke investigate
+- Ship, deploy, push, create PR → invoke ship
+- QA, test the site, find bugs → invoke qa
+- Code review, check my diff → invoke review
+- Update docs after shipping → invoke document-release
+- Weekly retro → invoke retro
+- Design system, brand → invoke design-consultation
+- Visual audit, design polish → invoke design-review
+- Architecture review → invoke plan-eng-review
