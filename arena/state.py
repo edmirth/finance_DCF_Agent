@@ -43,6 +43,21 @@ class ThesisState(TypedDict):
     signal_history: Annotated[List[dict], operator.add]   # accumulates every round's snapshot
     conflicts: Annotated[List[Conflict], operator.add]
     debate_log: Annotated[List[DebateEntry], operator.add]
+    raw_outputs: dict                                      # {agent_name: full findings text} — last-write-wins per agent
+    # agent_questions structure:
+    # {
+    #   "risk": {                           # agent asking the question
+    #     "fundamental": "What is the...", # agent being asked → question text
+    #   }
+    # }
+    agent_questions: dict                                  # {asking_agent: {target_agent: question_text}}
+    # agent_answers structure:
+    # {
+    #   "fundamental": {                    # agent answering
+    #     "risk": "Under stress scenario..." # who asked → answer text
+    #   }
+    # }
+    agent_answers: dict                                    # {answering_agent: {asking_agent: answer_text}}
 
     # Control
     consensus_score: float

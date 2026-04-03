@@ -72,7 +72,7 @@ function ChatPage() {
       const fetchedAgents = await getAgents();
       const chatAgents = [
         AUTO_AGENT,
-        ...fetchedAgents.filter(a => a.id !== 'portfolio' && a.id !== 'dcf'),
+        ...fetchedAgents.filter(a => a.id !== 'portfolio'),
       ];
       setAgents(chatAgents);
       setSelectedAgent(AUTO_AGENT); // Default to Auto mode

@@ -456,7 +456,7 @@ function ProjectWorkspace() {
       setProject(proj);
       setMemoryDoc(proj.memory_doc || '');
       setMemoryUpdatedAt(proj.updated_at);
-      const chatAgents = [AUTO_AGENT, ...fetchedAgents.filter(a => a.id !== 'portfolio' && a.id !== 'dcf')];
+      const chatAgents = [AUTO_AGENT, ...fetchedAgents.filter(a => a.id !== 'portfolio')];
       setAgents(chatAgents);
       await Promise.all([
         loadProjectSessions(id),

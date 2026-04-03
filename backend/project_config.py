@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-ALLOWED_PROJECT_PREFERRED_AGENTS = {"dcf", "analyst", "earnings", "market", "research"}
+ALLOWED_PROJECT_PREFERRED_AGENTS = {"analyst", "earnings", "market", "research"}
 
 
 def normalize_project_config(

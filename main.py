@@ -1,10 +1,9 @@
 """
-Main entry point for DCF Analysis Agent, Equity Analyst Agent, and Finance Q&A Agent
+Main entry point for Financial Analysis Agents
 """
 import os
 import sys
 from dotenv import load_dotenv
-from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.finance_qa_agent import create_finance_qa_agent, interactive_session
 from agents.market_agent import create_market_agent
@@ -14,7 +13,7 @@ import argparse
 
 
 def main():
-    """Main function to run the DCF analysis agent"""
+    """Main function to run the financial analysis agents"""
 
     # Load environment variables
     load_dotenv()
@@ -25,10 +24,6 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # DCF Analysis (quantitative valuation)
-  python main.py --mode dcf --ticker AAPL
-  python main.py --mode dcf --ticker MSFT --model claude-haiku-4-5-20251001
-
   # Equity Research (comprehensive analysis)
   python main.py --mode analyst --ticker AAPL
   python main.py --mode analyst --ticker GOOGL --model claude-haiku-4-5-20251001
@@ -48,27 +43,25 @@ Examples:
   python main.py --mode earnings --ticker NVDA
   python main.py --mode earnings --ticker AAPL --model claude-haiku-4-5-20251001
 
-  # Interactive mode (DCF and Analyst)
-  python main.py --mode dcf --interactive
+  # Interactive mode
   python main.py --mode analyst --interactive
 
 Modes:
-  dcf       - DCF valuation analysis (intrinsic value calculation)
   analyst   - Comprehensive equity research report (industry, competitors, moat, valuation)
   graph     - Equity research using LangGraph (structured 10-step workflow)
   market    - Market analysis (indices, sectors, news, sentiment, regime classification)
   research  - Finance Q&A: quick data lookups, calculations, comparisons, and news (conversational)
   portfolio - Portfolio analysis (metrics, diversification, tax optimization)
-  earnings  - Fast earnings-focused equity research (15 min) with quarterly trends and estimates
+  earnings  - Earnings-focused equity research with quarterly trends and estimates
         """
     )
 
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["dcf", "analyst", "graph", "research", "market", "portfolio", "earnings", "arena"],
-        default="dcf",
-        help="Agent mode: 'dcf', 'analyst', 'graph', 'research', 'market', 'portfolio', 'earnings', or 'arena' (default: dcf)"
+        choices=["analyst", "graph", "research", "market", "portfolio", "earnings", "arena"],
+        default="analyst",
+        help="Agent mode (default: analyst)"
     )
 
     parser.add_argument(
@@ -140,16 +133,8 @@ Modes:
             sys.exit(1)
         return
 
-    # Create agent based on mode (dcf, analyst, graph, or earnings)
-    if args.mode == "dcf":
-        print("Initializing DCF Analysis Agent...")
-        try:
-            agent = create_dcf_agent(model=args.model)
-            print(f"DCF Agent initialized with model: {args.model}\n")
-        except Exception as e:
-            print(f"Error initializing DCF agent: {e}")
-            sys.exit(1)
-    elif args.mode in ("analyst", "graph"):
+    # Create agent based on mode
+    if args.mode in ("analyst", "graph"):
         print("Initializing LangGraph Equity Analyst Agent...")
         try:
             agent = create_equity_analyst_graph(model=args.model)
@@ -219,38 +204,14 @@ def run_ticker_analysis(agent, ticker: str, mode: str):
     print("=" * 80)
     print()
 
-    if mode == "dcf":
-        result = agent.quick_dcf(ticker)
-    elif mode in ("analyst", "graph"):
-        result = agent.analyze(ticker)
-    elif mode == "earnings":
-        result = agent.analyze(ticker)
-    else:
-        result = f"Error: Unknown mode '{mode}'"
-
+    result = agent.analyze(ticker)
     print(result)
 
 
 def run_interactive_mode(agent, mode: str):
     """Run agent in interactive mode"""
     print("=" * 80)
-    if mode == "dcf":
-        print("DCF Analysis Agent - Interactive Mode")
-        print("=" * 80)
-        print("\nAsk me to perform DCF analysis on any stock!")
-        print("Examples:")
-        print("  - 'Perform DCF analysis on AAPL'")
-        print("  - 'What is the intrinsic value of TSLA?'")
-        print("  - 'Analyze Microsoft using conservative assumptions'")
-    elif mode == "analyst":
-        print("Equity Analyst Agent - Interactive Mode")
-        print("=" * 80)
-        print("\nAsk me to produce equity research reports!")
-        print("Examples:")
-        print("  - 'Produce an equity research report on AAPL'")
-        print("  - 'Analyze Tesla's competitive position'")
-        print("  - 'What is Microsoft's competitive moat?'")
-    elif mode == "graph":
+    if mode in ("analyst", "graph"):
         print("LangGraph Equity Analyst - Interactive Mode")
         print("=" * 80)
         print("\nStructured 10-step equity research workflow!")
@@ -305,11 +266,6 @@ def run_market_mode(agent):
     print("  - 'sectors'      - Analyze sector rotation")
     print("  - 'regime'       - Classify market regime")
     print("  - 'news'         - Get latest market news")
-    print("\nCustom Questions:")
-    print("  - 'What's the market sentiment today?'")
-    print("  - 'Should I be risk-on or risk-off?'")
-    print("  - 'Which sectors are hot right now?'")
-    print("  - 'Is this a good time to buy stocks?'")
     print("\nType 'exit' or 'quit' to exit.\n")
 
     while True:
@@ -323,7 +279,6 @@ def run_market_mode(agent):
             if not user_input:
                 continue
 
-            # Handle quick commands
             print("\nAgent: ")
             if user_input.lower() == 'overview':
                 result = agent.market_overview()

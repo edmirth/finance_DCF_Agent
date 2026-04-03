@@ -208,7 +208,6 @@ IMPORTANT: NEVER say you lack chart tools or can only do bar charts. You have to
 multi-line time-series, bar charts, and pie charts. Always call the appropriate tool.
 
 **IMPORTANT SCOPE LIMITATIONS:**
-- You do NOT perform DCF (intrinsic value) analysis - suggest users run the DCF Agent for that
 - You do NOT perform deep industry/moat analysis - suggest users run the Equity Analyst Agent for that
 - Your focus is QUICK research and data exploration, not comprehensive valuation reports
 
@@ -493,7 +492,6 @@ def interactive_session(model: str = "claude-sonnet-4-5-20250929"):
     print("  • Explain recent news and developments")
     print("  • Compare companies side-by-side")
     print("  • Proactive suggestions on what to explore next")
-    print("\nNote: For DCF valuation, use the DCF Agent (--mode dcf)")
     print("\nCommands:")
     print("  • Type your question to get started")
     print("  • Type 'reset' to clear conversation memory")

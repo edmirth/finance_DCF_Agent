@@ -60,7 +60,7 @@ def _call(fn, *args, **kwargs):
 
 
 def eval_stock_info(ticker: str) -> dict:
-    from tools.dcf_tools import GetStockInfoTool
+    from tools.stock_tools import GetStockInfoTool
     result, latency, err = _call(GetStockInfoTool()._run, ticker)
     if err or not result or result.startswith("Error"):
         return {"name": "get_stock_info", "passed": False, "latency": latency,
@@ -79,7 +79,7 @@ def eval_stock_info(ticker: str) -> dict:
 
 
 def eval_financial_metrics(ticker: str) -> dict:
-    from tools.dcf_tools import GetFinancialMetricsTool
+    from tools.stock_tools import GetFinancialMetricsTool
     result, latency, err = _call(GetFinancialMetricsTool()._run, ticker)
     if err or not result or result.startswith("Error"):
         return {"name": "get_financial_metrics", "passed": False, "latency": latency,
@@ -172,24 +172,6 @@ def eval_sec_filings(ticker: str) -> dict:
             "detail": detail, "checks": checks}
 
 
-def eval_market_params(ticker: str) -> dict:
-    from tools.dcf_tools import GetMarketParametersTool
-    result, latency, err = _call(GetMarketParametersTool()._run, ticker)
-    if err or not result or result.startswith("Error"):
-        return {"name": "get_market_parameters", "passed": False, "latency": latency,
-                "detail": err or result}
-
-    checks = {
-        "has beta":              bool(re.search(r"[Bb]eta", result)),
-        "has risk-free rate":    bool(re.search(r"risk.free|treasury|DGS10", result, re.I)),
-        "has growth rate":       bool(re.search(r"growth.rate|near.term|terminal", result, re.I)),
-    }
-    passed = all(checks.values())
-    detail = ", ".join(f"{k}={'✓' if v else '✗'}" for k, v in checks.items())
-    return {"name": "get_market_parameters", "passed": passed, "latency": latency,
-            "detail": detail, "checks": checks}
-
-
 TOOL_EVALS = [
     eval_stock_info,
     eval_financial_metrics,
@@ -197,7 +179,6 @@ TOOL_EVALS = [
     eval_analyst_estimates,
     eval_earnings_surprises,
     eval_sec_filings,
-    eval_market_params,
 ]
 
 
@@ -241,49 +222,6 @@ def run_part1(tickers: list[str]) -> list[dict]:
 # ═════════════════════════════════════════════════════════════════════════════
 # PART 2 — End-to-end agent eval
 # ═════════════════════════════════════════════════════════════════════════════
-
-def score_dcf_report(report: str, ticker: str) -> list[dict]:
-    """Return a list of check dicts for a DCF report."""
-    checks = [
-        {
-            "name": "report generated",
-            "passed": bool(report) and len(report) > 200,
-            "detail": f"{len(report)} chars",
-        },
-        {
-            "name": "contains dollar figures",
-            "passed": bool(re.search(r"\$[\d,.]+[BbMmKk]?", report)),
-            "detail": "$ values present",
-        },
-        {
-            "name": "contains intrinsic value / price target",
-            "passed": bool(re.search(
-                r"intrinsic value|price target|fair value|target price", report, re.I)),
-            "detail": "valuation anchor present",
-        },
-        {
-            "name": "has Bull/Base/Bear scenarios",
-            "passed": bool(re.search(r"bull|bear|base|scenario", report, re.I)),
-            "detail": "scenario analysis present",
-        },
-        {
-            "name": "has investment recommendation",
-            "passed": bool(re.search(r"\b(BUY|SELL|HOLD|UNDERWEIGHT|OVERWEIGHT)\b", report)),
-            "detail": "BUY/HOLD/SELL signal present",
-        },
-        {
-            "name": "mentions the ticker",
-            "passed": ticker.upper() in report.upper(),
-            "detail": f"ticker {ticker} referenced",
-        },
-        {
-            "name": "sufficient depth (>400 words)",
-            "passed": len(report.split()) > 400,
-            "detail": f"{len(report.split())} words",
-        },
-    ]
-    return checks
-
 
 def score_earnings_report(report: str, ticker: str) -> list[dict]:
     """Return a list of check dicts for an Earnings report."""
@@ -361,27 +299,16 @@ def run_part2(tickers: list[str]) -> list[dict]:
     print(header("PART 2 — END-TO-END AGENT EVAL"))
     print(dim("  Running full agents on each ticker and scoring the final report.\n"))
 
-    from agents.dcf_agent import create_dcf_agent
     from agents.earnings_agent import create_earnings_agent
 
-    # DCF agent uses a ReAct loop that requires precise format compliance — use sonnet.
-    # Earnings agent uses LangGraph (structured) and works reliably with haiku.
-    dcf_model      = os.getenv("EVAL_DCF_MODEL",      "claude-sonnet-4-6")
     earnings_model = os.getenv("EVAL_EARNINGS_MODEL", "claude-haiku-4-5-20251001")
-    print(f"  {dim(f'DCF model: {dcf_model}  Earnings model: {earnings_model}')}\n")
+    print(f"  {dim(f'Earnings model: {earnings_model}')}\n")
 
-    dcf_agent      = create_dcf_agent(model=dcf_model)
     earnings_agent = create_earnings_agent(model=earnings_model)
 
     all_results = []
 
     for ticker in tickers:
-        all_results.append(run_agent_eval(
-            "DCF Agent",
-            lambda t: dcf_agent.quick_dcf(t),
-            score_dcf_report,
-            ticker,
-        ))
         all_results.append(run_agent_eval(
             "Earnings Agent",
             lambda t: earnings_agent.analyze(t),

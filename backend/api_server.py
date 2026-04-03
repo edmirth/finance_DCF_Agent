@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 import sys
 import requests
 import re
+import secrets
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,12 +43,15 @@ from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db, SyncSessionLocal
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
 from backend.project_config import normalize_project_config
-from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.finance_qa_agent import create_finance_qa_agent
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
 from agents.earnings_agent import create_earnings_agent
+from arena.arena_agent import ArenaAgent
+from arena.run import run_arena
+from arena.progress import set_arena_queue, clear_arena_queue
+from arena.output import extract_structured_memo
 
 # Load environment variables from parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -65,6 +69,41 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning(f"ProjectChromaClient pre-load failed (non-fatal): {_e}")
     yield  # Application runs here
+
+
+# Rate limiting — in-memory, single-worker only (Phase 1).
+# Phase 2: replace with Redis INCR + TTL (see TODOS.md).
+from collections import defaultdict as _defaultdict
+
+_memo_ip_requests: dict = _defaultdict(list)
+_IP_MEMO_LIMIT = 5
+_IP_WINDOW_SECONDS = 3600  # 1 hour
+
+_memo_daily_count = 0
+_memo_daily_reset_date: Optional[str] = None
+MEMO_DAILY_CAP = 50
+
+
+def _check_memo_rate_limits(client_ip: str) -> None:
+    """Check both per-IP (5/hour) and global daily (50/day) caps. Raises HTTP 429 on breach."""
+    global _memo_daily_count, _memo_daily_reset_date
+
+    # Per-IP sliding window
+    now = datetime.now(timezone.utc).timestamp()
+    window_start = now - _IP_WINDOW_SECONDS
+    _memo_ip_requests[client_ip] = [t for t in _memo_ip_requests[client_ip] if t > window_start]
+    if len(_memo_ip_requests[client_ip]) >= _IP_MEMO_LIMIT:
+        raise HTTPException(status_code=429, detail="Rate limit reached — try again later")
+    _memo_ip_requests[client_ip].append(now)
+
+    # Global daily cap
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _memo_daily_reset_date != today:
+        _memo_daily_count = 0
+        _memo_daily_reset_date = today
+    _memo_daily_count += 1
+    if _memo_daily_count > MEMO_DAILY_CAP:
+        raise HTTPException(status_code=429, detail="Rate limit reached — try again later")
 
 
 # Initialize FastAPI app
@@ -97,7 +136,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 _AGENTS_CACHE_MAX = 100
 agents_cache: OrderedDict = OrderedDict()
 agents_cache_lock = threading.Lock()
-SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "earnings"})
+SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "earnings", "arena"})
 
 # Hold strong references to fire-and-forget tasks so they aren't GC'd before completion
 _background_tasks: set = set()
@@ -112,13 +151,13 @@ def _fire_and_forget(coro) -> asyncio.Task:
 
 # Map agent types to their fallback methods (when agent_executor is not available)
 AGENT_FALLBACK_METHODS = {
-    "dcf": "analyze",
     "analyst": "analyze",
     "graph": "analyze",  # LangGraph equity analyst
     "research": "chat",  # Research uses 'chat' instead of 'analyze'
     "market": "analyze",
     "portfolio": "analyze",
     "earnings": "analyze",
+    "arena": "analyze",
 }
 
 
@@ -173,7 +212,7 @@ def extract_ticker_from_query(query: str, is_followup: bool = False) -> Optional
 class ChatMessage(BaseModel):
     """Chat message model"""
     message: str
-    agent_type: str = "research"  # dcf, analyst, graph, research, market, portfolio, earnings
+    agent_type: str = "research"  # analyst, graph, research, market, portfolio, earnings
     model: str = "claude-sonnet-4-5-20250929"
     session_id: Optional[str] = None
     is_followup: bool = False
@@ -201,8 +240,6 @@ def _build_agent_cache_key(agent_type: str, model: str, session_id: Optional[str
 
 def _create_agent_instance(agent_type: str, model: str):
     """Create a single agent instance for the requested type."""
-    if agent_type == "dcf":
-        return create_dcf_agent(model=model)
     if agent_type in ("analyst", "graph"):
         return create_equity_analyst_graph(model=model)
     if agent_type == "research":
@@ -213,6 +250,8 @@ def _create_agent_instance(agent_type: str, model: str):
         return create_portfolio_agent(model=model)
     if agent_type == "earnings":
         return create_earnings_agent(model=model)
+    if agent_type == "arena":
+        return ArenaAgent()
     raise ValueError(f"Unknown agent type: {agent_type}")
 
 
@@ -271,7 +310,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
     Args:
         agent: LangChain agent instance (with agent_executor or fallback method)
         message: User's input message to process
-        agent_type: One of 'dcf', 'analyst', 'graph', 'research', 'market', 'portfolio', 'earnings'
+        agent_type: One of 'analyst', 'graph', 'research', 'market', 'portfolio', 'earnings'
         queue: Async queue for streaming events to SSE response
         is_followup: Whether this is a follow-up question (earnings agent only)
     """
@@ -284,7 +323,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             raise ValueError(f"Unknown agent type: {agent_type}")
 
         # Inject progress queue for agents that use direct tool calls (bypassing LangChain callbacks)
-        if agent_type in ("earnings", "graph"):
+        if agent_type in ("earnings", "graph", "arena"):
             agent._progress_queue = queue
             agent._progress_loop = loop
 
@@ -307,7 +346,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             response = await loop.run_in_executor(None, fallback_method, message)
 
         # Clean up progress queue
-        if agent_type in ("earnings", "graph"):
+        if agent_type in ("earnings", "graph", "arena"):
             agent._progress_queue = None
             agent._progress_loop = None
 
@@ -319,7 +358,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
 
     except Exception as e:
         # Clean up progress queue on error too
-        if agent_type in ("earnings", "graph"):
+        if agent_type in ("earnings", "graph", "arena"):
             agent._progress_queue = None
             agent._progress_loop = None
         await queue.put({"type": "error", "error": str(e)})
@@ -372,7 +411,7 @@ async def route_agent_for_message(message: str) -> str:
         "ONLY use this if the query explicitly mentions earnings, EPS, quarterly results, or beats/misses "
         "AND names a specific company or ticker.\n"
         "- analyst: Deep equity analysis, investment thesis, moat/competitive analysis, "
-        "DCF valuation, buy/sell recommendation, 'should I invest' questions, stock screeners\n"
+        "buy/sell recommendation, 'should I invest' questions, stock screeners\n"
         "- market: Market conditions, S&P 500/NASDAQ/Dow indices, VIX, sector rotation, "
         "macro trends, Fed policy, inflation, recession risk, market sentiment\n"
         "- research: Everything else — company info, stock comparisons, financial metrics, "
@@ -420,7 +459,6 @@ async def generate_follow_up_questions(message: str, response: str, agent_type: 
     client = anthropic.AsyncAnthropic()
 
     agent_context = {
-        "dcf": "DCF valuation and intrinsic value analysis",
         "analyst": "comprehensive equity research",
         "graph": "structured equity research",
         "research": "financial research",
@@ -673,7 +711,7 @@ async def stream_agent_response(
 
 
 # Agent types that should auto-save to the analyses library
-_ANALYSIS_AGENT_TYPES = {"dcf", "analyst", "earnings", "graph"}
+_ANALYSIS_AGENT_TYPES = {"analyst", "earnings", "graph"}
 
 
 async def _run_memory_update(project_id: str, memory_patch: dict) -> None:
@@ -755,7 +793,6 @@ async def _persist_conversation(
             if agent_type in _ANALYSIS_AGENT_TYPES and ticker:
                 month_str = datetime.now(timezone.utc).strftime("%b %Y")
                 agent_label = {
-                    "dcf": "DCF",
                     "analyst": "Equity Analyst",
                     "earnings": "Earnings",
                     "graph": "Equity Research",
@@ -795,7 +832,7 @@ async def root():
         "status": "online",
         "service": "Financial Analysis API",
         "version": "1.0.0",
-        "agents": ["dcf", "analyst", "graph", "research", "market", "portfolio", "earnings"]
+        "agents": ["analyst", "graph", "research", "market", "portfolio", "earnings"]
     }
 
 
@@ -804,12 +841,6 @@ async def list_agents():
     """List available agents"""
     return {
         "agents": [
-            {
-                "id": "dcf",
-                "name": "DCF Analyst",
-                "description": "Fast quantitative valuation using Discounted Cash Flow methodology",
-                "example": "What is the intrinsic value of AAPL?"
-            },
             {
                 "id": "analyst",
                 "name": "Equity Analyst",
@@ -839,6 +870,12 @@ async def list_agents():
                 "name": "Earnings Analyst",
                 "description": "Fast earnings-focused equity research (15 min) with quarterly trends and estimates",
                 "example": "Analyze NVDA's latest earnings and forward outlook"
+            },
+            {
+                "id": "arena",
+                "name": "Investment Committee",
+                "description": "Multi-agent debate: Fundamental, Risk, Quant, Macro, and Sentiment analysts debate to conviction-rated investment memo",
+                "example": "Should we long NVDA? Full IC review."
             }
         ]
     }
@@ -894,6 +931,239 @@ async def chat(chat_message: ChatMessage):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def derive_verdict(
+    consensus_score: float,
+    agent_signals: dict,
+    next_action: str = "",
+) -> tuple:
+    """
+    Derive a BUY / WATCH / PASS verdict from the final ThesisState.
+    Returns (verdict: str, confidence: float).
+    """
+    bullish_count = sum(
+        1 for s in agent_signals.values() if s.get("view") == "bullish"
+    )
+    bearish_count = sum(
+        1 for s in agent_signals.values() if s.get("view") == "bearish"
+    )
+
+    if next_action == "escalate_to_human":
+        return ("WATCH", consensus_score)
+
+    if consensus_score >= 0.70 and bullish_count >= 3:
+        verdict = "BUY"
+    elif consensus_score <= 0.40 or bearish_count >= 3:
+        verdict = "PASS"
+    else:
+        verdict = "WATCH"
+
+    return (verdict, consensus_score)
+
+
+class MemoRequest(BaseModel):
+    ticker: str
+    query_mode: str = "full_ic"
+
+
+def _run_arena_in_worker(
+    query: str,
+    ticker: str,
+    query_mode: str,
+    queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+) -> dict:
+    """Thin wrapper executed inside the threadpool worker.
+    Calls set_arena_queue from the correct thread so threading.local()
+    stores the queue on the worker thread where emit_arena_event runs.
+    """
+    set_arena_queue(queue, loop)
+    try:
+        return run_arena(query=query, ticker=ticker, query_mode=query_mode)
+    finally:
+        clear_arena_queue()
+
+
+@app.post("/memo/stream")
+async def memo_stream(request: Request, memo_request: MemoRequest):
+    """Stream Investment Committee memo via SSE.
+    Runs the Arena debate, then post-processes the final state into a
+    structured memo.  Emits arena progress events in real time, then
+    emits arena_memo_ready when the structured memo is ready.
+
+    Rate limits: 5 req/IP/hour, 50 req/day global (in-memory, single-worker only).
+    Single Uvicorn worker required for in-memory counter accuracy.
+    """
+    ticker = memo_request.ticker.upper().strip()
+    if not ticker or len(ticker) > 5 or not ticker.isalpha():
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol")
+
+    # Pre-validate ticker against Financial Datasets API before starting Arena
+    fd_key = os.getenv("FINANCIAL_DATASETS_API_KEY")
+    if fd_key:
+        try:
+            fd_resp = requests.get(
+                "https://api.financialdatasets.ai/financials",
+                params={"ticker": ticker, "period": "annual", "limit": 1},
+                headers={"X-API-KEY": fd_key},
+                timeout=10,
+            )
+            if fd_resp.status_code != 200 or not fd_resp.json().get("financials"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unable to find financial data for {ticker}. Please verify the symbol.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # If validation call itself fails, proceed and let Arena handle it
+
+    client_ip = request.client.host if request.client else "unknown"
+    _check_memo_rate_limits(client_ip)
+
+    async def generate():
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        # Run Arena in thread pool — set_arena_queue called from within worker thread
+        future = loop.run_in_executor(
+            None,
+            _run_arena_in_worker,
+            f"Investment analysis for {ticker}",
+            ticker,
+            memo_request.query_mode,
+            queue,
+            loop,
+        )
+
+        # Drain SSE events from the arena while it runs; 180s timeout guard
+        final_state = None
+        try:
+            arena_future = asyncio.wrap_future(future)
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    if event is None:  # sentinel
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    if future.done():
+                        try:
+                            final_state = future.result()
+                        except Exception as exc:
+                            yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+                            yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                            return
+                        break
+                    # Check overall 180s timeout
+                    try:
+                        await asyncio.wait_for(asyncio.shield(arena_future), timeout=0)
+                    except asyncio.TimeoutError:
+                        pass
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Analysis timed out after 3 minutes — please try again'})}\n\n"
+            yield f"data: {json.dumps({'type': 'end'})}\n\n"
+            return
+
+        if final_state is None:
+            try:
+                final_state = await asyncio.wait_for(
+                    asyncio.wrap_future(future), timeout=180
+                )
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'type': 'error', 'error': 'Analysis timed out after 3 minutes — please try again'})}\n\n"
+                yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                return
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+                yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                return
+
+        # Post-process: extract structured memo (Haiku call, ~3s)
+        structured_memo = await loop.run_in_executor(None, extract_structured_memo, final_state)
+
+        verdict, confidence = derive_verdict(
+            final_state.get("consensus_score", 0.0),
+            final_state.get("agent_signals", {}),
+            final_state.get("next_action", ""),
+        )
+
+        yield f"data: {json.dumps({'type': 'arena_memo_ready', 'structured_memo': structured_memo, 'verdict': verdict, 'confidence': confidence, 'agent_signals': final_state.get('agent_signals', {}), 'debate_log': final_state.get('debate_log', [])})}\n\n"
+        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+class MemoSaveRequest(BaseModel):
+    ticker: str
+    verdict: str
+    confidence: float
+    structured_memo: dict
+    checklist_answers: dict  # {why_now, exit_condition, max_position_size, quarterly_check_metric}
+
+
+@app.post("/api/memo/save")
+async def memo_save(payload: MemoSaveRequest, db: AsyncSession = Depends(get_db)):
+    """Persist a completed memo with checklist answers. Returns share_slug."""
+    required_keys = {"why_now", "exit_condition", "max_position_size", "quarterly_check_metric"}
+    if not required_keys.issubset(payload.checklist_answers.keys()) or not all(
+        str(v).strip() for v in payload.checklist_answers.values()
+    ):
+        raise HTTPException(status_code=422, detail="All 4 checklist fields are required to save")
+
+    slug = secrets.token_urlsafe(6)
+    content = json.dumps({
+        "verdict": payload.verdict,
+        "confidence": payload.confidence,
+        "structured_memo": payload.structured_memo,
+        "checklist_answers": payload.checklist_answers,
+    })
+    analysis = Analysis(
+        ticker=payload.ticker.upper(),
+        agent_type="memo",
+        title=f"Investment Memo — {payload.ticker.upper()} ({payload.verdict})",
+        content=content,
+        tags=json.dumps(["memo"]),
+        share_slug=slug,
+        checklist_answers=json.dumps(payload.checklist_answers),
+    )
+    db.add(analysis)
+    await db.commit()
+    await db.refresh(analysis)
+    return {"id": analysis.id, "share_slug": slug}
+
+
+@app.get("/api/m/{slug}")
+async def memo_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
+    """Public read-only endpoint for a shared memo URL."""
+    from sqlalchemy import select as sa_select
+    result = await db.execute(
+        sa_select(Analysis).where(Analysis.share_slug == slug)
+    )
+    analysis = result.scalar_one_or_none()
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Memo not found")
+    try:
+        content = json.loads(analysis.content)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Memo data corrupted")
+    return {
+        "ticker": analysis.ticker,
+        "verdict": content.get("verdict"),
+        "confidence": content.get("confidence"),
+        "structured_memo": content.get("structured_memo"),
+        "checklist_answers": content.get("checklist_answers"),
+        "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
+    }
 
 
 @app.get("/stock-chart/compare")
@@ -1891,7 +2161,7 @@ if __name__ == "__main__":
     print("Starting Financial Analysis API Server...")
     print("API will be available at: http://localhost:8000")
     print("API documentation: http://localhost:8000/docs")
-    print("Available agents: DCF, Equity Analyst, Finance Q&A, Market Analyst, Portfolio Analyzer")
+    print("Available agents: Equity Analyst, Finance Q&A, Market Analyst, Portfolio Analyzer")
 
     uvicorn.run(
         "api_server:app",

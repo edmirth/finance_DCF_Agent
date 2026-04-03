@@ -58,6 +58,20 @@ async def init_db() -> None:
                 logger.error(f"Unexpected OperationalError adding chart_specs column: {e}")
         except Exception as e:
             logger.error(f"Unexpected error adding chart_specs column: {e}")
+        # Idempotent migration: add share_slug + checklist_answers to analyses
+        for _col, _ddl in [
+            ("share_slug", "ALTER TABLE analyses ADD COLUMN share_slug TEXT"),
+            ("checklist_answers", "ALTER TABLE analyses ADD COLUMN checklist_answers TEXT"),
+        ]:
+            try:
+                await conn.execute(text(_ddl))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                    pass
+                else:
+                    logger.error(f"Unexpected OperationalError adding {_col} column: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error adding {_col} column: {e}")
         # Idempotent migration: create project tables if they don't exist yet
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS projects (

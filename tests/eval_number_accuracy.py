@@ -523,139 +523,10 @@ def check_tool_vs_raw(tool_text: str, metrics: Dict, info: Dict) -> List[Check]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Layer 5 — DCF Math Verification
-# ─────────────────────────────────────────────────────────────────────────────
-
-def check_dcf_math(ticker: str, metrics: Dict, info: Dict) -> List[Check]:
-    """
-    Call PerformDCFAnalysisTool with known inputs and verify the internal
-    WACC/CAPM math, terminal value share, and per-share intrinsic value.
-    Requires real API access (no LLM call).
-    """
-    checks: List[Check] = []
-
-    from tools.dcf_tools import PerformDCFAnalysisTool
-
-    # Use API beta if available, else 1.0
-    beta = metrics.get("beta") or 1.0
-    # Conservative but realistic assumptions for verification
-    rf = 0.045         # ~4.5% (approximate 10Y Treasury)
-    mrp = 0.055        # 5.5% equity risk premium
-    terminal_g = 0.025 # 2.5%
-    # Analyst consensus placeholder — use historical CAGR as a stand-in
-    # (we only care about the math, not the specific output value)
-    from data.financial_data import FinancialDataFetcher
-    fetcher = FinancialDataFetcher()
-    hist_rev = metrics.get("historical_revenue", [])
-    near_term = fetcher.calculate_historical_growth_rate(hist_rev) if hist_rev else 0.08
-    near_term = max(min(near_term, 0.40), 0.02)  # clamp to 2–40%
-
-    cost_of_equity_expected = rf + beta * mrp
-
-    tool = PerformDCFAnalysisTool()
-    console.print(f"  [dim]Running DCF tool for {ticker} (no LLM)...[/dim]")
-    t0 = time.time()
-    output = tool._run(
-        ticker=ticker,
-        near_term_growth_rate=near_term,
-        long_term_growth_rate=max(near_term * 0.5, 0.04),
-        terminal_growth_rate=terminal_g,
-        beta=beta,
-        risk_free_rate=rf,
-        market_risk_premium=mrp,
-    )
-    elapsed = time.time() - t0
-
-    if output.startswith("Error"):
-        checks.append(Check("[dcf] Tool execution", "FAIL",
-                             note=output[:120]))
-        return checks
-
-    checks.append(Check("[dcf] Tool execution", "PASS",
-                         actual=f"completed in {elapsed:.1f}s"))
-
-    # Parse base-case WACC from output (first occurrence = base scenario)
-    wacc_match = re.search(
-        r'Discount Rate \(WACC\):\s*([\d.]+)%'
-        r'|Discounted at WACC \(([\d.]+)%\)'
-        r'|WACC[:\s]+([\d.]+)%',
-        output, re.IGNORECASE
-    )
-    if wacc_match:
-        wacc_str = next(g for g in wacc_match.groups() if g is not None)
-        reported_wacc = float(wacc_str) / 100
-        # Expected WACC (simplified equity-only or full WACC)
-        total_debt = metrics.get("total_debt", 0) or 0
-        price = info.get("current_price", 0) or 0
-        shares = metrics.get("shares_outstanding", 0) or 0
-        mve = price * shares
-        total_v = mve + total_debt
-        if total_v > 0 and total_debt > 0:
-            eq_w = mve / total_v
-            d_w = total_debt / total_v
-            interest = abs(metrics.get("latest_interest_expense", 0) or 0)
-            cod = interest / total_debt if total_debt > 0 else 0.05
-            tax = metrics.get("effective_tax_rate", 0.21) or 0.21
-            expected_wacc = eq_w * cost_of_equity_expected + d_w * cod * (1 - tax)
-        else:
-            expected_wacc = cost_of_equity_expected
-
-        diff_pp = abs(reported_wacc - expected_wacc) * 100
-        status = "PASS" if diff_pp <= 0.5 else ("WARN" if diff_pp <= 2.0 else "FAIL")
-        checks.append(Check("[dcf] WACC = Rf + β×MRP", status,
-                             expected=f"{expected_wacc*100:.2f}%",
-                             actual=f"{reported_wacc*100:.2f}%",
-                             delta_pct=diff_pp,
-                             note="" if status == "PASS" else
-                             f"{diff_pp:.2f} pp deviation — check CAPM inputs"))
-    else:
-        checks.append(Check("[dcf] WACC = Rf + β×MRP", "WARN",
-                             note="Could not parse WACC from DCF output"))
-
-    # Intrinsic value must be positive
-    iv_match = re.search(
-        r'(?:Intrinsic Value|Fair Value)[^\n]*\$\s*([\d,.]+)',
-        output, re.IGNORECASE
-    )
-    if iv_match:
-        iv = float(iv_match.group(1).replace(",", ""))
-        status = "PASS" if iv > 0 else "FAIL"
-        checks.append(Check("[dcf] Intrinsic value > 0", status,
-                             actual=f"${iv:.2f}"))
-    else:
-        checks.append(Check("[dcf] Intrinsic value > 0", "SKIP",
-                             note="Could not parse intrinsic value"))
-
-    # Terminal value should not dominate (< 90% of EV is reasonable)
-    tv_match = re.search(
-        r'Terminal Value[^\n]*\$\s*([\d,.]+[TBMK]?)',
-        output, re.IGNORECASE
-    )
-    ev_match = re.search(
-        r'Enterprise Value[^\n]*\$\s*([\d,.]+[TBMK]?)',
-        output, re.IGNORECASE
-    )
-    if tv_match and ev_match:
-        tv_str = "$" + tv_match.group(1)
-        ev_str = "$" + ev_match.group(1)
-        tv_val = _parse_dollar(tv_str)
-        ev_val = _parse_dollar(ev_str)
-        if tv_val and ev_val and ev_val > 0:
-            tv_pct = tv_val / ev_val
-            status = "PASS" if tv_pct < 0.90 else "WARN"
-            checks.append(Check("[dcf] Terminal value < 90% of EV", status,
-                                 actual=f"{tv_pct*100:.0f}%",
-                                 note="" if status == "PASS" else
-                                 "TV dominates — model highly sensitive to terminal assumptions"))
-
-    return checks
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_eval(ticker: str, run_dcf: bool = False) -> EvalReport:
+def run_eval(ticker: str) -> EvalReport:
     report = EvalReport(ticker=ticker)
 
     console.print(Rule(f"[bold cyan]{ticker}[/bold cyan]", style="dim"))
@@ -704,7 +575,7 @@ def run_eval(ticker: str, run_dcf: bool = False) -> EvalReport:
     # Layer 4 — call tools and parse their text output
     console.print("  [dim]Calling tool outputs for text comparison...[/dim]")
     try:
-        from tools.dcf_tools import GetFinancialMetricsTool, GetStockInfoTool
+        from tools.stock_tools import GetFinancialMetricsTool, GetStockInfoTool
         metrics_text = GetFinancialMetricsTool()._run(ticker)
         info_text    = GetStockInfoTool()._run(ticker)
         combined_text = metrics_text + "\n" + info_text
@@ -712,10 +583,6 @@ def run_eval(ticker: str, run_dcf: bool = False) -> EvalReport:
     except Exception as exc:
         report.checks.append(Check("[tool≈raw] Tool execution", "WARN",
                                     note=f"tool call failed: {exc}"))
-
-    # Layer 5 — DCF math (optional)
-    if run_dcf:
-        report.checks.extend(check_dcf_math(ticker, metrics, info))
 
     return report
 
@@ -776,8 +643,6 @@ def main() -> int:
     )
     parser.add_argument("--ticker",   help="Single ticker to evaluate")
     parser.add_argument("--tickers",  nargs="+", help="Multiple tickers")
-    parser.add_argument("--dcf",      action="store_true",
-                        help="Enable Layer 5: DCF math verification (no LLM, ~10-20s extra)")
     parser.add_argument("--fail-fast", action="store_true",
                         help="Stop after the first FAIL result")
     args = parser.parse_args()
@@ -794,8 +659,7 @@ def main() -> int:
     console.print()
     console.print(Panel(
         f"[bold]Finance Agent — Number Accuracy Eval[/bold]\n"
-        f"Tickers: [cyan]{', '.join(tickers)}[/cyan]   "
-        f"DCF layer: [cyan]{'ON' if args.dcf else 'OFF (pass --dcf to enable)'}[/cyan]",
+        f"Tickers: [cyan]{', '.join(tickers)}[/cyan]",
         border_style="bold blue",
     ))
 
@@ -803,7 +667,7 @@ def main() -> int:
     exit_code = 0
 
     for ticker in tickers:
-        report = run_eval(ticker, run_dcf=args.dcf)
+        report = run_eval(ticker)
         render_report(report)
         all_reports.append(report)
 

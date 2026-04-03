@@ -114,9 +114,29 @@ export interface StreamEvent {
     // Auto-routing decision
     | 'routing_decision'
     // Chart data events
-    | 'chart_data';
+    | 'chart_data'
+    // Arena (Investment Committee) events
+    | 'arena_dispatch' | 'arena_agent_start' | 'arena_agent_done'
+    | 'arena_conflict' | 'arena_synthesis'
+    | 'arena_question' | 'arena_answer';
   content?: string;
   agent?: string;
+  // Arena event fields
+  view?: string;
+  confidence?: number;
+  reasoning?: string;
+  consensus_score?: number;
+  conviction_level?: string;
+  next_action?: string;
+  thesis_summary?: string;
+  agents?: string[];
+  query_mode?: string;
+  description?: string;
+  round?: number;
+  from_agent?: string;
+  to_agent?: string;
+  question?: string;
+  answer?: string;
   error?: string;
   tool?: string;
   input?: string;

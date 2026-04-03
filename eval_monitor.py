@@ -16,8 +16,8 @@ Usage:
   python eval_monitor.py health
   python eval_monitor.py flow
   python eval_monitor.py eval AAPL
-  python eval_monitor.py eval AAPL --agent dcf
-  python eval_monitor.py monitor AAPL --agent dcf
+  python eval_monitor.py eval AAPL --agent analyst
+  python eval_monitor.py monitor AAPL --agent analyst
   python eval_monitor.py monitor AAPL --agent earnings
   python eval_monitor.py test AAPL
   python eval_monitor.py test NVDA
@@ -384,21 +384,6 @@ def show_health(results: List[CheckResult]) -> None:
 
 # Static definition of each agent's data flow
 AGENT_FLOWS = {
-    "dcf": {
-        "label": "DCF Agent (ReAct)",
-        "description": "Fast intrinsic value via Discounted Cash Flow",
-        "llm_calls": 1,
-        "steps": [
-            ("get_stock_info",       "Financial Datasets AI",  "Market cap, shares, sector"),
-            ("get_financial_metrics","Financial Datasets AI",  "Revenue, FCF, EBIT, debt, cash (5Y)"),
-            ("search_web",           "Tavily Search",          "Beta, analyst estimates, risk-free rate"),
-            ("get_market_parameters","FRED + calculations",    "10-Y Treasury yield, WACC inputs"),
-            ("perform_dcf_analysis", "Internal DCF Calculator","Bull / Base / Bear scenarios"),
-            ("get_dcf_comparison",   "FMP (optional)",         "Cross-validate DCF with FMP model"),
-        ],
-        "fallbacks": [],
-        "output": "Bull/Base/Bear intrinsic values + BUY/HOLD/SELL",
-    },
     "analyst": {
         "label": "Equity Analyst Agent (ReAct)",
         "description": "Comprehensive equity research report",
@@ -410,7 +395,6 @@ AGENT_FLOWS = {
             ("analyze_moat",         "Tavily Search + LLM",    "Brand, network effects, switching costs"),
             ("get_financial_metrics","Financial Datasets AI",  "Full financial history"),
             ("search_web",           "Tavily Search",          "Management quality, recent news"),
-            ("perform_dcf_analysis", "Internal DCF Calculator","Valuation with analyst assumptions"),
             ("get_sec_filings",      "SEC EDGAR",              "10-K / 10-Q filings"),
             ("analyze_sec_filing",   "SEC EDGAR + LLM",        "Risk factors, MD&A highlights"),
         ],
@@ -448,10 +432,9 @@ AGENT_FLOWS = {
             ("competitors",          "Tavily Search + LLM",    "Peer analysis  [Step 4]"),
             ("moat",                 "Tavily Search + LLM",    "Competitive advantage assessment  [Step 5]"),
             ("management",           "Tavily Search + LLM",    "Leadership quality  [Step 6]"),
-            ("dcf_valuation",        "Internal Calculator",    "DCF with scenarios  [Step 7]"),
-            ("thesis",               "Anthropic LLM",          "Investment thesis  [Step 8]"),
-            ("recommendation",       "Anthropic LLM",          "Final rating + price target  [Step 9]"),
-            ("report",               "—",                      "Format & output  [Step 10]"),
+            ("thesis",               "Anthropic LLM",          "Investment thesis  [Step 7]"),
+            ("recommendation",       "Anthropic LLM",          "Final rating + price target  [Step 8]"),
+            ("report",               "—",                      "Format & output  [Step 9]"),
         ],
         "fallbacks": [],
         "output": "Structured equity research report (reproducible)",
@@ -488,15 +471,13 @@ DATA_SOURCES = {
     "Tavily Search":          {"color": "cyan",   "note": "Web search — API key req."},
     "SEC EDGAR":              {"color": "green",  "note": "Regulatory filings — no key needed"},
     "FMP → Tavily":           {"color": "magenta","note": "Earnings surprises + transcripts — FMP primary, Tavily fallback"},
-    "FMP":                    {"color": "magenta","note": "Market quotes + DCF cross-check — optional"},
+    "FMP":                    {"color": "magenta","note": "Market quotes — optional"},
     "FRED":                   {"color": "white",  "note": "10-Year Treasury yield — API key req."},
     "Anthropic LLM":          {"color": "red",    "note": "LLM backbone for analysis nodes"},
-    "Internal DCF Calculator":{"color": "dim",    "note": "Pure math — no network call"},
     "Internal algorithm":     {"color": "dim",    "note": "Pure math — no network call"},
     "AV → FMP → Tavily":      {"color": "yellow", "note": "3-tier fallback cascade"},
     "FMP Market Data":        {"color": "magenta","note": "Indices, VIX, sector ETFs"},
     "—":                      {"color": "dim",    "note": "No external call"},
-    "FRED + calculations":    {"color": "white",  "note": "Treasury rate + derived WACC"},
     "Tavily Search + LLM":    {"color": "cyan",   "note": "Web search synthesised by LLM"},
     "SEC EDGAR + LLM":        {"color": "green",  "note": "Filing text analysed by LLM"},
     "Internal Calculator":    {"color": "dim",    "note": "Pure math — no network call"},
@@ -975,8 +956,6 @@ class MonitorCallback:
             "get_stock_info":           "Financial Datasets AI",
             "get_financial_metrics":    "Financial Datasets AI",
             "get_company_context":      "Financial Datasets AI",
-            "perform_dcf_analysis":     "Internal Calculator",
-            "get_dcf_comparison":       "FMP",
             "perform_multiples_valuation": "Financial Datasets AI",
             "search_web":               "Tavily Search",
             "analyze_industry":         "Tavily + LLM",
@@ -1040,7 +1019,6 @@ _URL_TOOL_MAP = [
     ("/financials",                  "get_financial_metrics"),
     ("/earnings-call-transcript",    "get_earnings_call_insights"),
     ("/batch-quote",                 "market_quote"),
-    ("/discounted-cash-flow",        "get_dcf_comparison"),
     ("/submissions/CIK",             "get_sec_filings"),
     ("/api/xbrl/",                   "get_sec_financials"),
     ("/files/company_tickers",       "sec_cik_lookup"),
@@ -1121,7 +1099,6 @@ def run_monitor(ticker: str, agent_name: str) -> None:
     """Instrument and run an agent, showing live data call activity."""
     ticker = ticker.upper()
     agent_map = {
-        "dcf":      "DCF Agent",
         "analyst":  "Equity Analyst Agent",
         "earnings": "Earnings Agent",
         "graph":    "LangGraph Equity Analyst",
@@ -1169,13 +1146,7 @@ def run_monitor(ticker: str, agent_name: str) -> None:
 
     def _run_agent():
         try:
-            if agent_name == "dcf":
-                from agents.dcf_agent import DCFAnalysisAgent
-                agent = DCFAnalysisAgent()
-                query = f"Perform a comprehensive DCF analysis on {ticker}"
-                result_holder["output"] = agent.analyze(query)
-
-            elif agent_name == "earnings":
+            if agent_name == "earnings":
                 from agents.earnings_agent import EarningsAgent
                 agent = EarningsAgent()
                 result_holder["output"] = agent.analyze(ticker)
@@ -1837,10 +1808,10 @@ def build_parser() -> argparse.ArgumentParser:
 Examples:
   python eval_monitor.py health
   python eval_monitor.py flow
-  python eval_monitor.py flow --agent dcf
+  python eval_monitor.py flow --agent analyst
   python eval_monitor.py eval AAPL
   python eval_monitor.py eval NVDA --agent earnings
-  python eval_monitor.py monitor AAPL --agent dcf
+  python eval_monitor.py monitor AAPL --agent analyst
   python eval_monitor.py monitor TSLA --agent earnings
   python eval_monitor.py test AAPL          # full earnings data integrity test
   python eval_monitor.py test NVDA          # test with different ticker
@@ -1861,8 +1832,8 @@ Examples:
 
     mon_p = sub.add_parser("monitor", help="Run an agent with live data-call instrumentation")
     mon_p.add_argument("ticker", help="Stock ticker symbol, e.g. AAPL")
-    mon_p.add_argument("--agent", choices=["dcf", "analyst", "earnings", "graph", "market"],
-                       default="dcf", help="Which agent to run (default: dcf)")
+    mon_p.add_argument("--agent", choices=["analyst", "earnings", "graph", "market"],
+                       default="analyst", help="Which agent to run (default: analyst)")
 
     test_p = sub.add_parser(
         "test",

@@ -6,13 +6,13 @@ ARENA_CONFIG = {
     # Maximum debate rounds before forcing a decision
     "max_rounds": 2,
 
-    # Which agents activate per query mode
+    # Which agents activate per query mode — order defines the execution sequence
     "query_modes": {
-        "full_ic":      ["fundamental", "quant", "macro", "risk", "sentiment"],
+        "full_ic":      ["fundamental", "risk", "macro", "quant", "sentiment"],
         "quick_screen": ["fundamental", "risk"],
-        "risk_check":   ["risk"],
-        "macro_view":   ["macro", "sentiment"],
+        "risk_check":   ["fundamental", "risk"],
         "valuation":    ["fundamental", "quant"],
+        "macro_view":   ["macro", "sentiment"],
     },
 
     # When to stop the AI and escalate to a human instead

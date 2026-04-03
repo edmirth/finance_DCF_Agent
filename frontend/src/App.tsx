@@ -3,6 +3,9 @@ import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
 import Portfolio from './pages/Portfolio';
 import EarningsPage from './pages/EarningsPage';
+import ArenaPage from './pages/ArenaPage';
+import InvestmentMemoPage from './pages/InvestmentMemoPage';
+import MemoSharePage from './pages/MemoSharePage';
 import LibraryPage from './pages/LibraryPage';
 import ProjectsListPage from './pages/ProjectsListPage';
 import ProjectWorkspace from './pages/ProjectWorkspace';
@@ -19,6 +22,9 @@ function App() {
           <Route path="/" element={<ChatPage />} />
           <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/earnings" element={<EarningsPage />} />
+          <Route path="/arena" element={<ArenaPage />} />
+          <Route path="/memo" element={<InvestmentMemoPage />} />
+          <Route path="/m/:slug" element={<MemoSharePage />} />
           <Route path="/library" element={<LibraryPage />} />
           <Route path="/projects" element={<ProjectsListPage />} />
           <Route path="/projects/:projectId" element={<ProjectWorkspace />} />

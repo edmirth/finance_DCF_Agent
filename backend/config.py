@@ -227,4 +227,4 @@ DATABASE_URL: str = _os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./finance_ag
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 
 # Agent types and their available names
-AGENT_TYPES = ["dcf", "analyst", "research", "market", "portfolio", "earnings"]
+AGENT_TYPES = ["analyst", "research", "market", "portfolio", "earnings"]

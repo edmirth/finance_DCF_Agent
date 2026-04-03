@@ -6,7 +6,7 @@ Generates equity research reports focusing on:
 - Analyst estimates & earnings surprises
 - Management guidance analysis
 - Competitive comparison
-- Investment thesis with BUY/HOLD/SELL rating
+- Investment thesis
 
 9-node workflow: data gathering (parallel) → analysis (1 LLM call) → thesis (1 LLM call) → report
 """
@@ -338,7 +338,7 @@ class EarningsAgent:
     2-5. Parallel: Fetch earnings history, analyst estimates, surprises+transcripts+peers, SEC filings
     6. Aggregate (sync point)
     7. Comprehensive analysis (1 LLM call)
-    8. Investment thesis + rating (1 LLM call)
+    8. Investment thesis (1 LLM call)
     9. Generate report
     """
 
@@ -798,18 +798,13 @@ ANALYSIS:
 
 Provide exactly:
 
-1. **INVESTMENT RATING**: BUY, HOLD, or SELL
-   - BUY: expected upside >15% with favorable risk/reward
-   - HOLD: expected return 0-15% or mixed signals
-   - SELL: downside risk >10% or deteriorating fundamentals
+1. **PRICE TARGET (12-month)**: A specific dollar amount (format: "$XXX.XX")
 
-2. **PRICE TARGET (12-month)**: A specific dollar amount (format: "$XXX.XX")
+2. **INVESTMENT THESIS** (2-3 paragraphs): Key drivers, risk/reward, implied return
 
-3. **INVESTMENT THESIS** (2-3 paragraphs): Why this rating, key drivers, risk/reward
+3. **KEY CATALYSTS** (3-5 bullet points): Near-term positive events
 
-4. **KEY CATALYSTS** (3-5 bullet points): Near-term positive events
-
-5. **KEY RISKS** (3-5 bullet points): What could go wrong
+4. **KEY RISKS** (3-5 bullet points): What could go wrong
 
 Be decisive and quantitative. Don't hedge.
 
@@ -826,21 +821,6 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             result = {"investment_thesis": thesis_text}
 
             # --- Extract structured fields from LLM output ---
-
-            # Rating
-            result["rating"] = "HOLD"  # default
-            for line in thesis_text.split('\n'):
-                line_upper = line.upper()
-                if 'RATING' in line_upper or 'RECOMMENDATION' in line_upper:
-                    if 'BUY' in line_upper and 'SELL' not in line_upper:
-                        result["rating"] = 'BUY'
-                        break
-                    elif 'SELL' in line_upper:
-                        result["rating"] = 'SELL'
-                        break
-                    elif 'HOLD' in line_upper:
-                        result["rating"] = 'HOLD'
-                        break
 
             # Price target
             result["price_target"] = 0.0
@@ -899,8 +879,8 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
                         break
             result["key_risks"] = risks[:5] if risks else ["Market volatility", "Execution risk", "Competitive pressure"]
 
-            logger.info(f"  → {result['rating']} | PT ${result['price_target']:.2f} | {len(result['key_catalysts'])} catalysts, {len(result['key_risks'])} risks")
-            self._emit_progress("develop_thesis", "completed", f"{result['rating']} rating")
+            logger.info(f"  → PT ${result['price_target']:.2f} | {len(result['key_catalysts'])} catalysts, {len(result['key_risks'])} risks")
+            self._emit_progress("develop_thesis", "completed", "Thesis complete")
             return result
 
         except Exception as e:
@@ -908,7 +888,6 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             self._emit_progress("develop_thesis", "completed", "Partial data (error)")
             return {
                 "investment_thesis": "Error developing investment thesis",
-                "rating": "HOLD",
                 "price_target": state['current_price'] if state['current_price'] > 0 else 0.0,
                 "key_catalysts": ["Unable to determine catalysts"],
                 "key_risks": ["Unable to determine risks"],
@@ -941,7 +920,7 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
 
 **{state['sector']}** | {state['industry']} | {time.strftime('%B %d, %Y')}
 
-**Rating:** {state.get('rating', 'N/A')} &nbsp;|&nbsp; **Price Target (12M):** ${state['price_target']:.2f} &nbsp;|&nbsp; **Current Price:** ${state['current_price']:.2f} &nbsp;|&nbsp; **Implied Return:** {upside_pct:+.1f}% &nbsp;|&nbsp; **Market Cap:** {"${:.2f}B".format(state['market_cap']/1e9) if state['market_cap'] > 0 else "N/A"}
+**Price Target (12M):** ${state['price_target']:.2f} &nbsp;|&nbsp; **Current Price:** ${state['current_price']:.2f} &nbsp;|&nbsp; **Implied Return:** {upside_pct:+.1f}% &nbsp;|&nbsp; **Market Cap:** {"${:.2f}B".format(state['market_cap']/1e9) if state['market_cap'] > 0 else "N/A"}
 
 ---
 

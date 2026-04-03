@@ -26,7 +26,6 @@ const quickPrompts = [
 
 const agentIcons: Record<string, any> = {
   auto: Sparkles,
-  dcf: BarChart3,
   analyst: TrendingUp,
   research: Search,
   market: Globe,
@@ -39,7 +38,6 @@ const agentLabels: Record<string, string> = {
   research: 'Finance Q&A',
   analyst: 'Analyst',
   market: 'Market',
-  dcf: 'DCF',
   portfolio: 'Portfolio',
   earnings: 'Earnings',
 };
@@ -197,7 +195,7 @@ function ChatInput({ value, onChange, onSend, isLoading, placeholder, agents, se
               {showDropdown && (
                 <div className="agent-dropdown">
                   {agents.map((agent) => {
-                    const Icon = agentIcons[agent.id];
+                    const Icon = agentIcons[agent.id] || Sparkles;
                     const isActive = selectedAgent.id === agent.id;
                     const isAuto = agent.id === 'auto';
                     return (

@@ -5,7 +5,7 @@ from typing import TypedDict, Annotated, List, Optional
 from langgraph.graph import StateGraph, END
 from langchain_anthropic import ChatAnthropic
 from langchain.tools import BaseTool
-from tools.dcf_tools import get_dcf_tools
+from tools.stock_tools import get_stock_tools
 from tools.equity_analyst_tools import get_equity_analyst_tools
 from tools.earnings_tools import get_earnings_tools
 import json
@@ -70,14 +70,8 @@ class EquityAnalystState(TypedDict):
     base_case: str
 
     # Step 9: Final recommendation
-    rating: str  # BUY, HOLD, SELL
     price_target: float
     conviction: str  # HIGH, MEDIUM, LOW
-
-    # (reserved for future DCF integration)
-    dcf_results: dict
-    intrinsic_value: float
-    upside_potential: float
 
     # Output
     final_report: str
@@ -105,12 +99,12 @@ class EquityAnalystGraph:
         )
 
         # Get all tools
-        self.dcf_tools = {tool.name: tool for tool in get_dcf_tools()}
+        self.stock_tools = {tool.name: tool for tool in get_stock_tools()}
         self.analyst_tools = {tool.name: tool for tool in get_equity_analyst_tools()}
         self.earnings_tools = {tool.name: tool for tool in get_earnings_tools()}
 
         # Detect and log silent name collisions before merging
-        all_sources = [("dcf", self.dcf_tools), ("analyst", self.analyst_tools), ("earnings", self.earnings_tools)]
+        all_sources = [("stock", self.stock_tools), ("analyst", self.analyst_tools), ("earnings", self.earnings_tools)]
         seen: dict = {}
         for source_name, tool_dict in all_sources:
             for name in tool_dict:
@@ -121,8 +115,8 @@ class EquityAnalystGraph:
                     )
                 seen[name] = source_name
 
-        # analyst_tools overwrites dcf_tools on collision; earnings_tools overwrites both
-        self.all_tools = {**self.dcf_tools, **self.analyst_tools, **self.earnings_tools}
+        # analyst_tools overwrites stock_tools on collision; earnings_tools overwrites both
+        self.all_tools = {**self.stock_tools, **self.analyst_tools, **self.earnings_tools}
 
         # Build graph
         self.graph = self._build_graph()
@@ -748,32 +742,26 @@ class EquityAnalystGraph:
                 score -= 1   # Frequently misses expectations
 
         if score >= 4:
-            state["rating"] = "BUY"
             state["conviction"] = "HIGH"
         elif score >= 1:
-            state["rating"] = "BUY"
             state["conviction"] = "MEDIUM"
         elif score >= -2:
-            state["rating"] = "HOLD"
             state["conviction"] = "MEDIUM"
         else:
-            state["rating"] = "SELL"
             state["conviction"] = "HIGH" if score <= -5 else "MEDIUM"
 
-        # Price target: use multiples fair value if available, else fall back to rating-based estimate
+        # Price target: use multiples fair value if available, else fall back to conviction-based estimate
         fair_value = state.get("fair_value", 0)
         current_price = state.get("current_price", 0)
         if fair_value > 0:
             state["price_target"] = round(fair_value, 2)
         elif current_price > 0:
             multipliers = {
-                ("BUY", "HIGH"): 1.25,
-                ("BUY", "MEDIUM"): 1.15,
-                ("HOLD", "MEDIUM"): 1.05,
-                ("SELL", "HIGH"): 0.80,
-                ("SELL", "MEDIUM"): 0.85,
+                "HIGH": 1.20,
+                "MEDIUM": 1.10,
+                "LOW": 1.05,
             }
-            mult = multipliers.get((state["rating"], state["conviction"]), 1.0)
+            mult = multipliers.get(state["conviction"], 1.0)
             state["price_target"] = round(current_price * mult, 2)
         else:
             state["price_target"] = 0.0
@@ -793,7 +781,6 @@ class EquityAnalystGraph:
         ticker = state["ticker"]
         company_name = state.get("company_name", ticker)
         current_price = state.get("current_price", 0)
-        rating = state.get("rating", "N/A")
         conviction = state.get("conviction", "N/A")
         moat_strength = state.get("moat_strength", "Unknown")
         management_quality = state.get("management_quality", "Unknown")
@@ -817,7 +804,7 @@ class EquityAnalystGraph:
         base_case = state.get("base_case", "")
         if not base_case:
             base_case = (
-                f"{company_name} earns a **{rating}** rating with **{conviction}** conviction. "
+                f"{company_name} has **{conviction}** conviction in the base case. "
                 f"The company has a **{moat_strength}** competitive moat and **{management_quality}** "
                 f"management quality."
             )
@@ -855,7 +842,7 @@ class EquityAnalystGraph:
         report = f"""# {company_name} ({ticker})
 ## Equity Research Report · {date_str}
 
-**Rating:** {rating} &nbsp;|&nbsp; **Conviction:** {conviction} &nbsp;|&nbsp; **Current Price:** ${current_price:.2f} &nbsp;|&nbsp; **Price Target:** ${price_target:.2f} &nbsp;|&nbsp; **Moat:** {moat_strength} &nbsp;|&nbsp; **Management:** {management_quality}
+**Conviction:** {conviction} &nbsp;|&nbsp; **Current Price:** ${current_price:.2f} &nbsp;|&nbsp; **Price Target:** ${price_target:.2f} &nbsp;|&nbsp; **Moat:** {moat_strength} &nbsp;|&nbsp; **Management:** {management_quality}
 
 {warnings_md}---
 
@@ -913,11 +900,9 @@ class EquityAnalystGraph:
 
 ---
 
-## Recommendation
+## Conviction & Price Target
 
-**Rating: {rating}** &nbsp;|&nbsp; **Conviction: {conviction}**
-
-{pt_line}
+**Conviction: {conviction}** &nbsp;|&nbsp; {pt_line}
 
 ---
 
@@ -956,13 +941,9 @@ class EquityAnalystGraph:
             "multiples_valuation": "",
             "fair_value": 0.0,
             "valuation_upside": 0.0,
-            "dcf_results": {},
-            "intrinsic_value": 0.0,
-            "upside_potential": 0.0,
             "bull_case": [],
             "bear_case": [],
             "base_case": "",
-            "rating": "",
             "price_target": 0.0,
             "conviction": "",
             "analysis_steps": [],

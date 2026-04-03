@@ -5,20 +5,18 @@ import { AnalysisSummary, AnalysisDetail } from '../types';
 import ReactMarkdown from 'react-markdown';
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
-  dcf: 'DCF',
   analyst: 'Equity Analyst',
   earnings: 'Earnings',
   graph: 'Graph Research',
 };
 
 const AGENT_TYPE_COLORS: Record<string, string> = {
-  dcf: '#3B82F6',
   analyst: '#8B5CF6',
   earnings: '#F59E0B',
   graph: '#10B981',
 };
 
-const FILTER_AGENT_TYPES = ['dcf', 'analyst', 'earnings', 'graph'];
+const FILTER_AGENT_TYPES = ['analyst', 'earnings', 'graph'];
 
 function AgentChip({ agentType }: { agentType: string }) {
   const color = AGENT_TYPE_COLORS[agentType] || '#6B7280';
@@ -598,7 +596,7 @@ export default function LibraryPage() {
             >
               {searchQuery || activeAgentFilter || activeTagFilter
                 ? 'Try adjusting your filters'
-                : 'Run a DCF, Equity Analyst, or Earnings analysis to get started'}
+                : 'Run an Equity Analyst or Earnings analysis to get started'}
             </p>
           </div>
         ) : (

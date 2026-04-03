@@ -35,11 +35,8 @@ const TOOL_INLINE: Record<string, string> = {
   get_stock_info:              'company overview tool',
   get_financial_metrics:       'financial metrics tool',
   search_web:                  'web search',
-  perform_dcf_analysis:        'DCF valuation model',
   get_market_parameters:       'market parameters tool',
-  get_dcf_comparison:          'DCF comparison tool',
   perform_multiples_valuation: 'multiples valuation model',
-  format_dcf_report:           'report formatter',
   analyze_industry:            'industry analysis tool',
   analyze_competitors:         'competitor analysis tool',
   analyze_moat:                'moat analysis tool',
@@ -96,15 +93,12 @@ function humanizeThought(text: string): string {
  * Used by cleanLabel() to produce natural sentences instead of snake_case names.
  */
 const TOOL_LABELS: Record<string, string> = {
-  // DCF / valuation
+  // Valuation
   get_stock_info:              'Looking up company overview',
   get_financial_metrics:       'Pulling historical financials',
   search_web:                  'Searching the web for current data',
-  perform_dcf_analysis:        'Running DCF valuation model',
   get_market_parameters:       'Fetching market parameters',
-  get_dcf_comparison:          'Comparing DCF scenarios',
   perform_multiples_valuation: 'Running multiples-based valuation',
-  format_dcf_report:           'Formatting valuation report',
   // Equity analyst
   analyze_industry:    'Analyzing industry dynamics',
   analyze_competitors: 'Mapping the competitive landscape',

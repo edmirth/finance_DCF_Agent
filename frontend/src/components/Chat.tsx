@@ -6,7 +6,7 @@ import ChatInput from './ChatInput';
 import FileUploadModal from './FileUploadModal';
 import { X } from 'lucide-react';
 
-const ANALYSIS_AGENT_TYPES = new Set(['dcf', 'analyst', 'earnings', 'graph']);
+const ANALYSIS_AGENT_TYPES = new Set(['analyst', 'earnings', 'graph']);
 
 interface ChatProps {
   agent: Agent;

@@ -26,8 +26,7 @@ _ROUTING_SYSTEM = """You are a financial query router for an investment thesis w
 Given a user query and project context, decide which 1–3 agents to invoke.
 
 Available agents:
-- dcf: Intrinsic value / DCF valuation, price target, margin of safety. Use when query asks about fair value, is the stock overvalued/undervalued, or requests a DCF model.
-- analyst: Deep equity research — moat, competitive position, industry analysis, comprehensive buy/sell recommendation. Use for in-depth thesis validation or "should I invest" questions.
+- analyst: Deep equity research — moat, competitive position, industry analysis, valuation. Use for in-depth thesis validation, fair value questions, or "should I invest" queries.
 - earnings: Quarterly earnings results, EPS beats/misses, revenue guidance, earnings call commentary. Use when query explicitly mentions earnings, EPS, quarterly results, or management guidance.
 - market: Macro conditions, sector rotation, indices (S&P 500, NASDAQ, VIX), Fed policy, inflation, recession risk. Use for broad market questions or macro thesis checks.
 - research: General financial research, company info, metrics, follow-up questions, comparisons, and anything that doesn't clearly fit another agent.
@@ -107,7 +106,7 @@ async def route_for_project(
         agents = [
             AgentTask(agent_type=a["agent_type"], task=a["task"])
             for a in data.get("agents", [])
-            if a.get("agent_type") in ("dcf", "analyst", "earnings", "market", "research")
+            if a.get("agent_type") in ("analyst", "earnings", "market", "research")
         ]
         if not agents:
             return fallback

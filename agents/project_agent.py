@@ -2,7 +2,7 @@
 Project Analysis Agent — LangGraph-based multi-agent orchestrator for investment thesis workspaces.
 
 Architecture:
-  route → [run_agent_dcf, run_agent_analyst, run_agent_earnings, run_agent_market, run_agent_research]
+  route → [run_agent_analyst, run_agent_earnings, run_agent_market, run_agent_research]
         → sync_point → synthesize → extract_memory_patch → END
 """
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Annotated, Any, Dict, List, TypedDict
 
 from langgraph.graph import StateGraph, START, END
 
-from agents.dcf_agent import create_dcf_agent
 from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.earnings_agent import create_earnings_agent
 from agents.market_agent import create_market_agent
@@ -53,7 +52,6 @@ class ProjectAnalysisState(TypedDict):
 # ============================================================================
 
 AGENT_NODE_NAMES = {
-    "dcf": "run_agent_dcf",
     "analyst": "run_agent_analyst",
     "earnings": "run_agent_earnings",
     "market": "run_agent_market",
@@ -175,26 +173,6 @@ class ProjectAnalysisGraph:
     # -----------------------------------------------------------------------
     # Node 2–6: Agent runner nodes
     # -----------------------------------------------------------------------
-
-    def run_agent_dcf(self, state: ProjectAnalysisState) -> dict:
-        """Run DCF agent and append result to agent_results."""
-        agent_type = "dcf"
-        self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running DCF analysis"})
-        task = self._grounded_task(state, agent_type)
-        try:
-            agent = create_dcf_agent()
-            output = self._ensure_str(agent.analyze(task))
-            logger.info(f"[project_graph] run_agent_dcf complete ({len(output)} chars)")
-            self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
-            return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}
-        except Exception as exc:
-            msg = f"DCF agent error: {exc}"
-            logger.error(f"[project_graph] {msg}")
-            self._emit_progress("project_progress", {"node": agent_type, "status": "error", "detail": msg})
-            return {
-                "errors": [msg],
-                "agent_results": [{"agent_type": agent_type, "task": task, "output": f"Error: {exc}"}],
-            }
 
     def run_agent_analyst(self, state: ProjectAnalysisState) -> dict:
         """Run equity analyst agent and append result to agent_results."""
@@ -445,7 +423,6 @@ class ProjectAnalysisGraph:
 
         # Register all nodes
         workflow.add_node("route", self.route)
-        workflow.add_node("run_agent_dcf", self.run_agent_dcf)
         workflow.add_node("run_agent_analyst", self.run_agent_analyst)
         workflow.add_node("run_agent_earnings", self.run_agent_earnings)
         workflow.add_node("run_agent_market", self.run_agent_market)

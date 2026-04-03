@@ -98,6 +98,77 @@ export const streamMessage = async (
   }
 };
 
+// Investment Memo streaming
+export interface MemoEvent {
+  type: string;
+  [key: string]: any;
+}
+
+export const streamMemo = (
+  ticker: string,
+  queryMode: string = 'full_ic',
+  onEvent: (event: MemoEvent) => void,
+  onError: (error: string | null) => void
+): { cancel: () => void } => {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/memo/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, query_mode: queryMode }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(body || `HTTP error ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error('No response body');
+
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              onEvent(data as MemoEvent);
+            } catch (e) {
+              onError('Analysis stream error — please try again');
+              return;
+            }
+          }
+        }
+      }
+      if (buffer.trim().startsWith('data: ')) {
+        try {
+          const data = JSON.parse(buffer.trim().slice(6));
+          onEvent(data as MemoEvent);
+        } catch (_) {
+          onError('Analysis stream error — please try again');
+        }
+      }
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        onError(null); // user-initiated cancel — no error message
+      } else {
+        onError(error.message || 'Failed to stream memo');
+      }
+    }
+  })();
+
+  return { cancel: () => controller.abort() };
+};
+
 // Document upload
 export const uploadDocument = async (file: File): Promise<{ filename: string; content: string; file_type: string }> => {
   const formData = new FormData();
@@ -176,24 +247,24 @@ export const getStockChartComparison = async (
 // Helper functions
 const getAgentIcon = (agentId: string): string => {
   const icons: Record<string, string> = {
-    dcf: '📊',
     analyst: '📈',
     research: '🔍',
     market: '🌐',
     portfolio: '💼',
     earnings: '💰',
+    arena: '⚔️',
   };
   return icons[agentId] || '🤖';
 };
 
 const getAgentColor = (agentId: string): string => {
   const colors: Record<string, string> = {
-    dcf: 'bg-blue-500',
     analyst: 'bg-purple-500',
     research: 'bg-green-500',
     market: 'bg-orange-500',
     portfolio: 'bg-indigo-500',
     earnings: 'bg-yellow-500',
+    arena: 'bg-emerald-500',
   };
   return colors[agentId] || 'bg-gray-500';
 };

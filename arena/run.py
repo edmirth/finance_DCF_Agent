@@ -32,6 +32,9 @@ def run_arena(
         "signal_history":  [],
         "conflicts":       [],
         "debate_log":      [],
+        "raw_outputs":     {},
+        "agent_questions": {},
+        "agent_answers":   {},
         "consensus_score": 0.0,
         "next_action":     "",
         "round":           0,
@@ -41,4 +44,7 @@ def run_arena(
         "investment_memo": None,
     }
 
-    return arena.invoke(initial_state)
+    # Default LangGraph recursion limit (25) is too low for 2 rounds × 5 agents.
+    # Each agent traverses 3 nodes (sequence_start → agent → sequence_advance),
+    # plus PM and memo nodes, totalling ~40 steps for a full IC run.
+    return arena.invoke(initial_state, config={"recursion_limit": 100})
