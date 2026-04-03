@@ -760,7 +760,7 @@ def _build_peer_context(state: ThesisState) -> str:
     """
     Reads what other agents have already written to the whiteboard.
     Prioritises raw_outputs (full findings) over agent_signals (structured only).
-    Sentiment stays in its lane — never comment on P/E, DCF, leverage, or momentum.
+    Sentiment stays in its lane — never comment on P/E, leverage, or momentum.
     """
     raw_outputs = state.get("raw_outputs", {})
     agent_signals = state.get("agent_signals", {})
@@ -792,7 +792,7 @@ def _build_peer_context(state: ThesisState) -> str:
         "Other analysts have already written their findings on the whiteboard:\n\n"
         + "\n".join(lines)
         + "\nIMPORTANT: Your view is about HUMAN CONVICTION — news, analyst opinion, "
-        "management signals, and insider behaviour. Do not comment on P/E, DCF, "
+        "management signals, and insider behaviour. Do not comment on P/E, "
         "leverage, or momentum — those belong to other agents. "
         "Use peer context to assess whether sentiment supports or contradicts "
         "the committee's emerging thesis. "
@@ -845,7 +845,7 @@ def run_llm_reasoning(
 Your job is to read the human narrative around {ticker} —
 news flow, analyst opinion, management signals, and insider behaviour.
 You capture what financials and price charts cannot: conviction.
-Never comment on P/E, DCF, leverage, or price momentum.
+Never comment on P/E, leverage, or price momentum.
 
 4-pillar sentiment analysis:
 

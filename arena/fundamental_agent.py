@@ -6,7 +6,7 @@ Fetches real financial data, runs a 4-pillar analysis, and returns
 a structured AgentSignal into the arena ThesisState whiteboard.
 
 Pillars:
-  1. Intrinsic Value (simplified DCF)
+  1. Intrinsic Value (FCF-based)
   2. Earnings Quality & Growth
   3. Valuation Multiples (vs. sector)
   4. Balance Sheet Quality
@@ -151,19 +151,19 @@ def fetch_market_context(ticker: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Section 2 — DCF calculation (Pillar 1)
+# Section 2 — Intrinsic Value calculation (Pillar 1)
 # ---------------------------------------------------------------------------
 
-def calculate_dcf(financials: dict, market_context: dict) -> dict:
+def calculate_intrinsic_value(financials: dict, market_context: dict) -> dict:
     """
-    Simplified 5-year FCF DCF.
-    Returns dcf_signal, upside_pct, intrinsic_value_per_share, fcf_cagr, wacc.
+    Simplified 5-year FCF intrinsic value model.
+    Returns valuation_signal, upside_pct, intrinsic_value_per_share, fcf_cagr, wacc.
     """
     fallback = {
         "intrinsic_value_per_share": None,
         "current_price": None,
         "upside_pct": 0.0,
-        "dcf_signal": "neutral",
+        "valuation_signal": "neutral",
         "fcf_cagr": 0.0,
         "wacc": 0.10,
     }
@@ -248,25 +248,25 @@ def calculate_dcf(financials: dict, market_context: dict) -> dict:
         else:
             upside_pct = 0.0
 
-        # DCF signal
+        # Valuation signal
         if upside_pct > 20:
-            dcf_signal = "bullish"
+            valuation_signal = "bullish"
         elif upside_pct < 0:
-            dcf_signal = "bearish"
+            valuation_signal = "bearish"
         else:
-            dcf_signal = "neutral"
+            valuation_signal = "neutral"
 
         return {
             "intrinsic_value_per_share": round(intrinsic_per_share, 2) if intrinsic_per_share else None,
             "current_price": round(current_price, 2) if current_price else None,
             "upside_pct": round(upside_pct, 1),
-            "dcf_signal": dcf_signal,
+            "valuation_signal": valuation_signal,
             "fcf_cagr": round(fcf_cagr * 100, 1),  # as percentage
             "wacc": round(wacc * 100, 1),            # as percentage
         }
 
     except Exception as e:
-        print(f"[Fundamental] calculate_dcf error: {e}")
+        print(f"[Fundamental] calculate_intrinsic_value error: {e}")
         return fallback
 
 
@@ -274,7 +274,7 @@ def calculate_dcf(financials: dict, market_context: dict) -> dict:
 # Section 3 — Pillar scoring
 # ---------------------------------------------------------------------------
 
-def score_pillars(financials: dict, market_context: dict, dcf: dict) -> dict:
+def score_pillars(financials: dict, market_context: dict, valuation: dict) -> dict:
     """
     Evaluate all 4 pillars and compute overall_signal + data_quality.
     """
@@ -285,9 +285,9 @@ def score_pillars(financials: dict, market_context: dict, dcf: dict) -> dict:
     data_points_available = 0
     data_points_total = 8
 
-    # ── Pillar 1: DCF / Intrinsic Value ──────────────────────────────────────
-    dcf_signal = dcf.get("dcf_signal", "neutral")
-    if dcf.get("upside_pct") is not None:
+    # ── Pillar 1: Intrinsic Value ─────────────────────────────────────────────
+    valuation_signal = valuation.get("valuation_signal", "neutral")
+    if valuation.get("upside_pct") is not None:
         data_points_available += 1
 
     # ── Pillar 2: Earnings Quality & Growth ──────────────────────────────────
@@ -385,7 +385,7 @@ def score_pillars(financials: dict, market_context: dict, dcf: dict) -> dict:
         print(f"[Fundamental] Pillar 4 error: {e}")
 
     # ── Overall signal: majority vote across 4 pillars ────────────────────────
-    all_signals = [dcf_signal, growth_signal, multiples_signal, balance_signal]
+    all_signals = [valuation_signal, growth_signal, multiples_signal, balance_signal]
     counts: dict[str, int] = {}
     for s in all_signals:
         counts[s] = counts.get(s, 0) + 1
@@ -404,13 +404,13 @@ def score_pillars(financials: dict, market_context: dict, dcf: dict) -> dict:
     data_quality = data_points_available / data_points_total
 
     return {
-        "dcf_signal": dcf_signal,
+        "valuation_signal": valuation_signal,
         "growth_signal": growth_signal,
         "multiples_signal": multiples_signal,
         "balance_signal": balance_signal,
         "overall_signal": overall_signal,
-        "upside_pct": dcf.get("upside_pct", 0.0),
-        "fcf_cagr": dcf.get("fcf_cagr", 0.0),
+        "upside_pct": valuation.get("upside_pct", 0.0),
+        "fcf_cagr": valuation.get("fcf_cagr", 0.0),
         "fcf_margin": round(fcf_margin * 100, 1),
         "de_ratio": round(de_ratio, 2),
         "pe_vs_sector": pe_vs_sector,
@@ -495,7 +495,7 @@ You have completed a 4-pillar fundamental analysis of {ticker}.
 Your job is to give a structured investment signal.
 
 Pillar results:
-- DCF / Intrinsic value:       {pillar_scores['dcf_signal']} (upside: {pillar_scores['upside_pct']:.1f}%)
+- Intrinsic value:             {pillar_scores['valuation_signal']} (upside: {pillar_scores['upside_pct']:.1f}%)
 - Earnings quality & growth:   {pillar_scores['growth_signal']} (FCF CAGR: {pillar_scores['fcf_cagr']:.1f}%, FCF margin: {pillar_scores['fcf_margin']:.1f}%)
 - Valuation multiples:         {pillar_scores['multiples_signal']} (P/E vs sector: {pillar_scores['pe_vs_sector']})
 - Balance sheet quality:       {pillar_scores['balance_signal']} (D/E ratio: {pillar_scores['de_ratio']:.2f})
@@ -688,11 +688,11 @@ def run_fundamental_agent(state: ThesisState) -> dict:
     try:
         financials = fetch_financials(ticker)
         market_context = fetch_market_context(ticker)
-        dcf = calculate_dcf(financials, market_context)
-        pillar_scores = score_pillars(financials, market_context, dcf)
+        valuation = calculate_intrinsic_value(financials, market_context)
+        pillar_scores = score_pillars(financials, market_context, valuation)
 
         print(
-            f"[Fundamental] Pillars: dcf={pillar_scores['dcf_signal']} "
+            f"[Fundamental] Pillars: valuation={pillar_scores['valuation_signal']} "
             f"growth={pillar_scores['growth_signal']} "
             f"multiples={pillar_scores['multiples_signal']} "
             f"balance={pillar_scores['balance_signal']} "
@@ -709,13 +709,13 @@ def run_fundamental_agent(state: ThesisState) -> dict:
 
         raw_findings = (
             f"FUNDAMENTAL ANALYSIS — {ticker}\n"
-            f"DCF upside: {pillar_scores.get('upside_pct', 0):.1f}% | "
-            f"WACC: {dcf.get('wacc', 0):.1f}%\n"
+            f"Intrinsic value upside: {pillar_scores.get('upside_pct', 0):.1f}% | "
+            f"WACC: {valuation.get('wacc', 0):.1f}%\n"
             f"FCF CAGR: {pillar_scores.get('fcf_cagr', 0):.1f}% | "
             f"FCF margin: {pillar_scores.get('fcf_margin', 0):.1f}%\n"
             f"P/E vs sector: {pillar_scores.get('pe_vs_sector', 'N/A')}\n"
             f"D/E ratio: {pillar_scores.get('de_ratio', 0):.2f}\n"
-            f"Pillar signals: DCF={pillar_scores.get('dcf_signal')} | "
+            f"Pillar signals: Valuation={pillar_scores.get('valuation_signal')} | "
             f"Growth={pillar_scores.get('growth_signal')} | "
             f"Multiples={pillar_scores.get('multiples_signal')} | "
             f"Balance={pillar_scores.get('balance_signal')}\n"

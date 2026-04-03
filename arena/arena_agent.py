@@ -83,7 +83,7 @@ def _infer_query_mode(query: str) -> str:
     q = query.lower()
     if any(w in q for w in ("risk", "leverage", "debt", "downside")):
         return "risk_check"
-    if any(w in q for w in ("valuation", "dcf", "intrinsic", "cheap", "expensive", "overvalued", "undervalued")):
+    if any(w in q for w in ("valuation", "intrinsic", "cheap", "expensive", "overvalued", "undervalued")):
         return "valuation"
     if any(w in q for w in ("macro", "fed", "rates", "inflation", "sentiment", "news")):
         return "macro_view"

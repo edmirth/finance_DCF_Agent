@@ -534,7 +534,7 @@ def _build_peer_context(state: ThesisState) -> str:
     Reads what other agents have already written to the whiteboard.
     Prioritises raw_outputs (full findings) over agent_signals (structured only).
     Macro stays in its lane — use peer context only to calibrate confidence,
-    never to comment on DCF, balance sheet, or earnings.
+    never to comment on balance sheet or earnings.
     """
     raw_outputs = state.get("raw_outputs", {})
     agent_signals = state.get("agent_signals", {})
@@ -566,7 +566,7 @@ def _build_peer_context(state: ThesisState) -> str:
         "Other analysts have already written their findings on the whiteboard:\n\n"
         + "\n".join(lines)
         + "\nIMPORTANT: Your view is about the MACRO ENVIRONMENT only. "
-        "Do not comment on P/E, DCF, balance sheet, or earnings — that is "
+        "Do not comment on P/E, balance sheet, or earnings — that is "
         "other agents' domain. Use peer context only to assess whether the macro "
         "backdrop supports or contradicts the committee's emerging thesis. "
         "If fundamental shows strong buy and you see late-cycle headwinds, "
@@ -615,7 +615,7 @@ def run_llm_reasoning(
 Your job is to assess whether the macroeconomic environment is a
 tailwind, headwind, or neutral for {ticker} ({sector} sector).
 You do NOT analyse the company itself — only the world around it.
-Never comment on P/E, DCF, balance sheet, or earnings.
+Never comment on P/E, balance sheet, or earnings.
 
 4-pillar macro analysis:
 

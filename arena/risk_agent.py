@@ -396,7 +396,7 @@ def _build_peer_context(state: ThesisState) -> str:
     """
     Reads what other agents have already written to the whiteboard.
     Prioritises raw_outputs (full findings) over agent_signals (structured only).
-    Risk especially benefits from fundamental's DCF findings —
+    Risk especially benefits from fundamental's intrinsic value findings —
     helps distinguish "cheap because distressed" vs "cheap because undervalued".
     """
     raw_outputs = state.get("raw_outputs", {})
@@ -431,8 +431,8 @@ def _build_peer_context(state: ThesisState) -> str:
         "Other analysts have already written their findings on the whiteboard:\n\n"
         + "\n".join(lines)
         + "\nCross-reference these findings with your risk assessment. "
-        "If fundamental shows high DCF upside but you see high leverage, lean cautious not bearish. "
-        "If fundamental shows negative DCF AND you see high leverage, lean bearish. "
+        "If fundamental shows high intrinsic value upside but you see high leverage, lean cautious not bearish. "
+        "If fundamental shows negative intrinsic value upside AND you see high leverage, lean bearish. "
         "If peers corroborate low risk, revise your confidence upward."
     )
 
