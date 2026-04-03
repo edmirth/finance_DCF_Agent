@@ -6,9 +6,9 @@ Fetches real financial data, runs a 4-pillar analysis, and returns
 a structured AgentSignal into the arena ThesisState whiteboard.
 
 Pillars:
-  1. Intrinsic Value (FCF-based)
+  1. EV/EBITDA Multiples Valuation (vs. sector median)
   2. Earnings Quality & Growth
-  3. Valuation Multiples (vs. sector)
+  3. P/E Relative Valuation (vs. sector)
   4. Balance Sheet Quality
 
 Uses claude-haiku-4-5-20251001 for ALL LLM calls.
@@ -88,6 +88,7 @@ def fetch_market_context(ticker: str) -> dict:
         "current_price": None,
         "beta": 1.0,
         "sector_pe": 20.0,
+        "sector_ev_ebitda": 12.0,
         "analyst_consensus": "neutral",
         "news_sentiment": "neutral",
     }
@@ -95,7 +96,7 @@ def fetch_market_context(ticker: str) -> dict:
     try:
         tavily = get_tavily_client()
         search_result = tavily.search(
-            query=f"{ticker} stock current price beta P/E ratio sector average P/E analyst consensus",
+            query=f"{ticker} stock current price beta P/E ratio EV/EBITDA sector average multiples analyst consensus",
             topic="finance",
             search_depth="basic",
             max_results=5,
@@ -118,8 +119,9 @@ def fetch_market_context(ticker: str) -> dict:
         extraction_prompt = (
             f"Extract from these search results for {ticker}:\n"
             f"current_price, beta, sector_pe (sector average P/E), "
+            f"sector_ev_ebitda (sector average EV/EBITDA multiple), "
             f"analyst_consensus (buy/hold/sell), news_sentiment (positive/neutral/negative).\n"
-            f"Respond ONLY with a JSON object with those 5 fields. Use null if not found.\n\n"
+            f"Respond ONLY with a JSON object with those 6 fields. Use null if not found.\n\n"
             f"Search results:\n{raw_content}"
         )
         response = client.messages.create(
@@ -141,6 +143,7 @@ def fetch_market_context(ticker: str) -> dict:
             "current_price": parsed.get("current_price"),
             "beta": float(parsed.get("beta") or 1.0),
             "sector_pe": float(parsed.get("sector_pe") or 20.0),
+            "sector_ev_ebitda": float(parsed.get("sector_ev_ebitda") or 12.0),
             "analyst_consensus": str(parsed.get("analyst_consensus") or "neutral").lower(),
             "news_sentiment": str(parsed.get("news_sentiment") or "neutral").lower(),
         }
@@ -151,122 +154,97 @@ def fetch_market_context(ticker: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Section 2 — Intrinsic Value calculation (Pillar 1)
+# Section 2 — EV/EBITDA Multiples Valuation (Pillar 1)
 # ---------------------------------------------------------------------------
 
-def calculate_intrinsic_value(financials: dict, market_context: dict) -> dict:
+def calculate_multiples_valuation(financials: dict, market_context: dict) -> dict:
     """
-    Simplified 5-year FCF intrinsic value model.
-    Returns valuation_signal, upside_pct, intrinsic_value_per_share, fcf_cagr, wacc.
+    EV/EBITDA multiples-based valuation.
+    Compares company EV/EBITDA to sector median and derives implied upside/downside.
+    Returns valuation_signal, upside_pct, implied_price, ev_ebitda, sector_ev_ebitda.
     """
     fallback = {
-        "intrinsic_value_per_share": None,
+        "implied_price": None,
         "current_price": None,
         "upside_pct": 0.0,
         "valuation_signal": "neutral",
-        "fcf_cagr": 0.0,
-        "wacc": 0.10,
+        "ev_ebitda": None,
+        "sector_ev_ebitda": 12.0,
     }
 
     try:
         metrics = financials.get("key_metrics", {})
-        cf_statements = financials.get("cash_flow_statements", [])
-        if not cf_statements or len(cf_statements) < 2:
+        income_stmts = financials.get("income_statements", [])
+        balance_sheets = financials.get("balance_sheets", [])
+
+        if not income_stmts:
             return fallback
 
-        # Extract FCF from cash flow statements (most recent first)
-        fcf_values = []
-        for cf in cf_statements[:5]:
-            fcf = cf.get("free_cash_flow") or cf.get("freeCashFlow")
-            if fcf is None:
-                op = cf.get("operating_cash_flow") or cf.get("net_cash_provided_by_operating_activities") or 0
-                capex = abs(cf.get("capital_expenditures") or cf.get("capitalExpenditures") or 0)
-                fcf = op - capex
-            fcf_values.append(float(fcf))
+        latest_inc = income_stmts[0]
 
-        if not fcf_values or fcf_values[0] <= 0:
+        # EBITDA = operating income + D&A (estimate D&A as 15% of operating income if unavailable)
+        ebit = float(latest_inc.get("operating_income") or latest_inc.get("ebit") or 0)
+        da = float(latest_inc.get("depreciation_and_amortization") or
+                   latest_inc.get("depreciation") or 0)
+        if da == 0:
+            da = abs(ebit) * 0.15
+        ebitda = ebit + da
+
+        if ebitda <= 0:
             return fallback
 
-        latest_fcf = fcf_values[0]
-
-        # FCF CAGR (most recent vs oldest available)
-        if len(fcf_values) >= 2 and fcf_values[-1] > 0:
-            n = len(fcf_values) - 1
-            fcf_cagr = (latest_fcf / fcf_values[-1]) ** (1 / n) - 1
-        else:
-            fcf_cagr = 0.05  # default
-
-        # Clamp to reasonable range
-        fcf_cagr = max(min(fcf_cagr, 0.40), -0.20)
-
-        # WACC = risk_free_rate + beta * 0.07
-        beta = float(market_context.get("beta") or 1.0)
-        risk_free_rate = 0.045  # approximate current 10Y Treasury
-        wacc = risk_free_rate + beta * 0.07
-        wacc = max(min(wacc, 0.20), 0.06)
-
-        terminal_growth = 0.025
-
-        # Project 5-year FCF with 0.95 decay on growth rate
-        pv_sum = 0.0
-        projected_fcf = latest_fcf
-        growth = fcf_cagr
-        for year in range(1, 6):
-            projected_fcf = projected_fcf * (1 + growth)
-            growth = growth * 0.95
-            pv_sum += projected_fcf / ((1 + wacc) ** year)
-
-        # Terminal value
-        terminal_value = (projected_fcf * (1 + terminal_growth)) / (wacc - terminal_growth)
-        pv_terminal = terminal_value / ((1 + wacc) ** 5)
-
-        enterprise_value = pv_sum + pv_terminal
-
-        # Equity value adjustments
-        latest_bs = (financials.get("balance_sheets") or [{}])[0]
+        # Net debt
+        latest_bs = (balance_sheets or [{}])[0]
+        total_debt = float(latest_bs.get("total_debt") or latest_bs.get("long_term_debt") or 0)
         cash = float(latest_bs.get("cash_and_cash_equivalents") or
                      latest_bs.get("cash_and_short_term_investments") or 0)
-        debt = float(latest_bs.get("total_debt") or
-                     latest_bs.get("long_term_debt") or 0)
+        net_debt = total_debt - cash
+
+        # Current EV/EBITDA
+        market_cap = float(financials.get("market_cap") or 0)
+        if market_cap <= 0:
+            return fallback
+        current_ev = market_cap + net_debt
+        company_ev_ebitda = current_ev / ebitda
+
+        # Sector EV/EBITDA median from market context (default 12x)
+        sector_ev_ebitda = float(market_context.get("sector_ev_ebitda") or 12.0)
+
+        # Implied price from sector multiple
+        implied_ev = ebitda * sector_ev_ebitda
+        implied_equity_value = implied_ev - net_debt
         shares = float(metrics.get("shares_outstanding") or
                        financials.get("weighted_average_shares") or 1)
+        implied_price = implied_equity_value / shares if shares > 0 else None
 
-        equity_value = enterprise_value + cash - debt
-        intrinsic_per_share = equity_value / shares if shares > 0 else None
-
-        # Current price
-        current_price = (
-            market_context.get("current_price")
-            or financials.get("current_price")
-            or None
+        current_price = float(
+            market_context.get("current_price") or financials.get("current_price") or 0
         )
-        if current_price:
-            current_price = float(current_price)
 
-        if intrinsic_per_share and current_price and current_price > 0:
-            upside_pct = ((intrinsic_per_share - current_price) / current_price) * 100
+        if implied_price and current_price > 0:
+            upside_pct = ((implied_price - current_price) / current_price) * 100
         else:
             upside_pct = 0.0
 
-        # Valuation signal
-        if upside_pct > 20:
+        # Signal
+        if upside_pct > 15:
             valuation_signal = "bullish"
-        elif upside_pct < 0:
+        elif upside_pct < -10:
             valuation_signal = "bearish"
         else:
             valuation_signal = "neutral"
 
         return {
-            "intrinsic_value_per_share": round(intrinsic_per_share, 2) if intrinsic_per_share else None,
+            "implied_price": round(implied_price, 2) if implied_price else None,
             "current_price": round(current_price, 2) if current_price else None,
             "upside_pct": round(upside_pct, 1),
             "valuation_signal": valuation_signal,
-            "fcf_cagr": round(fcf_cagr * 100, 1),  # as percentage
-            "wacc": round(wacc * 100, 1),            # as percentage
+            "ev_ebitda": round(company_ev_ebitda, 1),
+            "sector_ev_ebitda": round(sector_ev_ebitda, 1),
         }
 
     except Exception as e:
-        print(f"[Fundamental] calculate_intrinsic_value error: {e}")
+        print(f"[Fundamental] calculate_multiples_valuation error: {e}")
         return fallback
 
 
@@ -285,9 +263,9 @@ def score_pillars(financials: dict, market_context: dict, valuation: dict) -> di
     data_points_available = 0
     data_points_total = 8
 
-    # ── Pillar 1: Intrinsic Value ─────────────────────────────────────────────
+    # ── Pillar 1: EV/EBITDA Multiples Valuation ──────────────────────────────
     valuation_signal = valuation.get("valuation_signal", "neutral")
-    if valuation.get("upside_pct") is not None:
+    if valuation.get("ev_ebitda") is not None:
         data_points_available += 1
 
     # ── Pillar 2: Earnings Quality & Growth ──────────────────────────────────
@@ -410,7 +388,8 @@ def score_pillars(financials: dict, market_context: dict, valuation: dict) -> di
         "balance_signal": balance_signal,
         "overall_signal": overall_signal,
         "upside_pct": valuation.get("upside_pct", 0.0),
-        "fcf_cagr": valuation.get("fcf_cagr", 0.0),
+        "ev_ebitda": valuation.get("ev_ebitda"),
+        "sector_ev_ebitda": valuation.get("sector_ev_ebitda", 12.0),
         "fcf_margin": round(fcf_margin * 100, 1),
         "de_ratio": round(de_ratio, 2),
         "pe_vs_sector": pe_vs_sector,
@@ -495,8 +474,8 @@ You have completed a 4-pillar fundamental analysis of {ticker}.
 Your job is to give a structured investment signal.
 
 Pillar results:
-- Intrinsic value:             {pillar_scores['valuation_signal']} (upside: {pillar_scores['upside_pct']:.1f}%)
-- Earnings quality & growth:   {pillar_scores['growth_signal']} (FCF CAGR: {pillar_scores['fcf_cagr']:.1f}%, FCF margin: {pillar_scores['fcf_margin']:.1f}%)
+- EV/EBITDA valuation:         {pillar_scores['valuation_signal']} (implied upside: {pillar_scores['upside_pct']:.1f}%, EV/EBITDA: {pillar_scores['ev_ebitda']}x vs sector {pillar_scores['sector_ev_ebitda']}x)
+- Earnings quality & growth:   {pillar_scores['growth_signal']} (Revenue CAGR: {pillar_scores['revenue_cagr']:.1f}%, FCF margin: {pillar_scores['fcf_margin']:.1f}%)
 - Valuation multiples:         {pillar_scores['multiples_signal']} (P/E vs sector: {pillar_scores['pe_vs_sector']})
 - Balance sheet quality:       {pillar_scores['balance_signal']} (D/E ratio: {pillar_scores['de_ratio']:.2f})
 
@@ -688,7 +667,7 @@ def run_fundamental_agent(state: ThesisState) -> dict:
     try:
         financials = fetch_financials(ticker)
         market_context = fetch_market_context(ticker)
-        valuation = calculate_intrinsic_value(financials, market_context)
+        valuation = calculate_multiples_valuation(financials, market_context)
         pillar_scores = score_pillars(financials, market_context, valuation)
 
         print(
@@ -709,10 +688,10 @@ def run_fundamental_agent(state: ThesisState) -> dict:
 
         raw_findings = (
             f"FUNDAMENTAL ANALYSIS — {ticker}\n"
-            f"Intrinsic value upside: {pillar_scores.get('upside_pct', 0):.1f}% | "
-            f"WACC: {valuation.get('wacc', 0):.1f}%\n"
-            f"FCF CAGR: {pillar_scores.get('fcf_cagr', 0):.1f}% | "
-            f"FCF margin: {pillar_scores.get('fcf_margin', 0):.1f}%\n"
+            f"EV/EBITDA: {pillar_scores.get('ev_ebitda')}x vs sector {pillar_scores.get('sector_ev_ebitda')}x | "
+            f"Implied upside: {pillar_scores.get('upside_pct', 0):.1f}%\n"
+            f"FCF margin: {pillar_scores.get('fcf_margin', 0):.1f}% | "
+            f"Revenue CAGR: {pillar_scores.get('revenue_cagr', 0):.1f}%\n"
             f"P/E vs sector: {pillar_scores.get('pe_vs_sector', 'N/A')}\n"
             f"D/E ratio: {pillar_scores.get('de_ratio', 0):.2f}\n"
             f"Pillar signals: Valuation={pillar_scores.get('valuation_signal')} | "
