@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Number Accuracy Eval — Finance DCF Agent
-=========================================
+Number Accuracy Eval — Finance Agent
+======================================
 Detects hallucinations and verifies that the numbers produced by the
 agent pipeline are accurate, consistent, and within reasonable bounds.
 
-Four layers of verification (all run without an LLM unless --dcf is passed):
+Four layers of verification (all run without an LLM):
 
   Layer 1 — Data Completeness
     Each required financial field must be non-null and non-zero.
@@ -27,17 +27,10 @@ Four layers of verification (all run without an LLM unless --dcf is passed):
     is compared against the raw number returned by FinancialDataFetcher.
     Any discrepancy > 2% is flagged.
 
-  Layer 5 — DCF Math Verification  (pass --dcf to enable)
-    Calls PerformDCFAnalysisTool with known inputs, then verifies:
-      WACC ≈ Rf + β × MRP                  (±0.5 pp)
-      Terminal value < 90% of enterprise value
-      Intrinsic value per share > 0
-
 Usage:
   python tests/eval_number_accuracy.py --ticker AAPL
   python tests/eval_number_accuracy.py --tickers AAPL MSFT NVDA
-  python tests/eval_number_accuracy.py --ticker TSLA --dcf
-  python tests/eval_number_accuracy.py --tickers AAPL NVDA --dcf --fail-fast
+  python tests/eval_number_accuracy.py --tickers AAPL NVDA --fail-fast
 """
 from __future__ import annotations
 

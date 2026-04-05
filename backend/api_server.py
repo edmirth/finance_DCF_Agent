@@ -36,9 +36,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.config import (
     SSE_CHUNK_SIZE, SSE_STREAM_DELAY_SECONDS,
-    CHART_PERIOD_DAYS, CORS_ORIGINS, COMPANY_TICKER_MAP, TICKER_BLACKLIST,
-    STOCK_CONTEXT_KEYWORDS,
+    CHART_PERIOD_DAYS, CORS_ORIGINS,
 )
+from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db, SyncSessionLocal
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
@@ -162,51 +162,8 @@ AGENT_FALLBACK_METHODS = {
 
 
 def extract_ticker_from_query(query: str, is_followup: bool = False) -> Optional[str]:
-    """
-    Extract stock ticker from user query using smart pattern matching.
-    Supports: "AAPL", "$AAPL", "Apple", "Tesla stock", etc.
-
-    For follow-up messages, Pattern 4 (the greedy all-caps catch-all) is only
-    applied when the query contains explicit stock-context keywords.  This
-    prevents false positives like "What about their AI strategy?" mapping to
-    the C3.AI ticker during an ongoing conversation about a different company.
-    """
-    if not query:
-        return None
-
-    query_lower = query.lower()
-
-    # Pattern 1: $TICKER format — always applies
-    dollar_pattern = r'\$([A-Z]{2,5})\b'
-    match = re.search(dollar_pattern, query)
-    if match:
-        return match.group(1).upper()
-
-    # Pattern 2: Explicit ticker with context — always applies
-    ticker_pattern = r'\b([A-Z]{2,5})\b\s*(?:stock|shares|earnings|analysis|price|chart|valuation)'
-    match = re.search(ticker_pattern, query, re.IGNORECASE)
-    if match:
-        ticker = match.group(1).upper()
-        if ticker not in TICKER_BLACKLIST:
-            return ticker
-
-    # Pattern 3: Company name mapping — always applies
-    for company, ticker in COMPANY_TICKER_MAP.items():
-        if re.search(r'\b' + company + r'\b', query_lower):
-            return ticker
-
-    # Pattern 4: All-caps ticker (2-5 chars) catch-all.
-    # For follow-up messages this pattern is gated behind a stock-context check
-    # to avoid returning a random ticker for words like "AI", "GS", "HD", etc.
-    has_stock_context = any(kw in query_lower for kw in STOCK_CONTEXT_KEYWORDS)
-    if not is_followup or has_stock_context:
-        caps_pattern = r'\b([A-Z]{2,5})\b'
-        for match in re.finditer(caps_pattern, query):
-            ticker = match.group(1)
-            if ticker not in TICKER_BLACKLIST:
-                return ticker
-
-    return None
+    """Delegate to shared.ticker_utils.extract_ticker."""
+    return _extract_ticker_shared(query, is_followup=is_followup)
 
 
 class ChatMessage(BaseModel):

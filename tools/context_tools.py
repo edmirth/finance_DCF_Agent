@@ -30,7 +30,7 @@ class GetCompanyContextTool(BaseTool):
     - Key business segments and geographic exposure
 
     Use this FIRST to understand the company's business model and recent developments
-    before diving into financial metrics and DCF analysis."""
+    before diving into financial metrics and valuation analysis."""
     args_schema: Type[BaseModel] = CompanyContextInput
 
     def _run(self, ticker: str) -> str:

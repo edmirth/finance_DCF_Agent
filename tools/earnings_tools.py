@@ -24,6 +24,22 @@ logger = logging.getLogger(__name__)
 # FMP retry policy: matches CLAUDE.md spec (max 3, base 2s, max 60s)
 _FMP_RETRY = RetryConfig(max_attempts=3, base_delay=2.0, max_delay=60.0)
 
+# ---------------------------------------------------------------------------
+# EarningsCallInsightsTool: session-level state
+# ---------------------------------------------------------------------------
+
+# Tracks which data-source tiers failed (rate-limited / unavailable) this
+# process lifetime.  Once a tier is marked failed we skip it entirely so
+# the remaining tiers don't wait for a timeout we know will repeat.
+# Values: "fmp"
+_failed_tiers: set[str] = set()
+
+# In-process result cache keyed by (ticker, quarters).  Avoids redundant
+# transcript fetches within the same analysis run (e.g. the earnings agent
+# calling the tool twice for the same company).  No TTL — the process
+# lifetime is short enough that stale data is not a concern.
+_insights_cache: dict[tuple, str] = {}
+
 
 @retry_with_backoff(_FMP_RETRY)
 def _fmp_get(url: str, params: dict, timeout: int = 10) -> requests.Response:
@@ -1046,6 +1062,7 @@ class EarningsCallInsightsTool(BaseTool):
         """Fetch and analyze earnings call transcript(s).
 
         Data source cascade: FMP → Tavily web search.
+        Skips tiers that have already failed this session; caches results in-process.
         """
         try:
             # Validate inputs
@@ -1055,6 +1072,12 @@ class EarningsCallInsightsTool(BaseTool):
 
             if quarters < 1 or quarters > 8:
                 return f"Error: quarters must be between 1-8. Received: {quarters}"
+
+            # --- In-process cache check ---
+            cache_key = (ticker, quarters)
+            if cache_key in _insights_cache:
+                logger.info(f"EarningsCallInsightsTool: cache hit for {ticker} ({quarters}q)")
+                return _insights_cache[cache_key]
 
             # Get company info for context
             from data.financial_data import FinancialDataFetcher
@@ -1066,24 +1089,32 @@ class EarningsCallInsightsTool(BaseTool):
                 logger.warning(f"Could not fetch stock info for {ticker}: {e}")
                 company_name = ticker
 
-            # --- Cascade 1: FMP (Ultimate — unlimited transcripts) ---
+            # --- Cascade 1: FMP (unlimited transcripts) — skip if already failed ---
             fmp_api_key = os.getenv("FMP_API_KEY")
-            if fmp_api_key:
-                if quarters == 1:
-                    transcript_data = self._fetch_latest_transcript(ticker, fmp_api_key)
-                else:
-                    transcript_data = self._fetch_batch_transcripts(ticker, quarters, fmp_api_key)
+            if fmp_api_key and "fmp" not in _failed_tiers:
+                try:
+                    if quarters == 1:
+                        transcript_data = self._fetch_latest_transcript(ticker, fmp_api_key)
+                    else:
+                        transcript_data = self._fetch_batch_transcripts(ticker, quarters, fmp_api_key)
 
-                if transcript_data:
-                    logger.info(f"Using FMP transcript data for {ticker}")
-                    return self._analyze_transcript_with_claude(
-                        ticker=ticker, company_name=company_name,
-                        transcript_data=transcript_data, query=query, quarters=quarters,
-                    )
+                    if transcript_data:
+                        logger.info(f"Using FMP transcript data for {ticker}")
+                        result = self._analyze_transcript_with_claude(
+                            ticker=ticker, company_name=company_name,
+                            transcript_data=transcript_data, query=query, quarters=quarters,
+                        )
+                        _insights_cache[cache_key] = result
+                        return result
+                except Exception as fmp_err:
+                    logger.warning(f"FMP tier failed for {ticker}, marking as skipped: {fmp_err}")
+                    _failed_tiers.add("fmp")
 
             # --- Cascade 2: Tavily web search (always available) ---
             logger.info(f"No transcript sources available for {ticker}, using web search fallback")
-            return self._analyze_via_web_search(ticker, company_name, query, quarters)
+            result = self._analyze_via_web_search(ticker, company_name, query, quarters)
+            _insights_cache[cache_key] = result
+            return result
 
         except Exception as e:
             logger.error(f"Error in earnings insights tool: {e}", exc_info=True)

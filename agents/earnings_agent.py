@@ -8,7 +8,7 @@ Generates equity research reports focusing on:
 - Competitive comparison
 - Investment thesis
 
-9-node workflow: data gathering (parallel) → analysis (1 LLM call) → thesis (1 LLM call) → report
+11-node workflow: 6 parallel data nodes → aggregate → analysis (1 LLM call) → thesis (1 LLM call) → report
 """
 from typing import TypedDict, List, Optional, Annotated
 import operator
@@ -19,6 +19,7 @@ import time
 import logging
 import re
 import threading
+from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,7 +64,6 @@ class EarningsAnalysisState(TypedDict):
 
     # Thesis (Node 7 — single LLM call)
     investment_thesis: Annotated[str, keep_first]
-    rating: Annotated[str, keep_first]
     price_target: Annotated[float, keep_first]
     key_catalysts: Annotated[List[str], keep_first]
     key_risks: Annotated[List[str], keep_first]
@@ -90,16 +90,21 @@ class EarningsAgentExecutorAdapter:
         self._state_lock = threading.Lock()
         self.last_state = None
         self.last_ticker = None
+        self.last_state_time: float = 0.0
 
     def invoke(self, input_dict: dict, config: Optional[dict] = None) -> dict:
         try:
             query = input_dict.get("input", "")
             is_followup = input_dict.get("followup", False)
 
-            # Follow-up mode: use cached state, 1 LLM call
+            # Follow-up mode: use cached state, 1 LLM call.
+            # Cache expires after 30 minutes to avoid stale analysis.
             if is_followup:
                 with self._state_lock:
-                    cached_state = dict(self.last_state) if self.last_state else None
+                    cached_state = None
+                    if self.last_state is not None:
+                        if time.time() - self.last_state_time <= 1800:
+                            cached_state = dict(self.last_state)
                 if cached_state:
                     return self._answer_followup(query, cached_state, config)
 
@@ -127,7 +132,6 @@ class EarningsAgentExecutorAdapter:
                 "comprehensive_analysis": "",
                 "management_accountability": "",
                 "investment_thesis": "",
-                "rating": "",
                 "price_target": 0.0,
                 "key_catalysts": [],
                 "key_risks": [],
@@ -142,6 +146,7 @@ class EarningsAgentExecutorAdapter:
             with self._state_lock:
                 self.last_state = result
                 self.last_ticker = ticker
+                self.last_state_time = time.time()
 
             execution_time = time.time() - result["start_time"]
             logger.info(f"Earnings analysis completed in {execution_time:.1f} seconds")
@@ -209,120 +214,8 @@ Be concise (2-4 paragraphs). If the question requires data you don't have, say s
             return {"output": f"Error answering follow-up: {str(e)}"}
 
     def _extract_ticker(self, query: str) -> Optional[str]:
-        """Extract ticker symbol from user query.
-
-        Uses a strict precedence to avoid picking up common English words as tickers.
-        Only returns a ticker when there is a strong explicit signal.
-        """
-        # --- Signal 0 (highest confidence): $BRK.B or $BRK-B format ---
-        dollar_dot_match = re.search(r'\$([A-Za-z]{1,5})[.\-]([A-Za-z]{1,2})\b', query)
-        if dollar_dot_match:
-            return f"{dollar_dot_match.group(1).upper()}.{dollar_dot_match.group(2).upper()}"
-
-        # --- Signal 1 (highest confidence): $AAPL format ---
-        dollar_match = re.search(r'\$([A-Za-z]{1,5})\b', query)
-        if dollar_match:
-            return dollar_match.group(1).upper()
-
-        # --- Signal 2: "Company Name (TICK)" format ---
-        paren_match = re.search(r'\(([A-Z]{1,5})\)', query)
-        if paren_match:
-            return paren_match.group(1).upper()
-
-        # --- Signal 2.5: company full-name → ticker lookup ---
-        # Handles cases like "NVIDIA just reported..." where the company name
-        # is written out (often > 5 chars) and won't be caught by ticker regex.
-        COMPANY_NAME_MAP = {
-            'NVIDIA': 'NVDA', 'APPLE': 'AAPL', 'MICROSOFT': 'MSFT',
-            'GOOGLE': 'GOOGL', 'ALPHABET': 'GOOGL', 'AMAZON': 'AMZN',
-            'TESLA': 'TSLA', 'FACEBOOK': 'META', 'NETFLIX': 'NFLX',
-            'INTEL': 'INTC', 'DISNEY': 'DIS', 'WALMART': 'WMT',
-            'VISA': 'V', 'MASTERCARD': 'MA', 'PFIZER': 'PFE',
-            'JPMORGAN': 'JPM', 'PALANTIR': 'PLTR', 'SALESFORCE': 'CRM',
-            'ORACLE': 'ORCL', 'QUALCOMM': 'QCOM', 'BROADCOM': 'AVGO',
-            'SHOPIFY': 'SHOP', 'SPOTIFY': 'SPOT', 'COINBASE': 'COIN',
-            'UBER': 'UBER', 'AIRBNB': 'ABNB', 'SNOWFLAKE': 'SNOW',
-            'DATADOG': 'DDOG', 'CROWDSTRIKE': 'CRWD', 'PALO': 'PANW',
-        }
-        query_upper = query.upper()
-        for word in query_upper.split():
-            clean = re.sub(r'[^\w]', '', word)
-            if clean in COMPANY_NAME_MAP:
-                return COMPANY_NAME_MAP[clean]
-
-        # --- Signal 3: known large-cap tickers mentioned explicitly ---
-        KNOWN_TICKERS = {
-            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'TSLA',
-            'META', 'NFLX', 'AMD', 'INTC', 'CSCO', 'ADBE', 'CRM',
-            'ORCL', 'IBM', 'JPM', 'BAC', 'WFC', 'GS', 'MS',
-            'V', 'MA', 'PYPL', 'SQ', 'DIS', 'CMCSA', 'VZ',
-            'KO', 'PEP', 'WMT', 'TGT', 'HD', 'NKE', 'SBUX',
-            'MCD', 'BA', 'CAT', 'MMM', 'GE', 'F', 'GM',
-            'UBER', 'LYFT', 'SNAP', 'PINS', 'SPOT', 'HOOD', 'COIN',
-            'SHOP', 'SE', 'MELI', 'BABA', 'JD', 'PDD', 'TSM',
-            'AVGO', 'QCOM', 'TXN', 'MU', 'LRCX', 'AMAT', 'KLAC',
-            'PANW', 'CRWD', 'ZS', 'OKTA', 'DDOG', 'SNOW', 'MDB',
-            'NOW', 'WDAY', 'VEEV', 'HUBS', 'ZM', 'TEAM', 'DOCN',
-            'AMGN', 'GILD', 'BIIB', 'REGN', 'MRNA', 'PFE', 'JNJ',
-            'UNH', 'CVS', 'CI', 'HUM', 'MCK', 'ABT', 'MDT',
-            'XOM', 'CVX', 'COP', 'SLB', 'EOG', 'PXD', 'OXY',
-            'BRK', 'BRKB', 'JPM', 'C', 'AXP', 'BLK', 'SCHW',
-            'PLTR', 'ABNB', 'RBLX', 'DASH', 'RIVN', 'LCID',
-        }
-        # Also check for dotted tickers like BRK.B, BF.B
-        DOTTED_TICKERS = {
-            'BRK.A': 'BRK.A', 'BRK.B': 'BRK.B', 'BF.A': 'BF.A', 'BF.B': 'BF.B',
-        }
-        for word in query_upper.split():
-            clean = re.sub(r'[^\w.]', '', word)  # keep dots for multi-part tickers
-            if clean in DOTTED_TICKERS:
-                return DOTTED_TICKERS[clean]
-        for word in query_upper.split():
-            clean = re.sub(r'[^\w]', '', word)
-            if clean in KNOWN_TICKERS:
-                return clean
-
-        # --- Signal 4 (weakest): all-caps standalone word, but only with comprehensive filter ---
-        # This is a last resort. We use a large exclusion list to avoid false positives
-        # from ordinary English words (ARE, WHEN, THESE, SURGE, WHAT, etc.)
-        COMMON_WORDS = {
-            # Articles / prepositions / conjunctions
-            'THE', 'AND', 'FOR', 'WITH', 'FROM', 'ABOUT', 'WHAT', 'HOW', 'WHY',
-            'BUT', 'NOT', 'ARE', 'WAS', 'HAS', 'HAD', 'HAVE', 'BEEN', 'WILL',
-            'WHEN', 'THAT', 'THIS', 'THEN', 'THAN', 'THEY', 'THEM', 'THEIR',
-            'BEEN', 'SOME', 'EACH', 'SUCH', 'ALSO', 'INTO', 'OVER', 'ONLY',
-            'MORE', 'MOST', 'VERY', 'JUST', 'BACK', 'EVEN', 'BOTH', 'WELL',
-            'MUCH', 'SAME', 'WERE', 'DOES', 'SAID', 'SAYS', 'COME', 'CAME',
-            'MAKE', 'MADE', 'LIKE', 'LOOK', 'GOOD', 'NEXT', 'NEAR', 'HERE',
-            'GIVE', 'GAVE', 'TAKE', 'TOOK', 'KNOW', 'KNEW', 'SHOW', 'SHOWED',
-            # Question words
-            'WHICH', 'WHERE', 'WHOSE', 'WHILE',
-            # Finance/context words that are NOT tickers
-            'SURGE', 'THESE', 'MIGHT', 'COULD', 'WOULD', 'SHOULD', 'SHALL',
-            'YOUR', 'THEIR', 'OURS', 'MINE', 'HERS', 'YEAR', 'HALF', 'FULL',
-            'PLAN', 'PART', 'SIDE', 'CALL', 'SELL', 'HOLD', 'BEAT', 'MISS',
-            'RISE', 'FELL', 'GREW', 'LOST', 'RATE', 'COST', 'CASH', 'DEBT',
-            'GAIN', 'LOSS', 'DEAL', 'HIGH', 'LAST', 'INTO', 'UPON', 'AFTER',
-            'BEFORE', 'BELOW', 'ABOVE', 'ALONG', 'SINCE', 'UNTIL', 'WHILE',
-            'REVENUE', 'MARGIN', 'GROWTH', 'INCOME', 'STOCK', 'SHARE', 'PRICE',
-            'MARKET', 'SECTOR', 'QUARTER', 'FISCAL', 'ANNUAL', 'GUIDANCE',
-            # Acronyms and abbreviations
-            'USD', 'EUR', 'CEO', 'CFO', 'CTO', 'IPO', 'ETF', 'SEC', 'FDA',
-            'FCF', 'EPS', 'ROE', 'ROI', 'ROIC', 'CAGR', 'EBIT', 'EBITDA',
-            'YOY', 'QOQ', 'MOM', 'TTM', 'LTM', 'GDP', 'CPI', 'PMI',
-            'NYSE', 'NASDAQ', 'AMEX', 'INC', 'LLC', 'LTD', 'CORP',
-            # Fiscal / reporting period abbreviations (common false positives)
-            'FY', 'FQ', 'MD', 'QA', 'MDA', 'YTD', 'HTD', 'QTD',
-            # SEC filing section references
-            'ITEM',
-        }
-        # Only match if word appears to be intentionally uppercased (2-5 all-caps letters)
-        caps_matches = re.findall(r'\b([A-Z]{2,5})\b', query)  # original case, not query_upper
-        for match in caps_matches:
-            if match not in COMMON_WORDS:
-                return match
-
-        return None
+        """Delegate to shared.ticker_utils.extract_ticker."""
+        return _extract_ticker_shared(query)
 
 
 # ============================================================================
@@ -333,13 +226,14 @@ class EarningsAgent:
     """
     LangGraph-based earnings research agent.
 
-    9-node workflow:
+    11-node workflow:
     1. Fetch company info
-    2-5. Parallel: Fetch earnings history, analyst estimates, surprises+transcripts+peers, SEC filings
-    6. Aggregate (sync point)
-    7. Comprehensive analysis (1 LLM call)
-    8. Investment thesis (1 LLM call)
-    9. Generate report
+    2-7. Parallel: earnings history, analyst estimates, earnings surprises,
+         call insights, peer comparison, SEC filings
+    8. Aggregate (sync point)
+    9a. Comprehensive analysis (1 LLM call)
+    9b. Investment thesis (1 LLM call)
+    9c. Generate report
     """
 
     def __init__(self, model: str = "claude-sonnet-4-5-20250929"):
@@ -407,7 +301,9 @@ class EarningsAgent:
         workflow.add_node("fetch_company_info", self.fetch_company_info)
         workflow.add_node("fetch_earnings_history", self.fetch_earnings_history)
         workflow.add_node("fetch_analyst_estimates", self.fetch_analyst_estimates)
-        workflow.add_node("fetch_guidance_and_news", self.fetch_guidance_and_news)
+        workflow.add_node("fetch_earnings_surprises", self.fetch_earnings_surprises)
+        workflow.add_node("fetch_call_insights", self.fetch_call_insights)
+        workflow.add_node("fetch_peer_comparison", self.fetch_peer_comparison)
         workflow.add_node("fetch_sec_filings", self.fetch_sec_filings)
         workflow.add_node("aggregate_data", self.aggregate_data)
         workflow.add_node("comprehensive_analysis", self.comprehensive_analysis)
@@ -417,16 +313,20 @@ class EarningsAgent:
         # Edges
         workflow.set_entry_point("fetch_company_info")
 
-        # Phase 1: Parallel data gathering (4 nodes in parallel)
+        # Phase 1: Parallel data gathering (6 nodes in parallel)
         workflow.add_edge("fetch_company_info", "fetch_earnings_history")
         workflow.add_edge("fetch_company_info", "fetch_analyst_estimates")
-        workflow.add_edge("fetch_company_info", "fetch_guidance_and_news")
+        workflow.add_edge("fetch_company_info", "fetch_earnings_surprises")
+        workflow.add_edge("fetch_company_info", "fetch_call_insights")
+        workflow.add_edge("fetch_company_info", "fetch_peer_comparison")
         workflow.add_edge("fetch_company_info", "fetch_sec_filings")
 
         # Converge to sync point
         workflow.add_edge("fetch_earnings_history", "aggregate_data")
         workflow.add_edge("fetch_analyst_estimates", "aggregate_data")
-        workflow.add_edge("fetch_guidance_and_news", "aggregate_data")
+        workflow.add_edge("fetch_earnings_surprises", "aggregate_data")
+        workflow.add_edge("fetch_call_insights", "aggregate_data")
+        workflow.add_edge("fetch_peer_comparison", "aggregate_data")
         workflow.add_edge("fetch_sec_filings", "aggregate_data")
 
         # Phase 2: Sequential analysis → thesis → report
@@ -447,7 +347,7 @@ class EarningsAgent:
     # ========================================================================
 
     def fetch_company_info(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[1/7] Fetching company info for {state['ticker']}")
+        logger.info(f"[1/9] Fetching company info for {state['ticker']}")
         self._emit_progress("fetch_company_info", "started", "Looking up company info")
 
         try:
@@ -481,7 +381,7 @@ class EarningsAgent:
     # ========================================================================
 
     def fetch_earnings_history(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[2/7] Fetching earnings history for {state['ticker']}")
+        logger.info(f"[2/9] Fetching earnings history for {state['ticker']}")
         self._emit_progress("fetch_earnings_history", "started", "Fetching quarterly earnings")
 
         try:
@@ -504,7 +404,7 @@ class EarningsAgent:
             }
 
     def fetch_analyst_estimates(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[3/7] Fetching analyst estimates for {state['ticker']}")
+        logger.info(f"[3/9] Fetching analyst estimates for {state['ticker']}")
         self._emit_progress("fetch_analyst_estimates", "started", "Getting analyst consensus")
 
         try:
@@ -523,55 +423,70 @@ class EarningsAgent:
                 "errors": [f"Analyst estimates error: {str(e)}"],
             }
 
-    def fetch_guidance_and_news(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[4/7] Fetching surprises, call insights, and peer data for {state['ticker']}")
-        self._emit_progress("fetch_guidance_and_news", "started", "Analyzing earnings calls & peers")
+    def fetch_earnings_surprises(self, state: EarningsAnalysisState) -> dict:
+        logger.info(f"[4/9] Fetching earnings surprises for {state['ticker']}")
+        self._emit_progress("fetch_earnings_surprises", "started", "Fetching earnings surprises")
 
-        result = {}
         try:
-            from tools.earnings_tools import (
-                GetEarningsSurprisesTool,
-                EarningsCallInsightsTool,
-                ComparePeerEarningsTool,
-            )
-
-            self._emit_progress("fetch_guidance_and_news", "sub_progress", "Fetching earnings surprises")
-            surprises_tool = GetEarningsSurprisesTool()
-            result["earnings_surprises"] = surprises_tool._run(
-                ticker=state["ticker"],
-                quarters=state["quarters_back"],
-            )
-            self._emit_chart_data(result["earnings_surprises"])
+            from tools.earnings_tools import GetEarningsSurprisesTool
+            tool = GetEarningsSurprisesTool()
+            surprises = tool._run(ticker=state["ticker"], quarters=state["quarters_back"])
+            self._emit_chart_data(surprises)
             logger.info(f"  → Earnings surprises fetched")
-
-            self._emit_progress("fetch_guidance_and_news", "sub_progress", "Reading earnings call transcripts")
-            insights_tool = EarningsCallInsightsTool(model=self.model)
-            result["earnings_guidance"] = insights_tool._run(ticker=state["ticker"], quarters=2)
-            logger.info(f"  → Earnings call insights fetched")
-
-            self._emit_progress("fetch_guidance_and_news", "sub_progress", "Comparing peer earnings")
-            peer_tool = ComparePeerEarningsTool()
-            result["peer_comparison"] = peer_tool._run(ticker=state["ticker"], peers=None)
-            logger.info(f"  → Peer comparison fetched")
-
-            self._emit_progress("fetch_guidance_and_news", "completed", "Guidance and peers loaded")
-            return result
-
+            self._emit_progress("fetch_earnings_surprises", "completed", "Surprises loaded")
+            return {"earnings_surprises": surprises}
         except Exception as e:
-            logger.error(f"Error in fetch_guidance_and_news: {e}")
-            result.setdefault("earnings_surprises", f"Error: {str(e)}")
-            result.setdefault("earnings_guidance", f"Error: {str(e)}")
-            result.setdefault("peer_comparison", f"Error: {str(e)}")
-            result["errors"] = [f"Guidance/news error: {str(e)}"]
-            self._emit_progress("fetch_guidance_and_news", "completed", "Partial data (error)")
-            return result
+            logger.error(f"Error in fetch_earnings_surprises: {e}")
+            self._emit_progress("fetch_earnings_surprises", "completed", "Partial data (error)")
+            return {
+                "earnings_surprises": f"Error fetching earnings surprises: {str(e)}",
+                "errors": [f"Earnings surprises error: {str(e)}"],
+            }
+
+    def fetch_call_insights(self, state: EarningsAnalysisState) -> dict:
+        logger.info(f"[5/9] Fetching earnings call insights for {state['ticker']}")
+        self._emit_progress("fetch_call_insights", "started", "Reading earnings call transcripts")
+
+        try:
+            from tools.earnings_tools import EarningsCallInsightsTool
+            tool = EarningsCallInsightsTool(model=self.model)
+            guidance = tool._run(ticker=state["ticker"], quarters=2)
+            logger.info(f"  → Earnings call insights fetched")
+            self._emit_progress("fetch_call_insights", "completed", "Call insights loaded")
+            return {"earnings_guidance": guidance}
+        except Exception as e:
+            logger.error(f"Error in fetch_call_insights: {e}")
+            self._emit_progress("fetch_call_insights", "completed", "Partial data (error)")
+            return {
+                "earnings_guidance": f"Error fetching earnings call insights: {str(e)}",
+                "errors": [f"Call insights error: {str(e)}"],
+            }
+
+    def fetch_peer_comparison(self, state: EarningsAnalysisState) -> dict:
+        logger.info(f"[6/9] Fetching peer comparison for {state['ticker']}")
+        self._emit_progress("fetch_peer_comparison", "started", "Comparing peer earnings")
+
+        try:
+            from tools.earnings_tools import ComparePeerEarningsTool
+            tool = ComparePeerEarningsTool()
+            peers = tool._run(ticker=state["ticker"], peers=None)
+            logger.info(f"  → Peer comparison fetched")
+            self._emit_progress("fetch_peer_comparison", "completed", "Peer comparison loaded")
+            return {"peer_comparison": peers}
+        except Exception as e:
+            logger.error(f"Error in fetch_peer_comparison: {e}")
+            self._emit_progress("fetch_peer_comparison", "completed", "Partial data (error)")
+            return {
+                "peer_comparison": f"Error fetching peer comparison: {str(e)}",
+                "errors": [f"Peer comparison error: {str(e)}"],
+            }
 
     # ========================================================================
-    # Node 5: SEC Filings (parallel with Nodes 2-4)
+    # Node 7: SEC Filings (parallel with Nodes 2-6)
     # ========================================================================
 
     def fetch_sec_filings(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[5/8] Fetching SEC filings for {state['ticker']}")
+        logger.info(f"[7/9] Fetching SEC filings for {state['ticker']}")
         self._emit_progress("fetch_sec_filings", "started", "Reading SEC EDGAR filings")
 
         try:
@@ -626,7 +541,7 @@ class EarningsAgent:
         return "analyze"
 
     def aggregate_data(self, state: EarningsAnalysisState) -> dict:
-        logger.info("[6/8] All data gathered, ready for analysis")
+        logger.info("[8/9] All data gathered, ready for analysis")
 
         has = {
             "earnings": bool(state.get("earnings_history")),
@@ -654,7 +569,6 @@ class EarningsAgent:
             return {
                 "comprehensive_analysis": msg,
                 "investment_thesis": msg,
-                "rating": "N/A",
                 "errors": [msg],
             }
 
@@ -665,7 +579,7 @@ class EarningsAgent:
     # ========================================================================
 
     def comprehensive_analysis(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[7/8] Running comprehensive analysis for {state['ticker']}")
+        logger.info(f"[9/9 step 1] Running comprehensive analysis for {state['ticker']}")
         self._emit_progress("comprehensive_analysis", "started", "Running financial analysis")
 
         try:
@@ -759,14 +673,24 @@ Do NOT reproduce any ---CHART_DATA--- blocks."""
             response = self.llm.invoke(messages)
             result = {"comprehensive_analysis": response.content}
 
-            # Extract management accountability section for the report
+            # Extract management accountability section for the report.
+            # Use case-insensitive regex to match any header capitalisation variant
+            # (e.g. "## MANAGEMENT ACCOUNTABILITY", "## Management Accountability:",
+            # or the plain header without ##).
             content = response.content
-            acc_start = content.find("## MANAGEMENT ACCOUNTABILITY")
-            if acc_start == -1:
-                acc_start = content.find("MANAGEMENT ACCOUNTABILITY")
-            if acc_start != -1:
+            acc_match = re.search(
+                r'(#{1,3}\s*MANAGEMENT ACCOUNTABILITY\b[^\n]*)',
+                content,
+                re.IGNORECASE,
+            )
+            if acc_match:
+                acc_start = acc_match.start()
                 next_section = content.find("\n## ", acc_start + 5)
-                result["management_accountability"] = content[acc_start:next_section].strip() if next_section != -1 else content[acc_start:].strip()
+                result["management_accountability"] = (
+                    content[acc_start:next_section].strip()
+                    if next_section != -1
+                    else content[acc_start:].strip()
+                )
 
             logger.info(f"  → Comprehensive analysis complete")
             self._emit_progress("comprehensive_analysis", "completed", "Analysis complete")
@@ -785,7 +709,7 @@ Do NOT reproduce any ---CHART_DATA--- blocks."""
     # ========================================================================
 
     def develop_thesis(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[8/8] Developing investment thesis for {state['ticker']}")
+        logger.info(f"[9/9 step 2] Developing investment thesis for {state['ticker']}")
         self._emit_progress("develop_thesis", "started", "Developing investment thesis")
 
         try:

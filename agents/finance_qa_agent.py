@@ -48,39 +48,11 @@ from langchain.memory import ConversationBufferWindowMemory
 
 from tools.research_assistant_tools import get_research_assistant_tools
 from agents.reasoning_callback import StreamingReasoningCallback
+from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Common words to exclude from ticker extraction (module-level constant for efficiency)
-COMMON_WORDS = {
-    'THE', 'AND', 'FOR', 'ARE', 'WAS', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN', 'HER',
-    'ONE', 'OUR', 'OUT', 'DAY', 'GET', 'HAS', 'HIM', 'HIS', 'HOW', 'ITS', 'MAY',
-    'NEW', 'NOW', 'OLD', 'SEE', 'TWO', 'WHO', 'BOY', 'DID', 'LET', 'PUT', 'SAY',
-    'SHE', 'TOO', 'USE', 'WHY', 'WAY', 'YET', 'BIG', 'END', 'FAR', 'FEW', 'GOT',
-    'HAD', 'HER', 'OWN', 'RAN', 'SAT', 'SAW', 'SET', 'SIX', 'TEN', 'TOP', 'TRY',
-    'WIN', 'YES', 'AGO', 'AIR', 'ASK', 'BAD', 'BAG', 'BED', 'BOX', 'BUY', 'CAR',
-    'CUT', 'DOG', 'EAT', 'EYE', 'FLY', 'FUN', 'GUN', 'HIT', 'HOT', 'JOB', 'KEY',
-    'LAW', 'LAY', 'LEG', 'LET', 'LIE', 'LOT', 'LOW', 'MAP', 'MET', 'MIX', 'NOR',
-    'ODD', 'OFF', 'OIL', 'PAY', 'PER', 'POT', 'RUN', 'SIT', 'SKY', 'SON', 'SUM',
-    'TAX', 'TEA', 'THE', 'TIE', 'VOW', 'WAR', 'WET', 'WIN', 'WON', 'YET', 'ZIP',
-    'TELL', 'ABOUT', 'WHAT', 'SHOW', 'GIVE', 'FIND', 'LOOK', 'HELP', 'INFO',
-    'PRICE', 'STOCK', 'SHARE', 'VALUE', 'DATA', 'YEAR', 'LAST', 'NEXT', 'THIS',
-    'THAT', 'WITH', 'FROM', 'HAVE', 'BEEN', 'WILL', 'WOULD', 'COULD', 'SHOULD',
-    # Financial terms that could be false positives
-    'CASH', 'DEBT', 'BETA', 'EBIT', 'CALL', 'PUTS', 'LONG', 'DOWN', 'RISK',
-    'HIGH', 'LOSS', 'GAIN', 'SELL', 'HOLD', 'RATE', 'BOND', 'FUND', 'LOAN',
-    'COST', 'FEES', 'SAFE', 'GROW', 'FALL', 'RISE', 'DROP', 'MOVE', 'BULL',
-    'BEAR', 'TERM', 'FREE', 'FLOW', 'MARGIN', 'RATIO', 'GROWTH', 'INCOME',
-    # Fiscal / reporting period abbreviations (common false positives)
-    'FY', 'FQ', 'YTD', 'HTD', 'QTD', 'TTM', 'LTM',
-    # SEC / document references
-    'MD', 'MDA', 'QA', 'ITEM',
-    # Common 2-letter words (Strategy 4 lowercases then uppercases, so these must be here)
-    'IS', 'AN', 'OR', 'IT', 'AT', 'IN', 'ON', 'OF', 'BY', 'AS', 'BE', 'SO',
-    'DO', 'UP', 'TO', 'IF', 'MY', 'NO', 'GO', 'HE', 'ME', 'WE',
-}
 
 
 class FinanceQAAgent:
@@ -324,41 +296,8 @@ Remember to be helpful, accurate with dates, and stay within your scope of quick
         return agent_executor
 
     def _extract_ticker(self, message: str) -> Optional[str]:
-        """
-        Extract ticker symbol from message using multiple strategies
-
-        Returns the most likely ticker or None if none found
-        """
-        # Strategy 1: Explicit $ prefix (highest confidence - e.g., $AAPL or $aapl)
-        # Case-insensitive to handle lowercase input
-        dollar_match = re.search(r'\$([A-Za-z]{1,5})\b', message)
-        if dollar_match:
-            return dollar_match.group(1).upper()
-
-        # Strategy 2: Parentheses pattern (e.g., "Apple (AAPL)" or "apple (aapl)")
-        paren_match = re.search(r'\(([A-Za-z]{2,5})\)', message)
-        if paren_match:
-            return paren_match.group(1).upper()
-
-        # Strategy 3: All caps 2-5 letters, excluding common words
-        # Find all potential tickers (uppercase only for this strategy - indicates intentional ticker)
-        potential_tickers = re.findall(r'\b([A-Z]{2,5})\b', message)
-
-        # Filter out common words (using module-level COMMON_WORDS constant)
-        for ticker in potential_tickers:
-            if ticker not in COMMON_WORDS:
-                return ticker
-
-        # Strategy 4: Lowercase ticker in an explicit "about <ticker>" or "for <ticker>"
-        # context at the end of the message — avoids treating generic English words as tickers.
-        # E.g., "Tell me about aapl" → AAPL, but "Tell me about revenue trends" → None
-        explicit_match = re.search(r'\b(?:about|for|analyze|research|check)\s+([a-z]{1,5})\s*[?.]?$', message.lower())
-        if explicit_match:
-            candidate = explicit_match.group(1).upper()
-            if candidate not in COMMON_WORDS:
-                return candidate
-
-        return None
+        """Delegate to shared.ticker_utils.extract_ticker."""
+        return _extract_ticker_shared(message)
 
     def chat(self, user_message: str) -> str:
         """
