@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import time
 import logging
 import re
+import json as _json
 import threading
 from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 
@@ -60,7 +61,6 @@ class EarningsAnalysisState(TypedDict):
 
     # Analysis (Node 6 — single LLM call)
     comprehensive_analysis: Annotated[str, keep_first]
-    management_accountability: Annotated[str, keep_first]
 
     # Thesis (Node 7 — single LLM call)
     investment_thesis: Annotated[str, keep_first]
@@ -86,10 +86,8 @@ class EarningsAgentExecutorAdapter:
     def __init__(self, graph, agent_owner):
         self.graph = graph
         self.agent_owner = agent_owner
-        self.ticker_pattern = re.compile(r'\b[A-Z]{1,5}\b')
         self._state_lock = threading.Lock()
         self.last_state = None
-        self.last_ticker = None
         self.last_state_time: float = 0.0
 
     def invoke(self, input_dict: dict, config: Optional[dict] = None) -> dict:
@@ -97,55 +95,35 @@ class EarningsAgentExecutorAdapter:
             query = input_dict.get("input", "")
             is_followup = input_dict.get("followup", False)
 
-            # Follow-up mode: use cached state, 1 LLM call.
-            # Cache expires after 30 minutes to avoid stale analysis.
+            ticker = self._extract_ticker(query)
+
+            # Follow-up mode: serve from cached state if the ticker matches and cache is fresh.
+            # Ticker check prevents cross-ticker answers (e.g. user switches from AAPL to MSFT).
             if is_followup:
                 with self._state_lock:
                     cached_state = None
                     if self.last_state is not None:
-                        if time.time() - self.last_state_time <= 1800:
+                        cache_age_ok = time.time() - self.last_state_time <= 1800
+                        cached_ticker = self.last_state.get("ticker", "")
+                        ticker_matches = (not ticker) or (ticker == cached_ticker)
+                        if cache_age_ok and ticker_matches:
                             cached_state = dict(self.last_state)
                 if cached_state:
                     return self._answer_followup(query, cached_state, config)
-
-            ticker = self._extract_ticker(query)
 
             if not ticker:
                 return {"output": "Error: Please provide a stock ticker symbol (e.g., AAPL, MSFT, NVDA)"}
 
             logger.info(f"Starting earnings analysis for {ticker}")
 
-            initial_state = {
-                "ticker": ticker,
-                "quarters_back": 8,
-                "company_name": "",
-                "sector": "",
-                "industry": "",
-                "current_price": 0.0,
-                "market_cap": 0.0,
-                "earnings_history": "",
-                "analyst_estimates": "",
-                "earnings_surprises": "",
-                "earnings_guidance": "",
-                "peer_comparison": "",
-                "sec_filings_summary": "",
-                "comprehensive_analysis": "",
-                "management_accountability": "",
-                "investment_thesis": "",
-                "price_target": 0.0,
-                "key_catalysts": [],
-                "key_risks": [],
-                "final_report": "",
-                "start_time": time.time(),
-                "errors": []
-            }
-
-            result = self.graph.invoke(initial_state, config=config)
+            result = self.graph.invoke(
+                self.agent_owner._build_initial_state(ticker),
+                config=config,
+            )
 
             # Cache state for follow-ups (thread-safe)
             with self._state_lock:
                 self.last_state = result
-                self.last_ticker = ticker
                 self.last_state_time = time.time()
 
             execution_time = time.time() - result["start_time"]
@@ -165,40 +143,27 @@ class EarningsAgentExecutorAdapter:
         logger.info(f"Answering follow-up for {state['ticker']}: {question[:80]}...")
 
         try:
-            def _safe_field(value: str, limit: int = 3000) -> str:
-                """Return field content only if it looks like real data, not an error string."""
-                text = (value or "")[:limit]
-                return text if text and not text.lower().startswith("error") else "(data unavailable)"
-
             prompt = f"""You are a senior equity research analyst. You just completed a comprehensive
 earnings analysis for {state['company_name']} ({state['ticker']}).
 
 ANALYSIS CONTEXT:
-{_safe_field(state['comprehensive_analysis'])}
+{self.agent_owner._clean_field(state['comprehensive_analysis'], 'analysis', limit=3000)}
 
 EARNINGS DATA:
-{_safe_field(state['earnings_history'])}
+{self.agent_owner._clean_field(state['earnings_history'], 'earnings data', limit=3000)}
 
 MANAGEMENT GUIDANCE:
-{_safe_field(state['earnings_guidance'])}
+{self.agent_owner._clean_field(state['earnings_guidance'], 'guidance', limit=3000)}
 
 INVESTMENT THESIS:
-{_safe_field(state['investment_thesis'])}
+{self.agent_owner._clean_field(state['investment_thesis'], 'thesis', limit=3000)}
 
 The investor now asks: {question}
 
 Provide a focused, data-driven answer. Reference specific numbers from the analysis.
 Be concise (2-4 paragraphs). If the question requires data you don't have, say so."""
 
-            llm = ChatAnthropic(
-                model=self.agent_owner.model,
-                temperature=0,
-                max_retries=3,
-                default_request_timeout=180.0,
-                max_tokens=4096,
-                streaming=True,
-            )
-            response = llm.invoke(
+            response = self.agent_owner.llm.invoke(
                 [
                     SystemMessage(content="You are a senior equity research analyst answering follow-up questions."),
                     HumanMessage(content=prompt),
@@ -236,6 +201,12 @@ class EarningsAgent:
     9c. Generate report
     """
 
+    _CHART_RE = re.compile(
+        r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---',
+        re.DOTALL,
+    )
+    _ERROR_PREFIXES = ("error fetching", "error analyzing", "error:", "error in ")
+
     def __init__(self, model: str = "claude-sonnet-4-5-20250929"):
         self.model = model
         self.llm = ChatAnthropic(
@@ -247,9 +218,6 @@ class EarningsAgent:
             streaming=True,
         )
 
-        from tools.earnings_tools import get_earnings_tools
-        self.tools = get_earnings_tools()
-
         # Progress streaming (injected by api_server before graph invocation)
         self._progress_queue = None
         self._progress_loop = None
@@ -260,9 +228,12 @@ class EarningsAgent:
         logger.info(f"Earnings Agent initialized with model: {model}")
 
     def _emit_progress(self, node: str, status: str, detail: str = ""):
-        """Push a progress event to the SSE queue (no-op if no queue injected)."""
-        queue = self._progress_queue
-        loop = self._progress_loop
+        """Push a progress event to the SSE queue (no-op if no queue injected).
+
+        Reads both queue and loop atomically under the GIL to avoid a race
+        where the API server clears one attribute between the two reads.
+        """
+        queue, loop = self._progress_queue, self._progress_loop
         if queue is not None and loop is not None:
             event = {"type": "earnings_progress", "node": node, "status": status, "detail": detail}
             loop.call_soon_threadsafe(queue.put_nowait, event)
@@ -274,19 +245,11 @@ class EarningsAgent:
         chart_data events must be extracted and emitted here rather than relying on
         StreamingCallbackHandler.on_tool_end.
         """
-        import re as _re
-        import json as _json
-
-        queue = self._progress_queue
-        loop = self._progress_loop
+        queue, loop = self._progress_queue, self._progress_loop
         if queue is None or loop is None or not isinstance(tool_output, str):
             return
 
-        _CHART_RE = _re.compile(
-            r'---CHART_DATA:([^-\n]+)---\n(.*?)\n---END_CHART_DATA:[^-\n]+---',
-            _re.DOTALL,
-        )
-        for match in _CHART_RE.finditer(tool_output):
+        for match in self._CHART_RE.finditer(tool_output):
             try:
                 chart_event = _json.loads(match.group(2).strip())
                 chart_event["type"] = "chart_data"
@@ -347,7 +310,7 @@ class EarningsAgent:
     # ========================================================================
 
     def fetch_company_info(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[1/9] Fetching company info for {state['ticker']}")
+        logger.info(f"[1/11] Fetching company info for {state['ticker']}")
         self._emit_progress("fetch_company_info", "started", "Looking up company info")
 
         try:
@@ -381,7 +344,7 @@ class EarningsAgent:
     # ========================================================================
 
     def fetch_earnings_history(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[2/9] Fetching earnings history for {state['ticker']}")
+        logger.info(f"[2/11] Fetching earnings history for {state['ticker']}")
         self._emit_progress("fetch_earnings_history", "started", "Fetching quarterly earnings")
 
         try:
@@ -404,7 +367,7 @@ class EarningsAgent:
             }
 
     def fetch_analyst_estimates(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[3/9] Fetching analyst estimates for {state['ticker']}")
+        logger.info(f"[3/11] Fetching analyst estimates for {state['ticker']}")
         self._emit_progress("fetch_analyst_estimates", "started", "Getting analyst consensus")
 
         try:
@@ -424,7 +387,7 @@ class EarningsAgent:
             }
 
     def fetch_earnings_surprises(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[4/9] Fetching earnings surprises for {state['ticker']}")
+        logger.info(f"[4/11] Fetching earnings surprises for {state['ticker']}")
         self._emit_progress("fetch_earnings_surprises", "started", "Fetching earnings surprises")
 
         try:
@@ -444,13 +407,13 @@ class EarningsAgent:
             }
 
     def fetch_call_insights(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[5/9] Fetching earnings call insights for {state['ticker']}")
+        logger.info(f"[5/11] Fetching earnings call insights for {state['ticker']}")
         self._emit_progress("fetch_call_insights", "started", "Reading earnings call transcripts")
 
         try:
             from tools.earnings_tools import EarningsCallInsightsTool
             tool = EarningsCallInsightsTool(model=self.model)
-            guidance = tool._run(ticker=state["ticker"], quarters=2)
+            guidance = tool._run(ticker=state["ticker"], quarters=min(state["quarters_back"], 4))
             logger.info(f"  → Earnings call insights fetched")
             self._emit_progress("fetch_call_insights", "completed", "Call insights loaded")
             return {"earnings_guidance": guidance}
@@ -463,7 +426,7 @@ class EarningsAgent:
             }
 
     def fetch_peer_comparison(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[6/9] Fetching peer comparison for {state['ticker']}")
+        logger.info(f"[6/11] Fetching peer comparison for {state['ticker']}")
         self._emit_progress("fetch_peer_comparison", "started", "Comparing peer earnings")
 
         try:
@@ -486,7 +449,7 @@ class EarningsAgent:
     # ========================================================================
 
     def fetch_sec_filings(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[7/9] Fetching SEC filings for {state['ticker']}")
+        logger.info(f"[7/11] Fetching SEC filings for {state['ticker']}")
         self._emit_progress("fetch_sec_filings", "started", "Reading SEC EDGAR filings")
 
         try:
@@ -523,63 +486,59 @@ class EarningsAgent:
             }
 
     # ========================================================================
-    # Node 6: Aggregate (sync point)
+    # Node 8: Aggregate (sync point)
     # ========================================================================
 
     def _route_after_aggregate(self, state: EarningsAnalysisState) -> str:
         """Route to analysis if critical data is available, otherwise skip to report."""
-        has_company = bool(state.get("company_name"))
+        has_company = state.get("company_name", "") not in ("", "Unknown")
         has_price = state.get("current_price", 0) > 0
-        if not has_company or not has_price:
+        # At least one of the primary data fields must have real content.
+        # This catches the case where company info succeeded but all 6 parallel
+        # data nodes failed — running the LLM on empty data produces a garbage report.
+        parallel_fields = (
+            state.get("earnings_history", ""),
+            state.get("analyst_estimates", ""),
+            state.get("earnings_surprises", ""),
+            state.get("earnings_guidance", ""),
+            state.get("peer_comparison", ""),
+            state.get("sec_filings_summary", ""),
+        )
+        has_any_data = any(
+            f and not f.lower().startswith(EarningsAgent._ERROR_PREFIXES)
+            for f in parallel_fields
+        )
+        if not has_company or not has_price or not has_any_data:
             logger.warning(
                 f"Critical data missing for {state['ticker']} "
                 f"(company_name={state.get('company_name')!r}, "
-                f"current_price={state.get('current_price')}). "
+                f"current_price={state.get('current_price')}, "
+                f"has_any_data={has_any_data}). "
                 "Skipping LLM analysis nodes."
             )
             return "error"
         return "analyze"
 
     def aggregate_data(self, state: EarningsAnalysisState) -> dict:
-        logger.info("[8/9] All data gathered, ready for analysis")
-
-        has = {
-            "earnings": bool(state.get("earnings_history")),
-            "estimates": bool(state.get("analyst_estimates")),
-            "surprises": bool(state.get("earnings_surprises")),
-            "guidance": bool(state.get("earnings_guidance")),
-            "peers": bool(state.get("peer_comparison")),
-            "accountability": bool(state.get("management_accountability")),
-            "sec_filings": bool(state.get("sec_filings_summary")),
-        }
-        logger.info(f"  → Data: {has}")
-
-        # If critical data is absent, pre-fill analysis fields so generate_report
-        # receives an informative error instead of blank sections.
-        has_company = bool(state.get("company_name"))
-        has_price = state.get("current_price", 0) > 0
-        if not has_company or not has_price:
-            ticker = state["ticker"]
-            reason = []
-            if not has_company:
-                reason.append("company information could not be retrieved")
-            if not has_price:
-                reason.append("current price data is unavailable")
-            msg = f"Analysis unavailable for {ticker}: {' and '.join(reason)}."
-            return {
-                "comprehensive_analysis": msg,
-                "investment_thesis": msg,
-                "errors": [msg],
-            }
-
+        logger.info("[8/11] All data gathered, ready for analysis")
+        logger.info(
+            "  → Data availability: earnings=%s estimates=%s surprises=%s "
+            "guidance=%s peers=%s sec=%s",
+            bool(state.get("earnings_history")),
+            bool(state.get("analyst_estimates")),
+            bool(state.get("earnings_surprises")),
+            bool(state.get("earnings_guidance")),
+            bool(state.get("peer_comparison")),
+            bool(state.get("sec_filings_summary")),
+        )
         return {}
 
     # ========================================================================
-    # Node 6: Comprehensive Analysis (1 LLM call — replaces 4 separate calls)
+    # Node 9a: Comprehensive Analysis (1 LLM call)
     # ========================================================================
 
     def comprehensive_analysis(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[9/9 step 1] Running comprehensive analysis for {state['ticker']}")
+        logger.info(f"[9/11] Running comprehensive analysis for {state['ticker']}")
         self._emit_progress("comprehensive_analysis", "started", "Running financial analysis")
 
         try:
@@ -590,22 +549,22 @@ CURRENT METRICS:
 - Sector: {state['sector']} | Industry: {state['industry']}
 
 QUARTERLY EARNINGS DATA:
-{state['earnings_history']}
+{self._clean_field(state['earnings_history'], 'Quarterly earnings')}
 
 EARNINGS SURPRISES:
-{state['earnings_surprises']}
+{self._clean_field(state['earnings_surprises'], 'Earnings surprises')}
 
 MANAGEMENT GUIDANCE & EARNINGS CALL INSIGHTS:
-{state['earnings_guidance']}
+{self._clean_field(state['earnings_guidance'], 'Earnings call insights')}
 
 ANALYST CONSENSUS ESTIMATES:
-{state['analyst_estimates']}
+{self._clean_field(state['analyst_estimates'], 'Analyst estimates')}
 
 PEER COMPARISON:
-{state['peer_comparison']}
+{self._clean_field(state['peer_comparison'], 'Peer comparison')}
 
 SEC FILING ANALYSIS (10-Q/10-K — Primary Source):
-{state.get('sec_filings_summary', 'Not available')}
+{self._clean_field(state.get('sec_filings_summary', ''), 'SEC filing')}
 
 Write a comprehensive analysis with these sections:
 
@@ -673,25 +632,6 @@ Do NOT reproduce any ---CHART_DATA--- blocks."""
             response = self.llm.invoke(messages)
             result = {"comprehensive_analysis": response.content}
 
-            # Extract management accountability section for the report.
-            # Use case-insensitive regex to match any header capitalisation variant
-            # (e.g. "## MANAGEMENT ACCOUNTABILITY", "## Management Accountability:",
-            # or the plain header without ##).
-            content = response.content
-            acc_match = re.search(
-                r'(#{1,3}\s*MANAGEMENT ACCOUNTABILITY\b[^\n]*)',
-                content,
-                re.IGNORECASE,
-            )
-            if acc_match:
-                acc_start = acc_match.start()
-                next_section = content.find("\n## ", acc_start + 5)
-                result["management_accountability"] = (
-                    content[acc_start:next_section].strip()
-                    if next_section != -1
-                    else content[acc_start:].strip()
-                )
-
             logger.info(f"  → Comprehensive analysis complete")
             self._emit_progress("comprehensive_analysis", "completed", "Analysis complete")
             return result
@@ -705,11 +645,11 @@ Do NOT reproduce any ---CHART_DATA--- blocks."""
             }
 
     # ========================================================================
-    # Node 7: Investment Thesis + Rating (1 LLM call — replaces 2 separate calls)
+    # Node 9b: Investment Thesis + Rating (1 LLM call — replaces 2 separate calls)
     # ========================================================================
 
     def develop_thesis(self, state: EarningsAnalysisState) -> dict:
-        logger.info(f"[9/9 step 2] Developing investment thesis for {state['ticker']}")
+        logger.info(f"[10/11] Developing investment thesis for {state['ticker']}")
         self._emit_progress("develop_thesis", "started", "Developing investment thesis")
 
         try:
@@ -720,19 +660,20 @@ CURRENT PRICE: ${state['current_price']:.2f}
 ANALYSIS:
 {state['comprehensive_analysis']}
 
-Provide exactly:
+Respond with two parts:
 
-1. **PRICE TARGET (12-month)**: A specific dollar amount (format: "$XXX.XX")
+**Part 1 — Prose thesis** (2-3 paragraphs, no headers): Key drivers, risk/reward, and implied return. Be decisive and quantitative. Every claim must include a specific number. No emoji. No ASCII borders.
 
-2. **INVESTMENT THESIS** (2-3 paragraphs): Key drivers, risk/reward, implied return
+**Part 2 — Structured JSON** (on its own line, after the prose):
+```json
+{{
+  "price_target": <number, 12-month per-share target>,
+  "key_catalysts": ["<catalyst 1>", "<catalyst 2>", "<catalyst 3>"],
+  "key_risks": ["<risk 1>", "<risk 2>", "<risk 3>"]
+}}
+```
 
-3. **KEY CATALYSTS** (3-5 bullet points): Near-term positive events
-
-4. **KEY RISKS** (3-5 bullet points): What could go wrong
-
-Be decisive and quantitative. Don't hedge.
-
-ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ### markdown headers only. Every claim must include a specific number."""
+3-5 items each for catalysts and risks. Be specific — no generic placeholders."""
 
             messages = [
                 SystemMessage(content="You are a senior equity research analyst making actionable investment recommendations."),
@@ -742,66 +683,21 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             response = self.llm.invoke(messages)
             thesis_text = response.content
 
-            result = {"investment_thesis": thesis_text}
+            # Parse the JSON block — everything else is the prose thesis
+            result = {"investment_thesis": thesis_text, "price_target": 0.0, "key_catalysts": [], "key_risks": []}
 
-            # --- Extract structured fields from LLM output ---
-
-            # Price target
-            result["price_target"] = 0.0
-            # Match dollar amounts not immediately followed by a financial magnitude
-            # suffix (B/M/T/K or billion/million/trillion) to avoid picking up
-            # revenue or market cap figures as per-share price targets.
-            price_pattern = r'\$(\d+(?:\.\d{2})?)(?!\s*(?:[BMTKbmtk]|billion|million|trillion)\b)'
-            for line in thesis_text.split('\n'):
-                if 'TARGET' in line.upper() or 'PRICE TARGET' in line.upper():
-                    prices_in_line = re.findall(price_pattern, line)
-                    if prices_in_line:
-                        candidate = float(prices_in_line[0])
-                        if candidate > 0:
-                            result["price_target"] = candidate
-                            break
-            else:
-                # Fallback: first per-share-sized price in the text (excludes
-                # magnitude-suffixed figures like $125B or $3M)
-                for p in re.findall(price_pattern, thesis_text):
-                    p_float = float(p)
-                    if state['current_price'] > 0 and 0.5 * state['current_price'] < p_float < 3.0 * state['current_price']:
-                        result["price_target"] = p_float
-                        break
-
-            # Catalysts
-            catalysts = []
-            in_section = False
-            for line in thesis_text.split('\n'):
-                stripped = line.strip()
-                if 'CATALYST' in stripped.upper():
-                    in_section = True
-                    continue
-                if in_section:
-                    if stripped and (stripped[0] in '-•' or (stripped[0].isdigit() and '.' in stripped[:3])):
-                        text = stripped.lstrip('-•0123456789. ').strip()
-                        if text and len(text) > 10:
-                            catalysts.append(text)
-                    elif 'RISK' in stripped.upper() or 'BEAR' in stripped.upper():
-                        break
-            result["key_catalysts"] = catalysts[:5] if catalysts else ["Next earnings report", "Industry trends", "Market conditions"]
-
-            # Risks
-            risks = []
-            in_section = False
-            for line in thesis_text.split('\n'):
-                stripped = line.strip()
-                if 'KEY RISK' in stripped.upper() or (stripped.upper().startswith('**KEY RISK') or stripped.upper().startswith('## KEY RISK')):
-                    in_section = True
-                    continue
-                if in_section:
-                    if stripped and (stripped[0] in '-•' or (stripped[0].isdigit() and '.' in stripped[:3])):
-                        text = stripped.lstrip('-•0123456789. ').strip()
-                        if text and len(text) > 10:
-                            risks.append(text)
-                    elif len(risks) >= 3 and (not stripped or stripped.startswith('#')):
-                        break
-            result["key_risks"] = risks[:5] if risks else ["Market volatility", "Execution risk", "Competitive pressure"]
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', thesis_text, re.DOTALL)
+            if json_match:
+                try:
+                    structured = _json.loads(json_match.group(1))
+                    result["price_target"] = float(structured.get("price_target", 0) or 0)
+                    result["key_catalysts"] = structured.get("key_catalysts", [])[:5]
+                    result["key_risks"] = structured.get("key_risks", [])[:5]
+                    # Strip the JSON block from the prose shown to users
+                    result["investment_thesis"] = thesis_text[:json_match.start()].strip()
+                except (_json.JSONDecodeError, ValueError, TypeError):
+                    logger.warning("develop_thesis: JSON parse failed, leaving structured fields empty")
+                    result["errors"] = ["Structured thesis data (price target, catalysts, risks) could not be parsed from LLM response"]
 
             logger.info(f"  → PT ${result['price_target']:.2f} | {len(result['key_catalysts'])} catalysts, {len(result['key_risks'])} risks")
             self._emit_progress("develop_thesis", "completed", "Thesis complete")
@@ -832,11 +728,8 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             minutes = int(execution_time // 60)
             seconds = int(execution_time % 60)
 
-            catalysts_md = "\n".join(f"- {c}" for c in state['key_catalysts'])
-            risks_md = "\n".join(f"- {r}" for r in state['key_risks'])
-
             errors_md = ""
-            if state['errors']:
+            if state.get('errors'):
                 errors_md = "\n## Analysis Notes\n\n" + "\n".join(f"- {e}" for e in state['errors']) + "\n"
 
             display_name = state['company_name'] or state['ticker']
@@ -860,53 +753,30 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
 
 ---
 
-## Management Accountability
-
-{state.get('management_accountability', 'No accountability data available.')}
-
----
-
 ## Quarterly Earnings Data
 
-{state['earnings_history']}
+{self._clean_field(state['earnings_history'], 'Quarterly earnings')}
 
 ### Earnings Surprises
 
-{state['earnings_surprises']}
+{self._clean_field(state['earnings_surprises'], 'Earnings surprises')}
 
 ---
 
 ## Management Guidance & Earnings Call Insights
 
-{state['earnings_guidance']}
+{self._clean_field(state['earnings_guidance'], 'Earnings call insights')}
 
 ### Analyst Estimates
 
-{state['analyst_estimates']}
+{self._clean_field(state['analyst_estimates'], 'Analyst estimates')}
 
 ---
 
 ## Peer Comparison
 
-{state['peer_comparison']}
+{self._clean_field(state['peer_comparison'], 'Peer comparison')}
 
----
-
-## Key Catalysts
-
-{catalysts_md}
-
----
-
-## Key Risks
-
-{risks_md}
-
----
-
-## Bottom Line
-
-**Price Target:** ${state['price_target']:.2f} &nbsp;|&nbsp; **Current Price:** ${state['current_price']:.2f} &nbsp;|&nbsp; **Implied Return:** {upside_pct:+.1f}%
 {errors_md}
 ---
 
@@ -925,11 +795,25 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             }
 
     # ========================================================================
-    # Direct CLI method
+    # Shared helpers
     # ========================================================================
 
-    def analyze(self, ticker: str, quarters_back: int = 8) -> str:
-        initial_state = {
+    @staticmethod
+    def _clean_field(value: str, label: str, limit: int = 0) -> str:
+        """Return data value or a clear unavailable notice.
+
+        Filters out empty values and raw error strings so neither the LLM
+        prompt nor the user-facing report ever shows an error traceback.
+        Optional `limit` truncates to that many characters (0 = no limit).
+        """
+        text = (value or "").strip()
+        if not text or text.lower().startswith(EarningsAgent._ERROR_PREFIXES):
+            return f"({label} unavailable)"
+        return text[:limit] if limit else text
+
+    @staticmethod
+    def _build_initial_state(ticker: str, quarters_back: int = 8) -> dict:
+        return {
             "ticker": ticker,
             "quarters_back": quarters_back,
             "company_name": "",
@@ -944,9 +828,7 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             "peer_comparison": "",
             "sec_filings_summary": "",
             "comprehensive_analysis": "",
-            "management_accountability": "",
             "investment_thesis": "",
-            "rating": "",
             "price_target": 0.0,
             "key_catalysts": [],
             "key_risks": [],
@@ -955,7 +837,12 @@ ABSOLUTE FORMAT RULES: No emoji. No ASCII borders (=====, -----). Use ## and ###
             "errors": [],
         }
 
-        result = self.graph.invoke(initial_state)
+    # ========================================================================
+    # Direct CLI method
+    # ========================================================================
+
+    def analyze(self, ticker: str, quarters_back: int = 8) -> str:
+        result = self.graph.invoke(self._build_initial_state(ticker, quarters_back))
         return result.get("final_report", "Error: No report generated")
 
 

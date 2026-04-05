@@ -6,6 +6,7 @@ for different data providers (FMP, massive.com, yfinance, etc.)
 """
 
 import os
+import time
 import logging
 import requests
 from typing import Dict, List, Optional, Any
@@ -945,10 +946,14 @@ class FMPMarketData(MarketDataProvider):
 
 class MarketDataFetcher:
     """
-    Main interface for fetching market data
+    Main interface for fetching market data.
 
-    Automatically selects the best available data provider
+    Automatically selects the best available data provider and caches responses
+    for _CACHE_TTL seconds so that multiple tools in the same agent request
+    (e.g. get_sentiment_score + get_market_overview) share a single API call.
     """
+
+    _CACHE_TTL = 30  # seconds — covers all tools in a single agent request cycle
 
     def __init__(self, provider: Optional[MarketDataProvider] = None):
         if provider:
@@ -956,32 +961,43 @@ class MarketDataFetcher:
         else:
             # Default to FMP provider (replaces Massive.com which returns 403)
             self.provider = FMPMarketData()
+        self._cache: Dict[str, Any] = {}
+        self._cache_ts: Dict[str, float] = {}
+
+    def _cached(self, key: str, fn) -> Any:
+        """Return cached result if fresh, otherwise call fn(), cache, and return."""
+        now = time.monotonic()
+        if key in self._cache and (now - self._cache_ts[key]) < self._CACHE_TTL:
+            return self._cache[key]
+        result = fn()
+        self._cache[key] = result
+        self._cache_ts[key] = now
+        return result
 
     def get_indices(self) -> Dict[str, Any]:
-        """Get market indices"""
-        return self.provider.get_indices()
+        return self._cached("indices", self.provider.get_indices)
 
     def get_sector_performance(self) -> Dict[str, Any]:
-        """Get sector performance"""
-        return self.provider.get_sector_performance()
+        return self._cached("sectors", self.provider.get_sector_performance)
 
     def get_market_breadth(self) -> Dict[str, Any]:
-        """Get market breadth"""
-        return self.provider.get_market_breadth()
+        return self._cached("breadth", self.provider.get_market_breadth)
 
     def get_volatility_index(self) -> Dict[str, Any]:
-        """Get volatility measures"""
-        return self.provider.get_volatility_index()
+        return self._cached("vix", self.provider.get_volatility_index)
 
     def get_historical_context(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Get 52-week historical context for key market metrics"""
+        key = f"hist_{'_'.join(sorted(symbols or []))}"
         if hasattr(self.provider, "get_historical_context"):
-            return self.provider.get_historical_context(symbols)
+            return self._cached(key, lambda: self.provider.get_historical_context(symbols))
         return {}
 
     def calculate_market_regime(self) -> Dict[str, Any]:
         """
-        Calculate current market regime based on multiple factors
+        Calculate current market regime based on multiple factors.
+
+        All sub-calls go through the TTL cache so concurrent tool calls
+        (sentiment + overview) share a single set of API round-trips.
 
         Returns:
             {
@@ -992,11 +1008,7 @@ class MarketDataFetcher:
             }
         """
         indices = self.get_indices()
-        # Pass pre-fetched indices to avoid redundant API call in MassiveMarketData
-        try:
-            breadth = self.provider.get_market_breadth(indices=indices)
-        except TypeError:
-            breadth = self.provider.get_market_breadth()
+        breadth = self.get_market_breadth()
         vix = self.get_volatility_index()
 
         # Trend: majority of indices positive (more robust than single SPX day change)

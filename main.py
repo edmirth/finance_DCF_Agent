@@ -4,7 +4,6 @@ Main entry point for Financial Analysis Agents
 import os
 import sys
 from dotenv import load_dotenv
-from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.finance_qa_agent import create_finance_qa_agent, interactive_session
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
@@ -59,9 +58,9 @@ Modes:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["analyst", "graph", "research", "market", "portfolio", "earnings", "arena"],
-        default="analyst",
-        help="Agent mode (default: analyst)"
+        choices=["research", "market", "portfolio", "earnings", "arena"],
+        default="research",
+        help="Agent mode (default: research)"
     )
 
     parser.add_argument(
@@ -134,16 +133,7 @@ Modes:
         return
 
     # Create agent based on mode
-    if args.mode in ("analyst", "graph"):
-        print("Initializing LangGraph Equity Analyst Agent...")
-        try:
-            agent = create_equity_analyst_graph(model=args.model)
-            print(f"LangGraph Equity Analyst initialized with model: {args.model}")
-            print("Using structured 10-step workflow\n")
-        except Exception as e:
-            print(f"Error initializing LangGraph equity analyst: {e}")
-            sys.exit(1)
-    elif args.mode == "earnings":
+    if args.mode == "earnings":
         print("Initializing Earnings Analyst Agent...")
         try:
             agent = create_earnings_agent(model=args.model)
@@ -211,15 +201,7 @@ def run_ticker_analysis(agent, ticker: str, mode: str):
 def run_interactive_mode(agent, mode: str):
     """Run agent in interactive mode"""
     print("=" * 80)
-    if mode in ("analyst", "graph"):
-        print("LangGraph Equity Analyst - Interactive Mode")
-        print("=" * 80)
-        print("\nStructured 10-step equity research workflow!")
-        print("Examples:")
-        print("  - 'Analyze AAPL'")
-        print("  - 'Research Tesla'")
-        print("  - 'Full analysis on Microsoft'")
-    elif mode == "earnings":
+    if mode == "earnings":
         print("Earnings Analyst Agent - Interactive Mode")
         print("=" * 80)
         print("\nAsk me to analyze earnings for any stock!")
@@ -254,6 +236,38 @@ def run_interactive_mode(agent, mode: str):
             continue
 
 
+_MARKET_SHORTCUT_QUERIES = {
+    "overview": (
+        "Provide a comprehensive market overview: major index performance, market breadth "
+        "(advance/decline ratios, new highs/lows), VIX level and interpretation, and market "
+        "regime classification (BULL/BEAR/NEUTRAL, RISK_ON/RISK_OFF). Highlight the key "
+        "takeaways for portfolio positioning."
+    ),
+    "briefing": (
+        "Provide a comprehensive daily market briefing. Call these tools in order: "
+        "get_sentiment_score (lead with Fear & Greed score), get_market_overview (indices, VIX, regime), "
+        "get_historical_context (52-week percentile for VIX and indices), get_sector_rotation (leaders/laggards), "
+        "get_macro_context (yield curve, Fed rate, inflation), get_market_news (key catalysts). "
+        "Structure output as: Sentiment → Market Overview → Historical Context → Sector Rotation → "
+        "Macro Context → News & Catalysts → Investor Takeaways. Every number needs context."
+    ),
+    "sectors": (
+        "Analyze current sector rotation over the past month: which sectors are leading and lagging, "
+        "what the rotation signals about market positioning, whether money is flowing into cyclicals "
+        "or defensives, and which sectors investors should focus on. Provide specific, actionable recommendations."
+    ),
+    "regime": (
+        "Classify the current market regime with investment implications: BULL/BEAR/NEUTRAL, "
+        "RISK_ON/RISK_OFF, supporting signals, confidence level, and specific portfolio actions "
+        "investors should take based on this regime."
+    ),
+    "news": (
+        "Analyze the most important market news today: major market-moving stories, how markets "
+        "are reacting, what investors need to know, and any actionable portfolio implications."
+    ),
+}
+
+
 def run_market_mode(agent):
     """Run market agent in interactive mode"""
     print("=" * 80)
@@ -280,18 +294,8 @@ def run_market_mode(agent):
                 continue
 
             print("\nAgent: ")
-            if user_input.lower() == 'overview':
-                result = agent.market_overview()
-            elif user_input.lower() == 'briefing':
-                result = agent.daily_briefing()
-            elif user_input.lower() == 'sectors':
-                result = agent.sector_analysis()
-            elif user_input.lower() == 'regime':
-                result = agent.market_regime_analysis()
-            elif user_input.lower() == 'news':
-                result = agent.news_analysis()
-            else:
-                result = agent.analyze(user_input)
+            query = _MARKET_SHORTCUT_QUERIES.get(user_input.lower(), user_input)
+            result = agent.analyze(query)
 
             print(result)
             print("\n" + "=" * 80 + "\n")

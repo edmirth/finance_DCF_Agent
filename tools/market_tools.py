@@ -5,6 +5,7 @@ Tools for analyzing market conditions, sentiment, and regime
 """
 
 import os
+import logging
 import requests
 from typing import Optional, List, Dict, Any
 from langchain.tools import BaseTool
@@ -12,6 +13,8 @@ from pydantic import BaseModel, Field
 from data.market_data import MarketDataFetcher
 from shared.tavily_client import get_tavily_client
 from shared.retry_utils import retry_with_backoff, RetryConfig
+
+logger = logging.getLogger(__name__)
 
 _FMP_RETRY = RetryConfig(max_attempts=3, base_delay=2.0, max_delay=60.0)
 
@@ -26,6 +29,7 @@ def _fmp_get(url: str, params: dict) -> requests.Response:
 
 
 _fetcher: Optional[MarketDataFetcher] = None
+_financial_fetcher = None  # FinancialDataFetcher singleton for screener tools
 
 
 def _get_fetcher() -> MarketDataFetcher:
@@ -34,6 +38,15 @@ def _get_fetcher() -> MarketDataFetcher:
     if _fetcher is None:
         _fetcher = MarketDataFetcher()
     return _fetcher
+
+
+def _get_financial_fetcher():
+    """Return a module-level FinancialDataFetcher singleton for screener tools."""
+    global _financial_fetcher
+    if _financial_fetcher is None:
+        from data.financial_data import FinancialDataFetcher
+        _financial_fetcher = FinancialDataFetcher()
+    return _financial_fetcher
 
 
 class MarketOverviewInput(BaseModel):
@@ -131,8 +144,8 @@ class GetMarketOverviewTool(BaseTool):
                         f" | 52W range {vix_hist['52w_low']:.1f}–{vix_hist['52w_high']:.1f}"
                         f" ({vix_hist['percentile']:.0f}th pct)"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not fetch VIX historical context: %s", e)
             result += vix_line + "\n"
 
             vvix = vix_data.get("VVIX", {})
@@ -545,7 +558,7 @@ class ScreenStocksInput(BaseModel):
     )
     industry: Optional[str] = Field(
         default=None,
-        description="Filter by industry (e.g., 'Electric Vehicles', 'Semiconductors', 'Pharmaceuticals')"
+        description="Filter by industry using the API's exact classification (e.g., 'Auto Manufacturers', 'Semiconductors', 'Pharmaceuticals')"
     )
     revenue_growth_min: Optional[float] = Field(
         default=None,
@@ -568,7 +581,7 @@ class ScreenStocksTool(BaseTool):
     - Net income (profitability)
     - P/E ratio (valuation)
     - Total debt (financial health)
-    - Industry (e.g., 'Electric Vehicles', 'Semiconductors', 'Pharmaceuticals')
+    - Industry using exact API classification (e.g., 'Auto Manufacturers' for EVs/Tesla, 'Semiconductors', 'Pharmaceuticals')
     - Revenue growth rate (e.g., revenue_growth_min=0.10 for at least 10% YoY growth)
 
     Use this when the user asks:
@@ -594,8 +607,6 @@ class ScreenStocksTool(BaseTool):
     ) -> str:
         """Screen stocks with custom criteria"""
         try:
-            from data.financial_data import FinancialDataFetcher
-
             # Build filters (only financial metrics - API doesn't support industry filtering)
             filters = []
 
@@ -620,7 +631,7 @@ class ScreenStocksTool(BaseTool):
                 return "No screening criteria provided. Please specify at least one filter (revenue_min, net_income_min, pe_ratio_max, industry, etc.)"
 
             # Execute screening with higher limit if filtering by industry (need more results to filter)
-            fetcher = FinancialDataFetcher()
+            fetcher = _get_financial_fetcher()
             fetch_limit = limit * 5 if industry else limit  # Get 5x results if filtering by industry
             results = fetcher.screen_stocks(filters, limit=fetch_limit)
 
@@ -736,8 +747,6 @@ class GetValueStocksTool(BaseTool):
     def _run(self, limit: int = 15) -> str:
         """Find value stocks"""
         try:
-            from data.financial_data import FinancialDataFetcher
-
             # Pre-configured value filters
             filters = [
                 {"field": "pe_ratio", "operator": "lte", "value": 15},
@@ -745,7 +754,7 @@ class GetValueStocksTool(BaseTool):
                 {"field": "revenue", "operator": "gte", "value": 1_000_000_000}
             ]
 
-            fetcher = FinancialDataFetcher()
+            fetcher = _get_financial_fetcher()
             # Sort by P/E ratio (ascending) to get best value stocks first
             results = fetcher.screen_stocks(filters, limit=limit, sort_by='pe_ratio')
 
@@ -807,15 +816,13 @@ class GetGrowthStocksTool(BaseTool):
     def _run(self, limit: int = 15) -> str:
         """Find growth stocks"""
         try:
-            from data.financial_data import FinancialDataFetcher
-
             # Pre-configured growth filters
             filters = [
                 {"field": "revenue", "operator": "gte", "value": 500_000_000},
                 {"field": "net_income", "operator": "gt", "value": 0}
             ]
 
-            fetcher = FinancialDataFetcher()
+            fetcher = _get_financial_fetcher()
             # Sort by revenue (descending) to get largest growth companies first
             results = fetcher.screen_stocks(filters, limit=limit, sort_by='revenue')
 
@@ -875,8 +882,6 @@ class GetDividendStocksTool(BaseTool):
     def _run(self, limit: int = 15) -> str:
         """Find dividend stocks"""
         try:
-            from data.financial_data import FinancialDataFetcher
-
             # Pre-configured dividend filters
             filters = [
                 {"field": "dividends_per_common_share", "operator": "gt", "value": 0},
@@ -884,7 +889,7 @@ class GetDividendStocksTool(BaseTool):
                 {"field": "revenue", "operator": "gte", "value": 1_000_000_000}
             ]
 
-            fetcher = FinancialDataFetcher()
+            fetcher = _get_financial_fetcher()
             # Use diverse sampling for dividend stocks (no specific sort priority)
             results = fetcher.screen_stocks(filters, limit=limit)
 
@@ -957,7 +962,8 @@ class GetSentimentScoreTool(BaseTool):
     # Signal scorers (each returns 0-100)                                  #
     # ------------------------------------------------------------------ #
 
-    def _score_vix_level(self, vix_value: float) -> tuple:
+    @staticmethod
+    def _score_vix_level(vix_value: float) -> tuple:
         """Score VIX level: low VIX = greed, high VIX = fear"""
         if vix_value < 12:
             return 95, f"VIX {vix_value:.1f} — exceptionally low, market pricing in near-zero risk"
@@ -974,7 +980,8 @@ class GetSentimentScoreTool(BaseTool):
         else:
             return 5, f"VIX {vix_value:.1f} — extreme, panic-level volatility"
 
-    def _score_vix_trend(self, vix_change_pct: float) -> tuple:
+    @staticmethod
+    def _score_vix_trend(vix_change_pct: float) -> tuple:
         """Score VIX direction: falling = greed, rising = fear"""
         if vix_change_pct < -10:
             return 90, f"VIX fell {vix_change_pct:+.1f}% — sharp volatility collapse, risk appetite surging"
@@ -989,7 +996,8 @@ class GetSentimentScoreTool(BaseTool):
         else:
             return 10, f"VIX surged {vix_change_pct:+.1f}% — fear spiking sharply"
 
-    def _score_momentum(self, index_dicts: dict) -> tuple:
+    @staticmethod
+    def _score_momentum(index_dicts: dict) -> tuple:
         """Score market momentum from multi-index performance"""
         if not index_dicts:
             return 50, "No index data available"
@@ -1015,7 +1023,8 @@ class GetSentimentScoreTool(BaseTool):
         else:
             return 12, f"{positive}/{total} indices up, avg {avg_change:+.2f}% — sharp market-wide decline"
 
-    def _score_breadth(self, ad_ratio: float) -> tuple:
+    @staticmethod
+    def _score_breadth(ad_ratio: float) -> tuple:
         """Score advance/decline ratio"""
         if ad_ratio > 3.0:
             return 90, f"A/D ratio {ad_ratio:.2f} — overwhelming breadth, near-universal participation"
@@ -1030,7 +1039,8 @@ class GetSentimentScoreTool(BaseTool):
         else:
             return 12, f"A/D ratio {ad_ratio:.2f} — overwhelming selling, very weak internals"
 
-    def _score_highs_lows(self, hl_ratio: float, new_highs: int, new_lows: int) -> tuple:
+    @staticmethod
+    def _score_highs_lows(hl_ratio: float, new_highs: int, new_lows: int) -> tuple:
         """Score new 52-week highs vs lows"""
         if hl_ratio > 5.0:
             return 88, f"{new_highs} new 52W highs vs {new_lows} lows (ratio {hl_ratio:.1f}x) — breakouts dominating"
@@ -1052,10 +1062,9 @@ class GetSentimentScoreTool(BaseTool):
         return "Extreme Greed"
 
     @staticmethod
-    def _label_emoji_free(score: float) -> str:
-        """Bar-style visual indicator (no emoji)"""
-        filled = round(score / 10)
-        return "[" + "#" * filled + "-" * (10 - filled) + f"] {score:.0f}/100"
+    def _score_to_prose(score: float) -> str:
+        """Plain-text score indicator — no ASCII art."""
+        return f"Score: {score:.0f}/100"
 
     # ------------------------------------------------------------------ #
     # Main run                                                             #
@@ -1102,7 +1111,7 @@ class GetSentimentScoreTool(BaseTool):
             )
             composite = round(composite, 1)
             label = self._label(composite)
-            bar   = self._label_emoji_free(composite)
+            score_display = self._score_to_prose(composite)
 
             # Historical context blurb
             if composite >= 80:
@@ -1120,8 +1129,7 @@ class GetSentimentScoreTool(BaseTool):
             out  = "## Market Sentiment Score\n\n"
             if indices.get("_placeholder") or vix_data.get("_placeholder"):
                 out += "**WARNING: FMP_API_KEY not configured. Sentiment score is calculated from STATIC PLACEHOLDER data and does NOT reflect current market conditions.**\n\n"
-            out += f"**{bar}**\n"
-            out += f"**{label.upper()}**\n\n"
+            out += f"**{score_display} — {label}**\n\n"
             out += "| Signal | Weight | Score | Reading |\n"
             out += "|--------|--------|-------|---------|\n"
             out += f"| VIX Level      | 25% | {vix_score:.0f}/100   | {vix_note} |\n"

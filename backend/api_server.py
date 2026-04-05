@@ -43,7 +43,6 @@ from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db, SyncSessionLocal
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
 from backend.project_config import normalize_project_config
-from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.finance_qa_agent import create_finance_qa_agent
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
@@ -136,7 +135,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 _AGENTS_CACHE_MAX = 100
 agents_cache: OrderedDict = OrderedDict()
 agents_cache_lock = threading.Lock()
-SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "earnings", "arena"})
+SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "market", "earnings", "arena"})
 
 # Hold strong references to fire-and-forget tasks so they aren't GC'd before completion
 _background_tasks: set = set()
@@ -151,8 +150,6 @@ def _fire_and_forget(coro) -> asyncio.Task:
 
 # Map agent types to their fallback methods (when agent_executor is not available)
 AGENT_FALLBACK_METHODS = {
-    "analyst": "analyze",
-    "graph": "analyze",  # LangGraph equity analyst
     "research": "chat",  # Research uses 'chat' instead of 'analyze'
     "market": "analyze",
     "portfolio": "analyze",
@@ -169,8 +166,8 @@ def extract_ticker_from_query(query: str, is_followup: bool = False) -> Optional
 class ChatMessage(BaseModel):
     """Chat message model"""
     message: str
-    agent_type: str = "research"  # analyst, graph, research, market, portfolio, earnings
-    model: str = "claude-sonnet-4-5-20250929"
+    agent_type: str = "research"  # research, market, portfolio, earnings, arena
+    model: str = "claude-sonnet-4-6"
     session_id: Optional[str] = None
     is_followup: bool = False
     # Persistence metadata (populated by frontend after receiving session_id)
@@ -197,8 +194,6 @@ def _build_agent_cache_key(agent_type: str, model: str, session_id: Optional[str
 
 def _create_agent_instance(agent_type: str, model: str):
     """Create a single agent instance for the requested type."""
-    if agent_type in ("analyst", "graph"):
-        return create_equity_analyst_graph(model=model)
     if agent_type == "research":
         return create_finance_qa_agent(model=model, db_session_factory=SyncSessionLocal)
     if agent_type == "market":
@@ -267,7 +262,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
     Args:
         agent: LangChain agent instance (with agent_executor or fallback method)
         message: User's input message to process
-        agent_type: One of 'analyst', 'graph', 'research', 'market', 'portfolio', 'earnings'
+        agent_type: One of 'research', 'market', 'portfolio', 'earnings', 'arena'
         queue: Async queue for streaming events to SSE response
         is_followup: Whether this is a follow-up question (earnings agent only)
     """
@@ -284,8 +279,18 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             agent._progress_queue = queue
             agent._progress_loop = loop
 
-        # Try to use agent_executor first (preferred method with callbacks)
-        if hasattr(agent, 'agent_executor'):
+        # Use _invoke() if available — it resets per-request callback state before calling
+        # agent_executor, ensuring step counters don't accumulate on cached agent instances.
+        # Fall back to agent_executor.invoke() for agents that don't implement _invoke().
+        if hasattr(agent, '_invoke'):
+            input_dict = {"input": message}
+            if is_followup and agent_type == "earnings":
+                input_dict["followup"] = True
+            response = await loop.run_in_executor(
+                None,
+                lambda: agent._invoke(input_dict, [callback])
+            )
+        elif hasattr(agent, 'agent_executor'):
             input_dict = {"input": message}
             if is_followup and agent_type == "earnings":
                 input_dict["followup"] = True
@@ -668,7 +673,7 @@ async def stream_agent_response(
 
 
 # Agent types that should auto-save to the analyses library
-_ANALYSIS_AGENT_TYPES = {"analyst", "earnings", "graph"}
+_ANALYSIS_AGENT_TYPES = {"earnings"}
 
 
 async def _run_memory_update(project_id: str, memory_patch: dict) -> None:
@@ -789,7 +794,7 @@ async def root():
         "status": "online",
         "service": "Financial Analysis API",
         "version": "1.0.0",
-        "agents": ["analyst", "graph", "research", "market", "portfolio", "earnings"]
+        "agents": ["research", "market", "portfolio", "earnings", "arena"]
     }
 
 
@@ -799,16 +804,10 @@ async def list_agents():
     return {
         "agents": [
             {
-                "id": "analyst",
-                "name": "Equity Analyst",
-                "description": "Comprehensive equity research reports with industry and competitive analysis",
-                "example": "Analyze Tesla's competitive position and moat"
-            },
-            {
                 "id": "research",
                 "name": "Finance Q&A",
-                "description": "Conversational Q&A for quick data lookups, calculations, comparisons, and news",
-                "example": "What's Microsoft's revenue growth rate?"
+                "description": "Your personal equity analyst. Ask about any stock — get a quick brief, then dig into valuation, earnings, competitive position, SEC filings, or management commentary.",
+                "example": "I'm looking at NVDA — what should I know?"
             },
             {
                 "id": "market",
@@ -871,9 +870,15 @@ async def chat(chat_message: ChatMessage):
 
         agent = get_or_create_agent(chat_message.agent_type, chat_message.model, session_id=session_id)
 
-        # Get response synchronously - research agent uses 'chat' method, others use 'analyze'
+        # Get response synchronously.
+        # Use _invoke() where available (resets per-request state, no CLI stdout callbacks).
+        # Research agent uses its own 'chat' method; other agents without _invoke fall back to analyze().
         if chat_message.agent_type == "research":
             response = await run_in_threadpool(agent.chat, chat_message.message)
+        elif hasattr(agent, '_invoke'):
+            response = await run_in_threadpool(
+                lambda: agent._invoke({"input": chat_message.message}, [])
+            )
         else:
             response = await run_in_threadpool(agent.analyze, chat_message.message)
 

@@ -1151,11 +1151,6 @@ def run_monitor(ticker: str, agent_name: str) -> None:
                 agent = EarningsAgent()
                 result_holder["output"] = agent.analyze(ticker)
 
-            elif agent_name in ("analyst", "graph"):
-                from agents.equity_analyst_graph import EquityAnalystGraph
-                agent = EquityAnalystGraph()
-                result_holder["output"] = agent.analyze(ticker)
-
             elif agent_name == "market":
                 from agents.market_agent import MarketAnalysisAgent
                 agent = MarketAnalysisAgent()

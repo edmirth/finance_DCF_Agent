@@ -32,9 +32,9 @@ class TestAgentCaching:
     def test_stateless_agents_share_global_cache(self):
         created_agent = object()
 
-        with patch.object(api_server, "create_equity_analyst_graph", return_value=created_agent) as mock_factory:
-            first = api_server.get_or_create_agent("analyst", "claude-test")
-            second = api_server.get_or_create_agent("analyst", "claude-test")
+        with patch.object(api_server, "create_market_agent", return_value=created_agent) as mock_factory:
+            first = api_server.get_or_create_agent("market", "claude-test")
+            second = api_server.get_or_create_agent("market", "claude-test")
 
         assert first is created_agent
         assert second is created_agent

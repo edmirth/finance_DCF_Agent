@@ -15,7 +15,6 @@ from typing import Annotated, Any, Dict, List, TypedDict
 
 from langgraph.graph import StateGraph, START, END
 
-from agents.equity_analyst_graph import create_equity_analyst_graph
 from agents.earnings_agent import create_earnings_agent
 from agents.market_agent import create_market_agent
 from agents.finance_qa_agent import create_finance_qa_agent
@@ -175,13 +174,13 @@ class ProjectAnalysisGraph:
     # -----------------------------------------------------------------------
 
     def run_agent_analyst(self, state: ProjectAnalysisState) -> dict:
-        """Run equity analyst agent and append result to agent_results."""
+        """Run Finance Q&A agent for equity analysis tasks."""
         agent_type = "analyst"
         self._emit_progress("project_progress", {"node": agent_type, "status": "started", "detail": "Running equity analyst"})
         task = self._grounded_task(state, agent_type)
         try:
-            agent = create_equity_analyst_graph()
-            output = self._ensure_str(agent.analyze(task))
+            agent = create_finance_qa_agent()
+            output = self._ensure_str(agent.chat(task))
             logger.info(f"[project_graph] run_agent_analyst complete ({len(output)} chars)")
             self._emit_progress("project_progress", {"node": agent_type, "status": "completed"})
             return {"agent_results": [{"agent_type": agent_type, "task": task, "output": output}]}

@@ -5,197 +5,95 @@ AI agent for analyzing market conditions, sentiment, news, and regime.
 Provides comprehensive market overview to inform investment decisions.
 """
 
+import logging
+import threading
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.memory import ConversationBufferWindowMemory
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools.market_tools import get_market_tools
 from agents.reasoning_callback import StreamingReasoningCallback
-from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
-# Agent system message for tool calling pattern
-MARKET_AGENT_PROMPT = """You are a professional Market Analyst providing comprehensive, detailed market analysis to help investors make informed decisions.
+MARKET_AGENT_PROMPT = """You are a professional Market Analyst. Provide comprehensive, data-rich analysis with specific numbers and context that helps investors make informed decisions.
 
-**YOUR ROLE:**
-You are an expert market strategist who provides thorough, well-researched analysis with specific data, context, and actionable recommendations.
-
-**ABSOLUTE OUTPUT RULES — NEVER VIOLATE THESE:**
-1. NO ASCII BORDERS — Never output lines like `========`, `--------`, `***`. These appear as raw garbage in the web UI.
-2. NO EMOJIS — Do not use any emoji characters (such as chart symbols, colored circles, checkmarks, or warning signs) anywhere in the response. Use bold text and markdown structure for emphasis instead.
+**OUTPUT RULES — NEVER VIOLATE THESE:**
+1. NO ASCII BORDERS — Never output lines like `========`, `--------`, `***`.
+2. NO EMOJIS — Use bold text and markdown headers for emphasis instead.
 3. NO ALL-CAPS SECTION LABELS — Use `##` and `###` headers only.
-4. MANDATORY NARRATIVE PROSE IN EVERY SECTION — Every major section must contain at least 2–3 sentences of analytical prose explaining what the data means, not just presenting numbers. Tables and bullets complement prose; they do not replace it.
-5. EVERY DATA POINT NEEDS CONTEXT — Do not write "VIX is at 18." Write "VIX at 18 is below its long-run average of ~20, indicating below-average implied volatility and a market pricing in limited near-term risk."
-6. SPECIFIC NUMBERS IN EVERY CLAIM — Do not write "Technology is outperforming." Write "Technology sector is up 2.5% today vs. the S&P 500's 0.8%, extending its year-to-date lead to +18% vs. the index's +9%."
+4. MANDATORY NARRATIVE PROSE — Every section must contain at least 2–3 sentences of analytical prose. Tables and bullets complement prose; they do not replace it.
+5. EVERY DATA POINT NEEDS CONTEXT — Not "VIX is at 18." But "VIX at 18 is below its long-run average of ~20, indicating below-average implied volatility."
+6. SPECIFIC NUMBERS IN EVERY CLAIM — Not "Technology is outperforming." But "Technology is up 2.5% today vs. S&P 500's 0.8%."
 
-**ANALYSIS FRAMEWORK:**
-1. **Market Overview** - Present all index data, breadth metrics, volatility levels with interpretation
-2. **Sector Analysis** - Show detailed sector performance, rotation patterns, money flow
-3. **Market Regime** - Explain current regime classification with supporting evidence
-4. **Stock Screening** - Identify specific investment candidates based on fundamentals
-5. **News & Catalysts** - Comprehensive coverage of market-moving developments
-6. **Investment Implications** - Detailed, specific recommendations for portfolio positioning
+**TOOLS:**
+- get_market_overview: Major indices, breadth, VIX, market regime
+- get_sector_rotation: Sector performance and rotation patterns (timeframe: 1D/5D/1M/3M/YTD)
+- get_market_news: Latest market-moving news and developments
+- classify_market_regime: Detailed regime classification (BULL/BEAR/NEUTRAL, RISK_ON/OFF)
+- get_macro_context: Treasury yields, yield curve, Fed funds rate, CPI, GDP
+- get_sentiment_score: Composite 0–100 Fear & Greed score (VIX, momentum, breadth, new highs/lows)
+- get_historical_context: 52-week range and percentile for VIX, S&P 500, Nasdaq
+- screen_stocks: Custom stock screening (P/E, revenue, profitability, debt, growth)
+- get_value_stocks: Pre-filtered value stocks (P/E < 15, profitable, large cap)
+- get_growth_stocks: Pre-filtered growth stocks (strong revenue, profitable)
+- get_dividend_stocks: Pre-filtered dividend-paying stocks
 
-**TOOLS AVAILABLE:**
+**WHEN TO CALL OPTIONAL TOOLS:**
 
-*Market Analysis Tools:*
-- get_market_overview: Comprehensive market snapshot (indices, breadth, VIX, regime)
-- get_sector_rotation: Detailed sector performance and rotation analysis
-- get_market_news: Latest market news and developments
-- classify_market_regime: In-depth market regime classification
-- get_macro_context: Treasury yields, yield curve (inversion status), Fed funds rate, CPI, GDP growth
-- get_sentiment_score: Composite 0-100 Fear & Greed score built from 5 weighted signals (VIX level, VIX trend, market momentum, breadth, new highs/lows)
-- get_historical_context: 52-week historical context for VIX, S&P 500, and Nasdaq — current value, 52W high/low, and percentile rank
+get_sentiment_score — Call when user asks about sentiment, fear/greed, or during a daily briefing. Lead with it in briefings to set the tone.
 
-*Stock Screening Tools:*
-- screen_stocks: Custom screening with flexible criteria (revenue, P/E, profitability, debt, revenue growth)
-- get_value_stocks: Pre-filtered value opportunities (low P/E < 15, profitable, large cap)
-- get_growth_stocks: Pre-filtered growth opportunities (strong revenue, profitable)
-- get_dividend_stocks: Pre-filtered dividend-paying companies (DPS > 0, profitable)
+get_macro_context — Call when user asks about interest rates, Fed policy, yield curve, inflation, recession signals, or the macro environment. Include in daily briefings.
 
-**SENTIMENT SCORE WORKFLOW:**
-Always call get_sentiment_score when users ask about:
-- "What is market sentiment?"
-- "Fear and greed index"
-- "How is the market feeling?"
-- "Is the market greedy or fearful?"
-- During a full daily briefing (always include alongside get_market_overview)
-The sentiment score is the FIRST thing to show in a daily briefing — it sets the tone for everything else.
+get_historical_context — Call when user asks how current levels compare to recent history, whether VIX is elevated, or where indices sit in their 52-week range. Include in daily briefings.
 
-**MACRO CONTEXT WORKFLOW:**
-Always call get_macro_context when users ask about:
-- Interest rates, Fed policy, rate cuts/hikes
-- Yield curve, recession signals
-- Inflation, CPI readings
-- "What's the macro environment?"
-- During a full daily briefing (combine with get_market_overview)
+**STOCK SCREENING APPROACH:**
+When screening for stocks, follow this top-down sequence:
+1. get_market_overview → understand regime (BULL/BEAR/RISK_ON/RISK_OFF)
+2. get_sector_rotation → identify leading sectors
+3. Use appropriate screener (value/growth/dividend/custom)
+4. Present results as a table with key metrics
+5. Recommend Finance Q&A or Equity Analyst for deep dives on specific names
 
-**HISTORICAL CONTEXT WORKFLOW:**
-Always call get_historical_context when users ask about:
-- "Is the market cheap or expensive vs recent history?"
-- "Where does VIX sit historically?"
-- "How does today's level compare to the 52-week range?"
-- "Is volatility elevated or suppressed?"
-- During a full daily briefing (adds depth to every metric)
+Industry names use the financial API's classification: "Auto Manufacturers" (includes EVs), "Semiconductors", "Software - Application", "Software - Infrastructure", "Biotechnology", "Pharmaceuticals", "Banks - Regional", "Banks - Diversified", "Oil & Gas E&P", "Aerospace & Defense".
 
-**OUTPUT FORMATTING:**
-- Start with an executive summary paragraph
-- Use clear section headers (##, ###)
-- Present data in tables when comparing multiple items
-- Bold key insights and takeaways
-- Use bullet points for lists
-- Include a "Bottom Line" or "Investor Takeaways" section at the end
-
-**INTERPRETATION GUIDELINES:**
-- Explain what the data means for investors
-- Compare to historical levels/averages
-- Identify trends and inflection points
-- Distinguish between noise and signal
-- Acknowledge uncertainty but provide probabilistic analysis
-- Give SPECIFIC portfolio actions (e.g., "overweight technology," "reduce duration," "add defensive hedges")
-
-**STOCK SCREENING WORKFLOW:**
-When users ask about finding stocks or investment opportunities, follow this top-down approach:
-
-1. **Understand Market Context**: Use get_market_overview and get_sector_rotation
-2. **Identify Strong Sectors**: Determine which sectors are performing well
-3. **Screen for Candidates**: Use appropriate screener tool based on user preference:
-   - Value investor → get_value_stocks
-   - Growth investor → get_growth_stocks
-   - Income investor → get_dividend_stocks
-   - Custom criteria → screen_stocks
-4. **Present Results**: Show screener results in table format with key metrics
-5. **Suggest Next Steps**: Recommend using Finance Q&A or Equity Analyst for deep dive
-
-**IMPORTANT - INDUSTRY NAMES:**
-When screening by industry, use the EXACT industry classification from the financial data API:
-- "Electric Vehicles" → Use "Auto Manufacturers" (includes Tesla, Rivian, etc.)
-- "EV stocks" → Use "Auto Manufacturers"
-- "Tech companies" → Use "Software - Application" or "Semiconductors"
-- "Biotech" → Use "Biotechnology"
-- "Pharma" → Use "Pharmaceuticals"
-- "Banks" → Use "Banks - Regional" or "Banks - Diversified"
-- "Oil companies" → Use "Oil & Gas E&P"
-
-**Common Industry Names:**
-Auto Manufacturers, Semiconductors, Software - Application, Software - Infrastructure,
-Biotechnology, Pharmaceuticals, Banks - Regional, Oil & Gas E&P, Aerospace & Defense
-
-**SCREENING EXAMPLES:**
-
-User: "Find value stocks in a bull market"
-You:
-  1. get_market_overview → Confirm BULL market
-  2. get_sector_rotation → Identify leading sectors
-  3. get_value_stocks → Find undervalued opportunities
-  4. Present results with context: "In this RISK_ON environment with Tech leading, here are 15 value stocks with P/E < 15..."
-
-User: "Screen for profitable tech companies with low P/E"
-You:
-  1. screen_stocks with industry="Semiconductors", pe_ratio_max=20, net_income_min=0
-  2. Present results in table format
-  3. Recommend: "These 10 candidates look promising. Use Finance Q&A to explore NVDA, AMD, or GOOGL further."
-
-User: "Find Electric Vehicle stocks with positive income"
-You:
-  1. screen_stocks with industry="Auto Manufacturers", net_income_min=0
-  2. Present Tesla, Rivian, and other auto manufacturers
-  3. Note: "Auto Manufacturers" industry includes traditional automakers AND EV-focused companies
-
-**EXAMPLE GOOD OUTPUT:**
-## Market Overview
-The S&P 500 is trading at 4,500 (+1.2% today, +15% YTD), showing strong momentum...
-[2-3 paragraphs with full context]
-
-## Sector Rotation Analysis
-Technology leads with +2.5% today, while Energy lags at -1.8%...
-[Detailed table and analysis]
-
-## Stock Screening Results
-Based on the RISK_ON environment and Tech sector leadership, I screened for growth stocks...
-[Present full screener results table]
-
-## Investment Implications
-Given the current RISK_ON environment and sector rotation into growth...
-[Specific, detailed recommendations]
-
-Remember: COMPREHENSIVE beats concise. Investors want thorough analysis, not brief summaries."""
+**OUTPUT FORMAT:**
+- Open with an executive summary paragraph
+- Use ## and ### section headers
+- Tables for multi-item comparisons; prose for interpretation
+- Bold key insights
+- Close with "Investor Takeaways" or "Bottom Line" section
+- Every recommendation must be specific: "overweight Technology", "reduce duration" — not vague suggestions"""
 
 
 class MarketAnalysisAgent:
-    """
-    AI agent for comprehensive market analysis
+    """AI agent for comprehensive market analysis."""
 
-    Analyzes market conditions, sentiment, sector rotation, and news
-    to provide investors with actionable market intelligence.
-    """
-
-    def __init__(self, model: str = "claude-sonnet-4-5-20250929", temperature: float = 0.1, show_reasoning: bool = True):
+    def __init__(self, model: str = "claude-sonnet-4-6", temperature: float = 0.1, show_reasoning: bool = True):
         """
-        Initialize the Market Analysis Agent
-
         Args:
-            model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
-            temperature: LLM temperature for analysis (default: 0.1 for consistent analysis)
-            show_reasoning: Whether to display agent reasoning steps (default: True)
+            show_reasoning: Print tool-call steps to stdout. Effective in CLI only — the API
+                            attaches its own streaming callback and ignores this one.
         """
         self.model = model
         self.temperature = temperature
         self.show_reasoning = show_reasoning
 
-        # Initialize LLM
         self.llm = ChatAnthropic(
             model=model,
             temperature=temperature,
-            max_retries=3,  # Retry failed API calls
-            default_request_timeout=60.0,  # Request timeout in seconds
-            max_tokens=8192,  # Max output tokens
+            max_retries=3,
+            default_request_timeout=60.0,
+            max_tokens=8192,
         )
 
-        # Get market analysis tools
         self.tools = get_market_tools()
 
-        # Initialize conversation memory (keep last 8 exchanges)
+        # Memory retains the last 8 turns of conversation history.
+        # In the API, agents are cached per session (SESSION_SCOPED_AGENT_TYPES in api_server.py
+        # includes "market"), so memory accumulates correctly across requests in the same session.
+        # Without a session_id, a fresh agent is created per request and memory is not retained.
         self.memory = ConversationBufferWindowMemory(
             k=8,
             memory_key="chat_history",
@@ -203,10 +101,8 @@ class MarketAnalysisAgent:
             output_key="output",
         )
 
-        # Initialize reasoning callback
         self.reasoning_callback = StreamingReasoningCallback(verbose=show_reasoning)
 
-        # Create chat prompt with tool calling pattern
         prompt = ChatPromptTemplate.from_messages([
             ("system", MARKET_AGENT_PROMPT),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
@@ -214,192 +110,42 @@ class MarketAnalysisAgent:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        # Create tool calling agent (uses OpenAI's native function calling)
-        agent = create_tool_calling_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=prompt
-        )
+        agent = create_tool_calling_agent(llm=self.llm, tools=self.tools, prompt=prompt)
 
-        # Create agent executor
         self.agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=10,
+            verbose=False,  # Avoid double-logging alongside StreamingReasoningCallback
+            handle_parsing_errors=True,  # Retry malformed tool calls; max_iterations=15 gives headroom
+            max_iterations=15,  # Daily briefing calls ~6 tools; each = 2 iterations (decide + process)
             memory=self.memory,
         )
 
-    def reset_conversation(self) -> None:
-        """Clear conversation memory"""
-        self.memory.clear()
+        # Serialises concurrent invocations on the same cached instance (session-scoped agents).
+        # AgentExecutor and ConversationBufferWindowMemory are not thread-safe.
+        self._invoke_lock = threading.Lock()
+
+    def _invoke(self, input_dict: dict, callbacks: list) -> str:
+        """
+        Single entry point for agent execution used by both analyze() and api_server.py.
+
+        Acquires a per-instance lock to prevent concurrent invocations corrupting shared
+        memory state. Resets reasoning_callback before each call so step counters don't
+        accumulate across requests on a cached agent instance.
+        """
+        with self._invoke_lock:
+            self.reasoning_callback.reset()
+            result = self.agent_executor.invoke(input_dict, {"callbacks": callbacks})
+            return result["output"]
 
     def analyze(self, query: str) -> str:
-        """
-        Run market analysis based on user query
-
-        Args:
-            query: User's question or analysis request
-
-        Returns:
-            Market analysis and recommendations
-        """
+        """Run market analysis based on user query (CLI path)."""
         try:
-            # Reset callback state
-            self.reasoning_callback.reset()
-
-            # Run agent with reasoning callback
-            result = self.agent_executor.invoke(
-                {"input": query},
-                {"callbacks": [self.reasoning_callback]}
-            )
-            output = result["output"]
-            # Normalize Anthropic content blocks (list) to string
-            if isinstance(output, list):
-                output = "".join(
-                    block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in output
-                )
-            return output
+            return self._invoke({"input": query}, [self.reasoning_callback])
         except Exception as e:
+            logger.exception("Market analysis failed for query: %.200s", query)
             return f"Error during market analysis: {str(e)}"
 
-    def market_overview(self) -> str:
-        """
-        Get comprehensive market overview
 
-        Provides quick snapshot of current market conditions including:
-        - Major indices performance
-        - Market breadth
-        - Volatility levels
-        - Market regime classification
-
-        Returns:
-            Comprehensive market overview
-        """
-        query = """Provide a comprehensive market overview including:
-        1. Current performance of major indices (S&P 500, Nasdaq, Dow, Russell 2000)
-        2. Market breadth analysis (advance/decline ratios, new highs/lows)
-        3. Volatility assessment (VIX levels and interpretation)
-        4. Market regime classification (BULL/BEAR/NEUTRAL, RISK_ON/RISK_OFF)
-        5. Key takeaways for investors
-
-        Be concise but thorough. Highlight what matters most for portfolio positioning.
-        """
-        return self.analyze(query)
-
-    def sector_analysis(self, timeframe: str = "1M") -> str:
-        """
-        Analyze sector rotation and leadership
-
-        Args:
-            timeframe: Time period for analysis ('1D', '5D', '1M', '3M', 'YTD')
-
-        Returns:
-            Sector rotation analysis with recommendations
-        """
-        query = f"""Analyze current sector rotation patterns over the {timeframe} timeframe:
-        1. Which sectors are leading and lagging?
-        2. What does this rotation tell us about market positioning?
-        3. Is money flowing into cyclicals or defensives?
-        4. Is there a growth vs value rotation happening?
-        5. What sectors should investors focus on based on current rotation?
-
-        Provide specific, actionable sector recommendations.
-        """
-        return self.analyze(query)
-
-    def market_regime_analysis(self) -> str:
-        """
-        Deep-dive market regime classification
-
-        Returns:
-            Detailed market regime analysis with investment implications
-        """
-        query = """Classify the current market regime and explain investment implications:
-        1. Is this a BULL, BEAR, or NEUTRAL market?
-        2. Is the market in RISK_ON or RISK_OFF mode?
-        3. What signals support this classification?
-        4. How confident should we be in this regime?
-        5. What specific actions should investors take based on this regime?
-
-        Be specific about portfolio positioning recommendations.
-        """
-        return self.analyze(query)
-
-    def news_analysis(self, topic: Optional[str] = None) -> str:
-        """
-        Analyze latest market news and developments
-
-        Args:
-            topic: Optional specific topic to focus on (e.g., 'Fed', 'inflation', 'earnings')
-
-        Returns:
-            Market news analysis with implications
-        """
-        if topic:
-            query = f"""Analyze the latest market news about {topic}:
-            1. What are the key developments?
-            2. How is the market reacting?
-            3. What are the implications for investors?
-            4. Should this change portfolio positioning?
-
-            Be specific and actionable.
-            """
-        else:
-            query = """Analyze the most important market news today:
-            1. What are the major market-moving stories?
-            2. How are markets reacting to these developments?
-            3. What do investors need to know?
-            4. Any actionable implications for portfolio management?
-
-            Focus on what matters most for investors.
-            """
-        return self.analyze(query)
-
-    def daily_briefing(self) -> str:
-        """
-        Generate comprehensive daily market briefing
-
-        Combines market overview, sector rotation, regime analysis, and news
-        into a single comprehensive briefing for investors.
-
-        Returns:
-            Daily market briefing
-        """
-        query = """Provide a comprehensive daily market briefing. Call these tools in order:
-        1. get_sentiment_score — lead with the Fear & Greed score to set the tone
-        2. get_market_overview — indices, VIX, breadth, regime
-        3. get_historical_context — 52-week percentile context for VIX and indices
-        4. get_sector_rotation — leading and lagging sectors
-        5. get_macro_context — yield curve, Fed rate, inflation
-        6. get_market_news — key catalysts and headlines
-
-        Structure the output as:
-
-        **SENTIMENT** — Fear & Greed score with label and component breakdown
-        **MARKET OVERVIEW** — indices, VIX, regime classification
-        **HISTORICAL CONTEXT** — where each metric sits vs its 52-week range
-        **SECTOR ROTATION** — leaders, laggards, rotation signals
-        **MACRO CONTEXT** — rates, yield curve, inflation
-        **NEWS & CATALYSTS** — market-moving developments
-        **INVESTOR TAKEAWAYS** — specific actionable positioning recommendations
-
-        Format as a professional morning briefing. Be comprehensive but analytical — every number needs context.
-        """
-        return self.analyze(query)
-
-
-def create_market_agent(model: str = "claude-sonnet-4-5-20250929", show_reasoning: bool = True) -> MarketAnalysisAgent:
-    """
-    Factory function to create Market Analysis Agent
-
-    Args:
-        model: Anthropic model to use (default: claude-sonnet-4-5-20250929)
-        show_reasoning: Whether to display agent reasoning steps (default: True)
-
-    Returns:
-        Initialized MarketAnalysisAgent
-    """
+def create_market_agent(model: str = "claude-sonnet-4-6", show_reasoning: bool = True) -> MarketAnalysisAgent:
     return MarketAnalysisAgent(model=model, show_reasoning=show_reasoning)
