@@ -1,20 +1,15 @@
 #!/bin/bash
 
-# Startup script for Financial Analyst Web Interface
+# Startup script for Phronesis AI
 # Starts both backend and frontend servers
 
-set -e
-
-echo "=========================================="
-echo "Financial Analyst Web Interface"
-echo "=========================================="
+echo "Starting Phronesis AI..."
 echo ""
 
 # Check if .env file exists
 if [ ! -f .env ]; then
     echo "ERROR: .env file not found!"
     echo "Please create .env file with your API keys."
-    echo "See .env.example for reference."
     exit 1
 fi
 
@@ -24,8 +19,6 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 
-# Activate virtual environment
-echo "Activating Python virtual environment..."
 source venv/bin/activate
 
 # Install backend dependencies if needed
@@ -36,56 +29,55 @@ if [ ! -f "backend/.installed" ]; then
     touch backend/.installed
 fi
 
-# Check if node_modules exists for frontend
+# Install frontend dependencies if needed
 if [ ! -d "frontend/node_modules" ]; then
     echo "Installing frontend dependencies..."
-    cd frontend
-    npm install
-    cd ..
+    cd frontend && npm install && cd ..
 fi
 
-echo ""
-echo "Starting servers..."
-echo ""
+# Clear ports before starting
+clear_ports() {
+    lsof -ti :8000 | xargs kill -9 2>/dev/null || true
+    lsof -ti :3000 | xargs kill -9 2>/dev/null || true
+    lsof -ti :5173 | xargs kill -9 2>/dev/null || true
+}
 
-# Function to cleanup background processes
+echo "Clearing ports..."
+clear_ports
+sleep 1
+
+# Ctrl+C handler — kill by port (catches uvicorn children too)
 cleanup() {
     echo ""
-    echo "Shutting down servers..."
-    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    echo "Shutting down..."
+    clear_ports
     exit 0
 }
 
 trap cleanup INT TERM
 
-# Start backend server
-echo "Starting backend API server on http://localhost:8000..."
+# Start backend
+echo "Starting backend on http://localhost:8000..."
 cd backend
 python api_server.py &
 BACKEND_PID=$!
 cd ..
 
-# Wait a bit for backend to start
 sleep 3
 
-# Start frontend server
-echo "Starting frontend dev server on http://localhost:3000..."
+# Start frontend
+echo "Starting frontend on http://localhost:3000..."
 cd frontend
 npm run dev &
 FRONTEND_PID=$!
 cd ..
 
 echo ""
-echo "=========================================="
-echo "✅ Servers are running!"
-echo "=========================================="
+echo "  Frontend:  http://localhost:3000"
+echo "  Backend:   http://localhost:8000"
+echo "  API Docs:  http://localhost:8000/docs"
 echo ""
-echo "🌐 Frontend: http://localhost:3000"
-echo "🔧 Backend API: http://localhost:8000"
-echo "📚 API Docs: http://localhost:8000/docs"
-echo ""
-echo "Press Ctrl+C to stop both servers"
+echo "Press Ctrl+C to stop"
 echo ""
 
-# Wait for processes
 wait $BACKEND_PID $FRONTEND_PID

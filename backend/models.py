@@ -10,6 +10,8 @@ Tables:
   projects          — investment thesis workspaces
   project_sessions  — links sessions to a project
   project_documents — uploaded files + chroma chunk references
+  scheduled_agents  — user-configured persistent agent workers
+  agent_runs        — execution history for scheduled agents
 """
 from __future__ import annotations
 import uuid
@@ -156,3 +158,59 @@ class ProjectDocument(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     project: Mapped["Project"] = relationship("Project", back_populates="documents")
+
+
+class ScheduledAgent(Base):
+    """A user-configured persistent agent worker with a heartbeat schedule."""
+    __tablename__ = "scheduled_agents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Template: earnings_watcher | market_pulse | thesis_guardian | portfolio_heartbeat | arena_analyst
+    template: Mapped[str] = mapped_column(String(50))
+    tickers: Mapped[str] = mapped_column(Text, default="[]")        # JSON array of ticker strings
+    topics: Mapped[str] = mapped_column(Text, default="[]")         # JSON array of topic strings
+    instruction: Mapped[str] = mapped_column(Text, default="")      # User's thesis / instruction
+    # Schedule: daily_morning | pre_market | weekly_monday | weekly_friday | monthly
+    schedule_label: Mapped[str] = mapped_column(String(50), default="weekly_monday")
+    delivery_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    delivery_inapp: Mapped[bool] = mapped_column(default=True)
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_run_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # completed | failed
+    last_run_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    runs: Mapped[List["AgentRun"]] = relationship(
+        "AgentRun", back_populates="scheduled_agent", cascade="all, delete-orphan",
+        order_by="AgentRun.started_at.desc()"
+    )
+
+
+class AgentRun(Base):
+    """A single execution of a ScheduledAgent."""
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index("ix_agent_runs_scheduled_agent_id", "scheduled_agent_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    scheduled_agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scheduled_agents.id", ondelete="CASCADE")
+    )
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running | completed | failed
+    report: Mapped[str] = mapped_column(Text, default="")
+    findings_summary: Mapped[str] = mapped_column(Text, default="")
+    material_change: Mapped[bool] = mapped_column(default=False)
+    alert_level: Mapped[str] = mapped_column(String(10), default="none")  # high | medium | low | none
+    key_findings: Mapped[str] = mapped_column(Text, default="[]")          # JSON array of strings
+    tickers_analyzed: Mapped[str] = mapped_column(Text, default="[]")     # JSON array
+    agents_used: Mapped[str] = mapped_column(Text, default="[]")          # JSON array
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="runs")

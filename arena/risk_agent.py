@@ -320,9 +320,9 @@ def score_pillars(financials: dict, market_context: dict, risk_metrics: dict) ->
     except Exception:
         pass
 
-    if earnings_volatility > 0.30 or loss_years >= 1:
+    if earnings_volatility > 0.50 or loss_years >= 2:
         stability_signal = "cautious"
-    elif earnings_volatility < 0.10 and loss_years == 0:
+    elif earnings_volatility < 0.15 and loss_years == 0:
         stability_signal = "bullish"
     else:
         stability_signal = "neutral"
@@ -335,7 +335,7 @@ def score_pillars(financials: dict, market_context: dict, risk_metrics: dict) ->
     if beta != 1.0 or drawdown_pct != 0.0:
         data_points_available += 1
 
-    if beta > 1.5:
+    if beta > 1.8:
         market_signal = "cautious"
     elif beta < 0.8:
         market_signal = "bullish"
@@ -361,8 +361,6 @@ def score_pillars(financials: dict, market_context: dict, risk_metrics: dict) ->
 
     if len(majority_candidates) == 1:
         overall_signal = majority_candidates[0]
-    elif "cautious" in majority_candidates:
-        overall_signal = "cautious"   # risk agent tie-break: prefer caution
     elif "neutral" in majority_candidates:
         overall_signal = "neutral"
     else:
@@ -431,9 +429,10 @@ def _build_peer_context(state: ThesisState) -> str:
         "Other analysts have already written their findings on the whiteboard:\n\n"
         + "\n".join(lines)
         + "\nCross-reference these findings with your risk assessment. "
-        "If fundamental shows high intrinsic value upside but you see high leverage, lean cautious not bearish. "
-        "If fundamental shows negative intrinsic value upside AND you see high leverage, lean bearish. "
-        "If peers corroborate low risk, revise your confidence upward."
+        "If fundamental shows strong upside and your risk metrics are manageable, "
+        "lean neutral rather than cautious — risk exists in every investment. "
+        "Only flag bearish if the risk profile is genuinely severe (high leverage + negative FCF + deteriorating earnings). "
+        "If peers broadly corroborate low risk, increase your confidence accordingly."
     )
 
 
@@ -491,7 +490,9 @@ Risk-specific guidance:
 Confidence calibration:
 - 3 or 4 pillars agree AND data quality > 80%  → 0.75–0.90
 - 2 pillars agree OR data quality 50–80%        → 0.55–0.74
-- Pillars conflict OR data quality < 50%        → 0.35–0.54"""
+- Pillars conflict OR data quality < 50%        → 0.35–0.54
+- Use "neutral" for ambiguous risk profiles — reserve "cautious" for genuinely elevated risk
+- "bearish" requires multiple simultaneous risk flags, not just one elevated metric"""
 
     try:
         client = Anthropic()

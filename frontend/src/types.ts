@@ -295,3 +295,61 @@ export interface ProjectDocument {
   chunk_count: number;
   uploaded_at: string;
 }
+
+// ============================================================
+// Scheduled Agents (Persistent Heartbeat Workers)
+// ============================================================
+
+export type AgentTemplate =
+  | 'earnings_watcher'
+  | 'market_pulse'
+  | 'thesis_guardian'
+  | 'portfolio_heartbeat'
+  | 'arena_analyst';
+
+export type ScheduleLabel =
+  | 'daily_morning'
+  | 'pre_market'
+  | 'weekly_monday'
+  | 'weekly_friday'
+  | 'monthly';
+
+export type AlertLevel = 'high' | 'medium' | 'low' | 'none';
+
+export interface ScheduledAgent {
+  id: string;
+  name: string;
+  description?: string;
+  template: AgentTemplate;
+  tickers: string[];
+  topics: string[];
+  instruction: string;
+  schedule_label: ScheduleLabel;
+  delivery_email?: string;
+  delivery_inapp: boolean;
+  is_active: boolean;
+  last_run_at?: string;
+  next_run_at?: string;
+  last_run_status?: 'completed' | 'failed';
+  last_run_summary?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRun {
+  id: string;
+  scheduled_agent_id: string;
+  status: 'running' | 'completed' | 'failed';
+  report: string;
+  findings_summary: string;
+  key_findings: string[];
+  material_change: boolean;
+  alert_level: AlertLevel;
+  tickers_analyzed: string[];
+  agents_used: string[];
+  started_at: string;
+  completed_at?: string;
+  error?: string;
+  // inbox-only: joined from scheduled_agents
+  agent_name?: string;
+}

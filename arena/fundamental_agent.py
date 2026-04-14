@@ -299,7 +299,7 @@ def score_pillars(financials: dict, market_context: dict, valuation: dict) -> di
 
         if revenue_cagr > 0.12 and fcf_quality:
             growth_signal = "bullish"
-        elif revenue_cagr < 0 or (fcf_margin < 0.03 and latest_revenue > 0):
+        elif revenue_cagr < -0.05 or (fcf_margin < 0 and latest_revenue > 0):
             growth_signal = "cautious"
         else:
             growth_signal = "neutral"
@@ -440,9 +440,9 @@ def _build_peer_context(state: ThesisState) -> str:
         "Other analysts have already written their findings on the whiteboard:\n\n"
         + "\n".join(lines)
         + "\nUse this context to calibrate your confidence. "
-        "If peers with high-confidence findings contradict your pillars, "
-        "revise your confidence downward and consider 'cautious'. "
-        "If peers strongly corroborate your analysis, revise upward."
+        "If peers corroborate your analysis, revise your confidence upward. "
+        "If peers contradict your pillars with strong evidence, note the tension but only revise downward "
+        "if the contradiction is material — not just because views differ."
     )
 
 
@@ -494,7 +494,8 @@ Confidence calibration:
 - 3 or 4 pillars agree AND data quality > 80%  → 0.75–0.90
 - 2 pillars agree OR data quality 50–80%        → 0.55–0.74
 - Pillars conflict OR data quality < 50%        → 0.35–0.54
-- Use "cautious" when signals conflict but downside risk is skewed negative"""
+- Use "neutral" when signals are mixed or data is limited — not "cautious"
+- Only use "cautious" if there is a specific, material downside risk in the data"""
 
     try:
         client = Anthropic()

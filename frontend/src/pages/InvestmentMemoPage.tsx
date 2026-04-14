@@ -1,5 +1,14 @@
-import { useState, useRef, KeyboardEvent, useCallback } from 'react';
-import { streamMemo, MemoEvent } from '../api';
+import { useState, useRef, KeyboardEvent, ChangeEvent, useCallback, useEffect } from 'react';
+import { streamMemo, saveMemo, MemoEvent } from '../api';
+
+// ─── Ticker search types ───────────────────────────────────────────────────────
+
+interface TickerSuggestion {
+  symbol: string;
+  name: string;
+  exchange: string;
+  type: string;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,18 +53,7 @@ const INITIAL_AGENTS: AgentCard[] = Object.keys(AGENT_META).map(name => ({
   done: false,
 }));
 
-const VERDICT_STYLES: Record<string, { bg: string; text: string; border: string }> = {
-  BUY:   { bg: '#F0FDF4', text: '#15803D', border: '#16A34A' },
-  WATCH: { bg: '#FFFBEB', text: '#92400E', border: '#D97706' },
-  PASS:  { bg: '#FFF1F2', text: '#9F1239', border: '#E11D48' },
-};
 
-const VIEW_COLORS: Record<string, string> = {
-  bullish:  '#16A34A',
-  bearish:  '#DC2626',
-  cautious: '#D97706',
-  neutral:  '#6B7280',
-};
 
 const CHECKLIST_ITEMS = [
   'Why now? What\'s the catalyst for acting on this analysis today?',
@@ -68,7 +66,6 @@ const CHECKLIST_ITEMS = [
 
 function AgentCardRow({ card }: { card: AgentCard }) {
   const meta = AGENT_META[card.name] || { label: card.name, role: '', color: '#6B7280' };
-  const viewColor = card.view ? VIEW_COLORS[card.view] || '#6B7280' : '#6B7280';
 
   return (
     <div
@@ -110,24 +107,6 @@ function AgentCardRow({ card }: { card: AgentCard }) {
             {meta.label}
           </span>
           <span style={{ fontSize: 11, color: '#9CA3AF' }}>{meta.role}</span>
-          {card.done && card.view && (
-            <span
-              style={{
-                marginLeft: 'auto',
-                fontFamily: 'IBM Plex Mono, monospace',
-                fontSize: 10,
-                fontWeight: 700,
-                color: viewColor,
-                background: `${viewColor}14`,
-                padding: '2px 8px',
-                borderRadius: 4,
-                textTransform: 'uppercase',
-                letterSpacing: '0.06em',
-              }}
-            >
-              {card.view} {card.confidence !== undefined ? `${(card.confidence * 100).toFixed(0)}%` : ''}
-            </span>
-          )}
           {!card.done && (
             <span
               style={{
@@ -153,76 +132,52 @@ function AgentCardRow({ card }: { card: AgentCard }) {
 }
 
 
-function VerdictBanner({
-  verdict,
-  confidence,
+function MemoHeader({
   ticker,
   onToggleReasoning,
   showReasoning,
 }: {
-  verdict: 'BUY' | 'WATCH' | 'PASS';
-  confidence: number;
   ticker: string;
   onToggleReasoning: () => void;
   showReasoning: boolean;
 }) {
-  const styles = VERDICT_STYLES[verdict] || VERDICT_STYLES.WATCH;
-  const pct = Math.round(confidence * 100);
-
   return (
     <div
       style={{
-        background: styles.bg,
-        border: `1.5px solid ${styles.border}`,
-        borderRadius: 8,
-        padding: '16px 20px',
-        marginBottom: 24,
         display: 'flex',
         alignItems: 'center',
-        gap: 16,
-        flexWrap: 'wrap',
+        justifyContent: 'space-between',
+        marginBottom: 24,
+        paddingBottom: 16,
+        borderBottom: '1.5px solid #E5E7EB',
       }}
     >
-      <div
-        style={{
+      <div>
+        <span style={{
           fontFamily: 'IBM Plex Mono, monospace',
-          fontSize: 28,
+          fontSize: 22,
           fontWeight: 700,
-          color: styles.text,
-          letterSpacing: '-0.02em',
-          lineHeight: 1,
-        }}
-      >
-        {verdict}
-      </div>
-      <div style={{ flex: 1, minWidth: 140 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-          <span style={{ fontSize: 12, color: styles.text, fontFamily: 'IBM Plex Mono, monospace' }}>
-            {ticker} — Committee Consensus
-          </span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: styles.text, fontFamily: 'IBM Plex Mono, monospace' }}>
-            {pct}%
-          </span>
-        </div>
-        <div style={{ height: 6, background: `${styles.border}30`, borderRadius: 3, overflow: 'hidden' }}>
-          <div
-            style={{
-              height: '100%',
-              width: `${pct}%`,
-              background: styles.border,
-              borderRadius: 3,
-              transition: 'width 0.8s ease',
-            }}
-          />
-        </div>
+          color: '#1A1A1A',
+          letterSpacing: '-0.01em',
+        }}>
+          {ticker}
+        </span>
+        <span style={{
+          fontFamily: 'Inter, sans-serif',
+          fontSize: 13,
+          color: '#6B7280',
+          marginLeft: 12,
+        }}>
+          Investment Memo
+        </span>
       </div>
       <button
         onClick={onToggleReasoning}
         style={{
           fontSize: 12,
-          color: styles.text,
+          color: '#6B7280',
           background: 'none',
-          border: `1px solid ${styles.border}60`,
+          border: '1px solid #E5E7EB',
           borderRadius: 6,
           padding: '4px 10px',
           cursor: 'pointer',
@@ -287,6 +242,14 @@ function Unavailable() {
 export default function InvestmentMemoPage() {
   const [pageState, setPageState] = useState<PageState>('idle');
   const [ticker, setTicker] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<TickerSuggestion[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const [queryMode, setQueryMode] = useState('full_ic');
   const [agents, setAgents] = useState<AgentCard[]>(INITIAL_AGENTS);
   const [statusLine, setStatusLine] = useState('');
@@ -294,6 +257,8 @@ export default function InvestmentMemoPage() {
   const [showReasoning, setShowReasoning] = useState(false);
   const [checklist, setChecklist] = useState<Record<number, string>>({});
   const [copied, setCopied] = useState(false);
+  const [shareSlug, setShareSlug] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeTicker = useRef('');
   const cancelRef = useRef<(() => void) | null>(null);
@@ -350,10 +315,85 @@ export default function InvestmentMemoPage() {
     }
   };
 
-  const handleSubmit = () => {
-    const t = ticker.trim().toUpperCase();
-    if (!t || pageState === 'analyzing') return;
-    activeTicker.current = t;
+  // ── Search / autocomplete logic ───────────────────────────────────────────
+
+  const fetchSuggestions = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setSuggestions([]);
+      setShowDropdown(false);
+      return;
+    }
+    setLoadingSuggestions(true);
+    try {
+      const res = await fetch(`/api/ticker/search?q=${encodeURIComponent(q)}`);
+      if (res.ok) {
+        const data: TickerSuggestion[] = await res.json();
+        setSuggestions(data);
+        setShowDropdown(data.length > 0);
+        setActiveSuggestion(-1);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }, []);
+
+  const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setSearchQuery(val);
+    setTicker(val.toUpperCase());
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => fetchSuggestions(val), 220);
+  };
+
+  const selectSuggestion = (s: TickerSuggestion) => {
+    setTicker(s.symbol);
+    setSearchQuery(s.symbol);
+    setSuggestions([]);
+    setShowDropdown(false);
+    setActiveSuggestion(-1);
+  };
+
+  const handleSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveSuggestion(prev => Math.min(prev + 1, suggestions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveSuggestion(prev => Math.max(prev - 1, -1));
+    } else if (e.key === 'Enter') {
+      if (activeSuggestion >= 0 && suggestions[activeSuggestion]) {
+        selectSuggestion(suggestions[activeSuggestion]);
+      } else {
+        setShowDropdown(false);
+        handleSubmitWithTicker(ticker);
+      }
+    } else if (e.key === 'Escape') {
+      setShowDropdown(false);
+    }
+  };
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        searchInputRef.current &&
+        !searchInputRef.current.contains(e.target as Node)
+      ) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSubmitWithTicker = (t: string) => {
+    const sym = t.trim().toUpperCase();
+    if (!sym || pageState === 'analyzing') return;
+    activeTicker.current = sym;
     setError(null);
     setResult(null);
     setShowReasoning(false);
@@ -362,11 +402,16 @@ export default function InvestmentMemoPage() {
     setStatusLine('Initializing debate...');
     setPageState('analyzing');
 
-    const { cancel } = streamMemo(t, queryMode, handleEvent, (err) => {
+    const { cancel } = streamMemo(sym, queryMode, handleEvent, (err) => {
       if (err !== null) setError(err);
       setPageState('idle');
     });
     cancelRef.current = cancel;
+  };
+
+  const handleSubmit = () => {
+    setShowDropdown(false);
+    handleSubmitWithTicker(ticker);
   };
 
   const handleCancel = useCallback(() => {
@@ -380,42 +425,34 @@ export default function InvestmentMemoPage() {
     setPageState('idle');
   }, []);
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') handleSubmit();
-  };
-
-  const handleSave = () => {
-    if (!result) return;
-    const memo = result.structured_memo;
-    const text = [
-      `INVESTMENT MEMO — ${activeTicker.current}`,
-      `Verdict: ${result.verdict} (${Math.round(result.confidence * 100)}% consensus)`,
-      '',
-      'THESIS',
-      memo.thesis || 'N/A',
-      '',
-      'BEAR CASE',
-      memo.bear_case || 'N/A',
-      '',
-      'KEY RISKS',
-      ...(memo.key_risks || ['N/A']).map((r, i) => `${i + 1}. ${r}`),
-      '',
-      'VALUATION RANGE',
-      memo.valuation_range
-        ? `Bear: ${memo.valuation_range.bear}  Base: ${memo.valuation_range.base}  Bull: ${memo.valuation_range.bull}`
-        : 'N/A',
-      '',
-      'WHAT WOULD MAKE THIS WRONG',
-      memo.what_would_make_this_wrong || 'N/A',
-      '',
-      'DECISION CHECKLIST',
-      ...CHECKLIST_ITEMS.map((q, i) => `${q}\n→ ${checklist[i] || '(not answered)'}`),
-    ].join('\n');
-
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => setError('Could not copy to clipboard — select the text manually'));
+const handleSave = async () => {
+    if (!result || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const { share_slug } = await saveMemo({
+        ticker: activeTicker.current,
+        verdict: result.verdict,
+        confidence: result.confidence,
+        structured_memo: result.structured_memo as unknown as Record<string, unknown>,
+        checklist_answers: {
+          why_now: checklist[0] || '',
+          exit_condition: checklist[1] || '',
+          max_position_size: checklist[2] || '',
+          quarterly_check_metric: checklist[3] || '',
+        },
+      });
+      setShareSlug(share_slug);
+      const shareUrl = `${window.location.origin}/m/${share_slug}`;
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }).catch(() => {});
+    } catch {
+      setError('Could not save memo — please try again');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const allChecked = CHECKLIST_ITEMS.every((_, i) => (checklist[i] || '').trim().length > 0);
@@ -462,29 +499,94 @@ export default function InvestmentMemoPage() {
             alignItems: 'center',
           }}
         >
-          <input
-            type="text"
-            value={ticker}
-            onChange={e => setTicker(e.target.value.toUpperCase())}
-            onKeyDown={handleKeyDown}
-            placeholder="AAPL"
-            disabled={pageState === 'analyzing'}
-            maxLength={5}
-            style={{
-              width: 120,
-              padding: '10px 14px',
-              border: '1.5px solid #D1D5DB',
-              borderRadius: 8,
-              fontFamily: 'IBM Plex Mono, monospace',
-              fontSize: 16,
-              fontWeight: 700,
-              color: '#1A1A1A',
-              background: pageState === 'analyzing' ? '#F9FAFB' : '#FFFFFF',
-              outline: 'none',
-              textTransform: 'uppercase',
-              letterSpacing: '0.04em',
-            }}
-          />
+          {/* Ticker search combobox */}
+          <div style={{ position: 'relative' }}>
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={handleSearchChange}
+              onKeyDown={handleSearchKeyDown}
+              onFocus={() => { if (suggestions.length > 0) setShowDropdown(true); }}
+              placeholder="Search ticker or company…"
+              disabled={pageState === 'analyzing'}
+              style={{
+                width: 240,
+                padding: '10px 14px',
+                border: '1.5px solid #D1D5DB',
+                borderRadius: 8,
+                fontFamily: 'Inter, sans-serif',
+                fontSize: 14,
+                color: '#1A1A1A',
+                background: pageState === 'analyzing' ? '#F9FAFB' : '#FFFFFF',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+            {loadingSuggestions && (
+              <span style={{
+                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                fontSize: 12, color: '#9CA3AF',
+              }}>…</span>
+            )}
+            {showDropdown && suggestions.length > 0 && (
+              <div
+                ref={dropdownRef}
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 4px)',
+                  left: 0,
+                  width: 320,
+                  background: '#FFFFFF',
+                  border: '1.5px solid #E5E7EB',
+                  borderRadius: 10,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+                  zIndex: 100,
+                  overflow: 'hidden',
+                }}
+              >
+                {suggestions.map((s, i) => (
+                  <div
+                    key={s.symbol}
+                    onMouseDown={() => selectSuggestion(s)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '10px 14px',
+                      cursor: 'pointer',
+                      background: i === activeSuggestion ? '#F3F4F6' : '#FFFFFF',
+                      borderBottom: i < suggestions.length - 1 ? '1px solid #F3F4F6' : 'none',
+                    }}
+                    onMouseEnter={() => setActiveSuggestion(i)}
+                  >
+                    <span style={{
+                      fontFamily: 'IBM Plex Mono, monospace',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      color: '#1A1A1A',
+                      minWidth: 54,
+                    }}>{s.symbol}</span>
+                    <span style={{
+                      fontFamily: 'Inter, sans-serif',
+                      fontSize: 13,
+                      color: '#6B7280',
+                      flex: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>{s.name}</span>
+                    <span style={{
+                      fontFamily: 'Inter, sans-serif',
+                      fontSize: 11,
+                      color: '#9CA3AF',
+                      flexShrink: 0,
+                    }}>{s.exchange}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           <select
             value={queryMode}
@@ -636,9 +738,7 @@ export default function InvestmentMemoPage() {
           const memo = result.structured_memo;
           return (
             <div>
-              <VerdictBanner
-                verdict={result.verdict}
-                confidence={result.confidence}
+              <MemoHeader
                 ticker={activeTicker.current}
                 onToggleReasoning={() => setShowReasoning(v => !v)}
                 showReasoning={showReasoning}
@@ -825,25 +925,54 @@ export default function InvestmentMemoPage() {
               {/* Save button */}
               <button
                 onClick={handleSave}
-                disabled={!allChecked}
+                disabled={!allChecked || saving}
                 style={{
                   width: '100%',
                   padding: '12px 24px',
-                  background: allChecked ? '#1A1A1A' : '#E5E7EB',
-                  color: allChecked ? '#FFFFFF' : '#9CA3AF',
+                  background: allChecked && !saving ? '#1A1A1A' : '#E5E7EB',
+                  color: allChecked && !saving ? '#FFFFFF' : '#9CA3AF',
                   border: 'none',
                   borderRadius: 8,
                   fontFamily: 'IBM Plex Mono, monospace',
                   fontSize: 13,
                   fontWeight: 700,
-                  cursor: allChecked ? 'pointer' : 'not-allowed',
+                  cursor: allChecked && !saving ? 'pointer' : 'not-allowed',
                   letterSpacing: '0.02em',
-                  marginBottom: 32,
+                  marginBottom: shareSlug ? 12 : 32,
                   transition: 'background 0.15s',
                 }}
               >
-                {copied ? 'Copied to clipboard' : 'Save Decision (copy to clipboard)'}
+                {saving ? 'Saving…' : shareSlug ? (copied ? 'Link copied!' : 'Saved') : 'Save Decision'}
               </button>
+
+              {/* Share URL */}
+              {shareSlug && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 14px',
+                  background: '#F9FAFB',
+                  border: '1px solid #E5E7EB',
+                  borderRadius: 6,
+                  marginBottom: 32,
+                }}>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, color: '#6B7280', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {window.location.origin}/m/{shareSlug}
+                  </span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(`${window.location.origin}/m/${shareSlug}`).then(() => {
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      }).catch(() => {});
+                    }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280', fontSize: 12, fontFamily: 'IBM Plex Mono, monospace', whiteSpace: 'nowrap' }}
+                  >
+                    {copied ? 'Copied!' : 'Copy link'}
+                  </button>
+                </div>
+              )}
 
               {/* Collapsible reasoning panel */}
               {showReasoning && (

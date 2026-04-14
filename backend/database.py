@@ -125,6 +125,64 @@ async def init_db() -> None:
             pass  # Index already exists
         except Exception as e:
             logger.error(f"Unexpected error creating project_documents index: {e}")
+        # Idempotent migration: scheduled_agents + agent_runs tables
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS scheduled_agents (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                template TEXT NOT NULL,
+                tickers TEXT NOT NULL DEFAULT '[]',
+                topics TEXT NOT NULL DEFAULT '[]',
+                instruction TEXT NOT NULL DEFAULT '',
+                schedule_label TEXT NOT NULL DEFAULT 'weekly_monday',
+                delivery_email TEXT,
+                delivery_inapp INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                last_run_at DATETIME,
+                next_run_at DATETIME,
+                last_run_status TEXT,
+                last_run_summary TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduled_agents_is_active ON scheduled_agents (is_active)"))
+        except OperationalError:
+            pass
+        except Exception as e:
+            logger.error(f"Unexpected error creating ix_scheduled_agents_is_active index: {e}")
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                scheduled_agent_id TEXT NOT NULL REFERENCES scheduled_agents(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'running',
+                report TEXT NOT NULL DEFAULT '',
+                findings_summary TEXT NOT NULL DEFAULT '',
+                material_change INTEGER NOT NULL DEFAULT 0,
+                alert_level TEXT NOT NULL DEFAULT 'none',
+                tickers_analyzed TEXT NOT NULL DEFAULT '[]',
+                agents_used TEXT NOT NULL DEFAULT '[]',
+                started_at DATETIME NOT NULL,
+                completed_at DATETIME,
+                error TEXT
+            )
+        """))
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_runs_scheduled_agent_id ON agent_runs (scheduled_agent_id)"))
+        except OperationalError:
+            pass
+        except Exception as e:
+            logger.error(f"Unexpected error creating ix_agent_runs_scheduled_agent_id index: {e}")
+        # Idempotent migration: add key_findings column to agent_runs
+        try:
+            await conn.execute(text("ALTER TABLE agent_runs ADD COLUMN key_findings TEXT NOT NULL DEFAULT '[]'"))
+        except OperationalError as e:
+            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                pass
+            else:
+                logger.error(f"Unexpected OperationalError adding key_findings column: {e}")
 
 
 async def get_db() -> AsyncSession:

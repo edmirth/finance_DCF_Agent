@@ -9,6 +9,10 @@ import MemoSharePage from './pages/MemoSharePage';
 import LibraryPage from './pages/LibraryPage';
 import ProjectsListPage from './pages/ProjectsListPage';
 import ProjectWorkspace from './pages/ProjectWorkspace';
+import AgentsDashboard from './pages/AgentsDashboard';
+import AgentSetupPage from './pages/AgentSetupPage';
+import AgentDetailPage from './pages/AgentDetailPage';
+import InboxPage from './pages/InboxPage';
 
 function App() {
   return (
@@ -19,15 +23,21 @@ function App() {
       {/* Main Content Area */}
       <div>
         <Routes>
-          <Route path="/" element={<ChatPage />} />
+          <Route path="/" element={<InvestmentMemoPage />} />
           <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/earnings" element={<EarningsPage />} />
           <Route path="/arena" element={<ArenaPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          {/* /memo kept as alias so existing links don't break */}
           <Route path="/memo" element={<InvestmentMemoPage />} />
           <Route path="/m/:slug" element={<MemoSharePage />} />
           <Route path="/library" element={<LibraryPage />} />
           <Route path="/projects" element={<ProjectsListPage />} />
           <Route path="/projects/:projectId" element={<ProjectWorkspace />} />
+          <Route path="/scheduled-agents" element={<AgentsDashboard />} />
+          <Route path="/scheduled-agents/new" element={<AgentSetupPage />} />
+          <Route path="/scheduled-agents/:agentId" element={<AgentDetailPage />} />
+          <Route path="/inbox" element={<InboxPage />} />
         </Routes>
       </div>
     </div>

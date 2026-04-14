@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Home, Sparkles, ChevronLeft, ChevronRight, BookOpen, MessageSquare, Trash2, Folder, FileText } from 'lucide-react';
+import { Sparkles, ChevronLeft, ChevronRight, BookOpen, MessageSquare, Trash2, Folder, FileText, Bot, Inbox } from 'lucide-react';
 import { getSessions, deleteSession, getProjects } from '../api';
 import { SessionSummary, ProjectSummary } from '../types';
 
@@ -204,7 +204,6 @@ function Sidebar() {
           <NavLink
             to="/"
             end
-            onClick={() => window.dispatchEvent(new CustomEvent('newChat'))}
             className={({ isActive }) =>
               `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
                 isActive
@@ -212,23 +211,22 @@ function Sidebar() {
                   : 'text-slate-700 hover:bg-slate-50'
               } ${isCollapsed ? 'justify-center' : ''}`
             }
-            title={isCollapsed ? 'Home' : ''}
+            title={isCollapsed ? 'Investment Memo' : ''}
           >
             {({ isActive }) => (
               <>
                 <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <Home className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
+                  <FileText className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
                 </div>
                 {!isCollapsed && (
                   <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Home</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">AI-powered analysis</p>
+                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Investment Memo</span>
+                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">IC investment memo</p>
                   </div>
                 )}
               </>
             )}
           </NavLink>
-
 
           <NavLink
             to="/library"
@@ -257,32 +255,6 @@ function Sidebar() {
           </NavLink>
 
           <NavLink
-            to="/memo"
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Investment Memo' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <FileText className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Memo</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">IC investment memo</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
-
-          <NavLink
             to="/projects"
             className={({ isActive }) =>
               `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
@@ -302,6 +274,58 @@ function Sidebar() {
                   <div className="flex-1 overflow-hidden">
                     <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Projects</span>
                     <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Thesis workspaces</p>
+                  </div>
+                )}
+              </>
+            )}
+          </NavLink>
+
+          <NavLink
+            to="/scheduled-agents"
+            className={({ isActive }) =>
+              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
+                isActive
+                  ? 'text-slate-900'
+                  : 'text-slate-700 hover:bg-slate-50'
+              } ${isCollapsed ? 'justify-center' : ''}`
+            }
+            title={isCollapsed ? 'Agents' : ''}
+          >
+            {({ isActive }) => (
+              <>
+                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
+                  <Bot className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
+                </div>
+                {!isCollapsed && (
+                  <div className="flex-1 overflow-hidden">
+                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Agents</span>
+                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Agents &amp; CIO</p>
+                  </div>
+                )}
+              </>
+            )}
+          </NavLink>
+
+          <NavLink
+            to="/inbox"
+            className={({ isActive }) =>
+              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
+                isActive
+                  ? 'text-slate-900'
+                  : 'text-slate-700 hover:bg-slate-50'
+              } ${isCollapsed ? 'justify-center' : ''}`
+            }
+            title={isCollapsed ? 'Inbox' : ''}
+          >
+            {({ isActive }) => (
+              <>
+                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
+                  <Inbox className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
+                </div>
+                {!isCollapsed && (
+                  <div className="flex-1 overflow-hidden">
+                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Inbox</span>
+                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Agent reports</p>
                   </div>
                 )}
               </>

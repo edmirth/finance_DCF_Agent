@@ -1007,7 +1007,6 @@ _URL_API_MAP = [
     ("data.sec.gov",                 "SEC EDGAR"),
     ("www.sec.gov",                  "SEC EDGAR"),
     ("api.tavily.com",               "Tavily Search"),
-    ("api.perplexity.ai",            "Perplexity"),
     ("api.openai.com",               "OpenAI"),
     ("api.anthropic.com",            "Anthropic LLM"),
     ("api.fred.stlouisfed.org",      "FRED"),

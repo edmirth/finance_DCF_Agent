@@ -13,3 +13,5 @@ sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.19
 # Rate limiting
 slowapi>=0.1.9
+# Scheduling
+apscheduler>=3.10.0

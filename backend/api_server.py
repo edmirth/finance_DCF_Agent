@@ -67,7 +67,16 @@ async def lifespan(app: FastAPI):
         logger.info("ProjectChromaClient initialised")
     except Exception as _e:
         logger.warning(f"ProjectChromaClient pre-load failed (non-fatal): {_e}")
-    yield  # Application runs here
+    # Start heartbeat scheduler
+    try:
+        from backend.scheduler import start_scheduler, stop_scheduler
+        await start_scheduler()
+        logger.info("Heartbeat scheduler started")
+        yield
+        await stop_scheduler()
+    except Exception as _e:
+        logger.warning(f"Scheduler startup failed (non-fatal): {_e}")
+        yield
 
 
 # Rate limiting — in-memory, single-worker only (Phase 1).
@@ -107,6 +116,15 @@ def _check_memo_rate_limits(client_ip: str) -> None:
 
 # Initialize FastAPI app
 app = FastAPI(title="Financial Analysis API", version="1.0.0", lifespan=lifespan)
+
+# Register scheduled agents router
+from backend.scheduled_agents_router import router as scheduled_agents_router
+app.include_router(scheduled_agents_router)
+
+# Register CIO router
+from backend.cio_router import router as cio_router
+app.include_router(cio_router)
+
 
 
 # Configure CORS
@@ -971,7 +989,13 @@ async def memo_stream(request: Request, memo_request: MemoRequest):
                 headers={"X-API-KEY": fd_key},
                 timeout=10,
             )
-            if fd_resp.status_code != 200 or not fd_resp.json().get("financials"):
+            resp_json = fd_resp.json()
+            if fd_resp.status_code == 402 or "credits" in resp_json.get("message", "").lower() or "credits" in resp_json.get("error", "").lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail="Financial data service is temporarily unavailable. Please try again later.",
+                )
+            if fd_resp.status_code != 200 or not resp_json.get("financials"):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unable to find financial data for {ticker}. Please verify the symbol.",
@@ -1102,6 +1126,37 @@ async def memo_save(payload: MemoSaveRequest, db: AsyncSession = Depends(get_db)
     await db.commit()
     await db.refresh(analysis)
     return {"id": analysis.id, "share_slug": slug}
+
+
+@app.get("/ticker/search")
+async def ticker_search(q: str = ""):
+    """Proxy Yahoo Finance autocomplete — returns matching tickers for a name or symbol."""
+    q = q.strip()
+    if not q or len(q) < 1:
+        return []
+    try:
+        resp = requests.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": q, "quotesCount": 7, "newsCount": 0, "enableFuzzyQuery": True},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        data = resp.json()
+        quotes = data.get("quotes", [])
+        results = []
+        for item in quotes:
+            if item.get("quoteType") not in ("EQUITY", "ETF"):
+                continue
+            results.append({
+                "symbol": item.get("symbol", ""),
+                "name": item.get("longname") or item.get("shortname", ""),
+                "exchange": item.get("exchDisp", ""),
+                "type": item.get("quoteType", ""),
+            })
+        return results[:7]
+    except Exception as e:
+        logger.warning(f"Ticker search failed: {e}")
+        return []
 
 
 @app.get("/api/m/{slug}")

@@ -426,4 +426,135 @@ export const getProjectSessions = async (id: string): Promise<SessionSummary[]> 
   return response.data;
 };
 
+// ============================================================
+// Scheduled Agents
+// ============================================================
+
+export interface ScheduledAgentPayload {
+  name: string;
+  description?: string;
+  template: string;
+  tickers: string[];
+  topics: string[];
+  instruction: string;
+  schedule_label: string;
+  delivery_email?: string;
+  delivery_inapp: boolean;
+}
+
+export const getScheduledAgents = async () => {
+  const response = await api.get('/scheduled-agents');
+  return response.data.agents as import('./types').ScheduledAgent[];
+};
+
+export const createScheduledAgent = async (payload: ScheduledAgentPayload) => {
+  const response = await api.post('/scheduled-agents', payload);
+  return response.data as import('./types').ScheduledAgent;
+};
+
+export const getScheduledAgent = async (id: string) => {
+  const response = await api.get(`/scheduled-agents/${id}`);
+  return response.data as import('./types').ScheduledAgent;
+};
+
+export const updateScheduledAgent = async (id: string, patch: Partial<ScheduledAgentPayload & { is_active: boolean }>) => {
+  const response = await api.patch(`/scheduled-agents/${id}`, patch);
+  return response.data as import('./types').ScheduledAgent;
+};
+
+export const deleteScheduledAgent = async (id: string): Promise<void> => {
+  await api.delete(`/scheduled-agents/${id}`);
+};
+
+export const triggerAgentRun = async (id: string): Promise<{ run_id: string; status: string }> => {
+  const response = await api.post(`/scheduled-agents/${id}/run`);
+  return response.data;
+};
+
+export const getAgentRuns = async (agentId: string, limit = 20) => {
+  const response = await api.get(`/scheduled-agents/${agentId}/runs`, { params: { limit } });
+  return response.data.runs as import('./types').AgentRun[];
+};
+
+export const getAgentRun = async (runId: string) => {
+  const response = await api.get(`/agent-runs/${runId}`);
+  return response.data as import('./types').AgentRun;
+};
+
+export const getInbox = async (limit = 30, alertLevel?: string) => {
+  const response = await api.get('/inbox', { params: { limit, alert_level: alertLevel } });
+  return response.data.items as (import('./types').AgentRun & { agent_name: string })[];
+};
+
+// ============================================================
+// CIO (Chief Investment Officer) — persistent orchestrator
+// ============================================================
+
+export interface CioMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface CioAction {
+  type: 'delegate' | 'propose_hire';
+  // delegate fields
+  agent_id?: string;
+  agent_name?: string;
+  reason?: string;
+  // propose_hire fields
+  name?: string;
+  description?: string;
+  template?: string;
+  tickers?: string[];
+  topics?: string[];
+  instruction?: string;
+  schedule_label?: string;
+}
+
+export interface CioChatResponse {
+  message: string;
+  action?: CioAction | null;
+}
+
+export const cioChat = async (messages: CioMessage[]): Promise<CioChatResponse> => {
+  const response = await api.post('/cio/chat', { messages });
+  return response.data;
+};
+
+export const cioDelegate = async (agentId: string): Promise<{ run_id: string; status: string; agent_name: string }> => {
+  const response = await api.post(`/cio/delegate/${agentId}`);
+  return response.data;
+};
+
+export const cioHire = async (
+  action: CioAction,
+  deliveryInapp = true,
+  deliveryEmail?: string
+): Promise<{ id: string; name: string; template: string; tickers: string[]; schedule_label: string; created_at: string }> => {
+  const response = await api.post('/cio/hire', {
+    action,
+    delivery_inapp: deliveryInapp,
+    delivery_email: deliveryEmail,
+  });
+  return response.data;
+};
+
+export interface MemoSavePayload {
+  ticker: string;
+  verdict: string;
+  confidence: number;
+  structured_memo: Record<string, unknown>;
+  checklist_answers: {
+    why_now: string;
+    exit_condition: string;
+    max_position_size: string;
+    quarterly_check_metric: string;
+  };
+}
+
+export const saveMemo = async (payload: MemoSavePayload): Promise<{ id: number; share_slug: string }> => {
+  const response = await api.post('/api/memo/save', payload);
+  return response.data;
+};
+
 export default api;
