@@ -691,7 +691,7 @@ const handleSave = async () => {
 
         {/* Ghost memo — idle empty state */}
         {pageState === 'idle' && !result && (
-          <div style={{ opacity: 0.22, pointerEvents: 'none', userSelect: 'none', marginTop: 8 }}>
+          <div aria-hidden="true" style={{ opacity: 0.22, pointerEvents: 'none', userSelect: 'none', marginTop: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
               <span className="verdict-badge buy">BUY</span>
               <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, color: '#9CA3AF', letterSpacing: '0.04em' }}>
