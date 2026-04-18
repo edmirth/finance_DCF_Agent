@@ -1,8 +1,19 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Sparkles, ChevronLeft, ChevronRight, BookOpen, MessageSquare, Trash2, Folder, FileText, Bot, Inbox } from 'lucide-react';
+import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Users } from 'lucide-react';
 import { getSessions, deleteSession, getProjects } from '../api';
 import { SessionSummary, ProjectSummary } from '../types';
+
+const AGENT_TYPE_COLORS: Record<string, string> = {
+  analyst: '#8B5CF6',
+  earnings: '#F59E0B',
+  graph: '#10B981',
+  research: '#10B981',
+  market: '#F97316',
+  portfolio: '#6366F1',
+  arena: '#10B981',
+  auto: '#10B981',
+};
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
   analyst: 'Analyst',
@@ -15,17 +26,6 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   auto: 'Auto',
 };
 
-const AGENT_TYPE_COLORS: Record<string, string> = {
-  analyst: '#8B5CF6',
-  earnings: '#F59E0B',
-  graph: '#10B981',
-  research: '#10B981',
-  market: '#F97316',
-  portfolio: '#6366F1',
-  arena: '#10B981',
-  auto: '#6B7280',
-};
-
 function SessionRow({
   session,
   onDelete,
@@ -35,27 +35,32 @@ function SessionRow({
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
 }) {
-  const color = AGENT_TYPE_COLORS[session.agent_type] || '#6B7280';
+  const color = AGENT_TYPE_COLORS[session.agent_type] || '#9CA3AF';
   const label = AGENT_TYPE_LABELS[session.agent_type] || session.agent_type;
   const dateStr = new Date(session.last_active_at).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
   });
 
-  const handleDelete = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onDelete(session.id);
-  };
-
   return (
     <div
       onClick={() => onSelect(session.id)}
-      className="group flex items-start gap-2 px-3 py-2 rounded-xl hover:bg-slate-50 cursor-pointer transition-all duration-150"
+      className="group flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer transition-colors duration-100 hover:bg-[#F7F7F5]"
     >
-      <MessageSquare className="w-3.5 h-3.5 text-slate-400 mt-0.5 flex-shrink-0" />
+      {/* Colored dot indicator */}
+      <div
+        className="flex-shrink-0 mt-[5px]"
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: color,
+          opacity: 0.7,
+        }}
+      />
       <div className="flex-1 min-w-0">
         <p
-          className="text-xs font-medium text-slate-700 truncate leading-tight"
+          className="text-[13px] font-medium text-slate-700 truncate leading-snug"
           title={session.title}
           style={{ letterSpacing: '-0.01em' }}
         >
@@ -65,24 +70,21 @@ function SessionRow({
           <span
             style={{
               fontSize: '0.625rem',
-              fontWeight: 600,
+              fontWeight: 500,
               color,
-              background: `${color}14`,
-              padding: '1px 5px',
-              borderRadius: '4px',
-              letterSpacing: '0.02em',
+              letterSpacing: '0.01em',
+              fontFamily: 'IBM Plex Mono, monospace',
             }}
           >
             {label}
           </span>
-          <span className="text-slate-400" style={{ fontSize: '0.625rem' }}>
-            {dateStr}
-          </span>
+          <span className="text-slate-300">·</span>
+          <span className="text-[10px] text-slate-400">{dateStr}</span>
         </div>
       </div>
       <button
-        onClick={handleDelete}
-        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-all duration-150 flex-shrink-0"
+        onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
+        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-50 text-slate-300 hover:text-red-400 transition-all duration-100 flex-shrink-0 mt-0.5"
       >
         <Trash2 className="w-3 h-3" />
       </button>
@@ -97,12 +99,12 @@ function Sidebar() {
     return stored === 'true';
   });
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_projects, setProjects] = useState<ProjectSummary[]>([]);
 
   useEffect(() => {
     loadSessions();
     loadProjects();
-    // Refresh sessions and projects every 30 seconds
     const interval = setInterval(() => {
       loadSessions();
       loadProjects();
@@ -110,7 +112,6 @@ function Sidebar() {
     return () => clearInterval(interval);
   }, []);
 
-  // Listen for a custom event so Chat can trigger a refresh after saving
   useEffect(() => {
     const handler = () => loadSessions();
     window.addEventListener('sessionSaved', handler);
@@ -121,27 +122,21 @@ function Sidebar() {
     try {
       const data = await getSessions(10);
       setSessions(data);
-    } catch {
-      // ignore — backend might not be up yet
-    }
+    } catch { /* ignore */ }
   };
 
   const loadProjects = async () => {
     try {
       const data = await getProjects();
-      setProjects(data.filter(p => p.status === 'active').slice(0, 5));
-    } catch {
-      // ignore — backend might not be up yet
-    }
+      setProjects(data.filter((p: { status: string }) => p.status === 'active').slice(0, 5));
+    } catch { /* ignore */ }
   };
 
   const handleDeleteSession = async (id: string) => {
     try {
       await deleteSession(id);
       setSessions(prev => prev.filter(s => s.id !== id));
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   };
 
   const handleSelectSession = (id: string) => {
@@ -152,237 +147,159 @@ function Sidebar() {
     const newState = !isCollapsed;
     setIsCollapsed(newState);
     localStorage.setItem('sidebarCollapsed', String(newState));
-
-    // Emit custom event for App component
-    const event = new CustomEvent('sidebarToggle', {
-      detail: { isCollapsed: newState }
-    });
-    window.dispatchEvent(event);
+    window.dispatchEvent(new CustomEvent('sidebarToggle', { detail: { isCollapsed: newState } }));
   };
 
   return (
-    <div className={`fixed left-0 top-0 h-screen glass-effect border-r border-slate-200/80 flex flex-col shadow-2xl transition-all duration-300 ease-in-out z-40 ${isCollapsed ? 'w-20' : 'w-80'}`}>
-      {/* Logo/Header */}
-      <div className="p-6 border-b border-slate-200/60 relative">
-        <div className={`flex items-center gap-3.5 ${isCollapsed ? 'justify-center' : ''}`}>
-          <div className="relative w-12 h-12 flex-shrink-0">
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl transform rotate-3 opacity-20"></div>
-            <div className="relative w-full h-full bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-lg shadow-slate-900/30">
-              <span className="text-2xl font-bold text-white" style={{ letterSpacing: '-0.02em' }}>P</span>
-            </div>
+    <div
+      className={`fixed left-0 top-0 h-screen flex flex-col z-40 transition-all duration-300 ease-in-out ${isCollapsed ? 'w-[60px]' : 'w-[240px]'}`}
+      style={{
+        background: '#FFFFFF',
+        borderRight: '1px solid #EBEBEB',
+      }}
+    >
+      {/* Header / Logo */}
+      <div
+        className="flex items-center relative flex-shrink-0"
+        style={{
+          height: 60,
+          padding: isCollapsed ? '0 0 0 16px' : '0 0 0 20px',
+          borderBottom: '1px solid #F3F3F3',
+        }}
+      >
+        <div className={`flex items-center gap-3 ${isCollapsed ? '' : ''}`}>
+          {/* Monogram mark */}
+          <div
+            className="flex-shrink-0 flex items-center justify-center"
+            style={{
+              width: 28,
+              height: 28,
+              background: '#0F172A',
+              borderRadius: 7,
+            }}
+          >
+            <span
+              style={{
+                fontFamily: 'IBM Plex Mono, monospace',
+                fontSize: 13,
+                fontWeight: 700,
+                color: '#FFFFFF',
+                letterSpacing: '-0.02em',
+              }}
+            >
+              P
+            </span>
           </div>
+
           {!isCollapsed && (
-            <div className="overflow-hidden">
-              <h1 className="text-xl font-semibold text-slate-900 whitespace-nowrap" style={{ letterSpacing: '-0.02em' }}>Phronesis AI</h1>
-              <p className="text-xs text-slate-500 font-medium whitespace-nowrap mt-0.5">Financial Intelligence</p>
+            <div>
+              <span
+                style={{
+                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: '#0F172A',
+                  letterSpacing: '-0.02em',
+                  display: 'block',
+                }}
+              >
+                Phronesis
+              </span>
+              <span
+                style={{
+                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  fontSize: 10,
+                  fontWeight: 400,
+                  color: '#9CA3AF',
+                  letterSpacing: '0.02em',
+                  display: 'block',
+                  marginTop: 1,
+                }}
+              >
+                Financial Intelligence
+              </span>
             </div>
           )}
         </div>
 
-        {/* Toggle Button */}
+        {/* Collapse toggle */}
         <button
           onClick={toggleSidebar}
-          className="absolute -right-3 top-8 w-7 h-7 glass-effect border border-slate-200 rounded-full flex items-center justify-center hover:bg-slate-50 hover:shadow-md transition-all duration-200 shadow-sm z-10"
+          className="absolute -right-3 top-1/2 -translate-y-1/2 flex items-center justify-center transition-colors duration-150 hover:bg-slate-50"
+          style={{
+            width: 22,
+            height: 22,
+            background: '#FFFFFF',
+            border: '1px solid #E5E7EB',
+            borderRadius: '50%',
+            color: '#9CA3AF',
+            zIndex: 10,
+          }}
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
-          {isCollapsed ? (
-            <ChevronRight className="w-4 h-4 text-slate-600" />
-          ) : (
-            <ChevronLeft className="w-4 h-4 text-slate-600" />
-          )}
+          {isCollapsed
+            ? <ChevronRight className="w-3 h-3" />
+            : <ChevronLeft className="w-3 h-3" />}
         </button>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-5 overflow-y-auto overflow-x-hidden">
-        <div className="space-y-2">
-          {!isCollapsed && (
-            <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4" style={{ letterSpacing: '0.05em' }}>
-              Tools
-            </p>
-          )}
-          <NavLink
+      <nav
+        className="flex-1 overflow-y-auto overflow-x-hidden"
+        style={{ padding: isCollapsed ? '12px 8px' : '12px 10px' }}
+      >
+        {/* Primary nav links */}
+        <div style={{ marginBottom: 4 }}>
+          <NavItem
             to="/"
             end
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Investment Memo' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <FileText className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Investment Memo</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">IC investment memo</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
-
-          <NavLink
+            icon={<FileText className="w-4 h-4" />}
+            label="Investment Memo"
+            sub="IC memo · 5 analysts"
+            isCollapsed={isCollapsed}
+          />
+          <NavItem
+            to="/earnings"
+            icon={<BarChart2 className="w-4 h-4" />}
+            label="Earnings"
+            sub="Quarterly trends & transcript"
+            isCollapsed={isCollapsed}
+          />
+          <NavItem
+            to="/arena"
+            icon={<Users className="w-4 h-4" />}
+            label="Arena"
+            sub="Multi-agent debate mode"
+            isCollapsed={isCollapsed}
+          />
+          <NavItem
             to="/library"
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Library' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <BookOpen className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Library</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Saved analyses</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
-
-          <NavLink
-            to="/projects"
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Projects' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <Folder className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Projects</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Thesis workspaces</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
-
-          <NavLink
-            to="/scheduled-agents"
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Agents' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <Bot className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Agents</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Agents &amp; CIO</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
-
-          <NavLink
-            to="/inbox"
-            className={({ isActive }) =>
-              `group flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all duration-300 cursor-pointer ${
-                isActive
-                  ? 'text-slate-900'
-                  : 'text-slate-700 hover:bg-slate-50'
-              } ${isCollapsed ? 'justify-center' : ''}`
-            }
-            title={isCollapsed ? 'Inbox' : ''}
-          >
-            {({ isActive }) => (
-              <>
-                <div className={`p-2 rounded-xl flex-shrink-0 transition-all duration-300 border-2 ${isActive ? 'bg-slate-100 text-slate-900 border-slate-300 shadow-sm' : 'bg-slate-50 text-slate-600 border-transparent group-hover:border-slate-200 group-hover:bg-white group-hover:shadow-sm'}`}>
-                  <Inbox className="w-4 h-4 transition-transform duration-300 group-hover:scale-110" strokeWidth={2} />
-                </div>
-                {!isCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <span className="font-semibold text-sm block truncate transition-colors duration-300 group-hover:text-slate-900" style={{ letterSpacing: '-0.01em' }}>Inbox</span>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate font-light">Agent reports</p>
-                  </div>
-                )}
-              </>
-            )}
-          </NavLink>
+            icon={<BookOpen className="w-4 h-4" />}
+            label="Library"
+            sub="Saved analyses"
+            isCollapsed={isCollapsed}
+          />
+          {/* /projects, /scheduled-agents, /inbox hidden until product validated */}
         </div>
 
-        {/* Projects Section */}
-        {!isCollapsed && projects.length > 0 && (
-          <div className="mt-6">
-            <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3" style={{ letterSpacing: '0.05em' }}>
-              Projects
-            </p>
-            <div className="space-y-0.5">
-              {projects.map(project => (
-                <NavLink
-                  key={project.id}
-                  to={`/projects/${project.id}`}
-                  className="group flex items-start gap-2 px-3 py-2 rounded-xl hover:bg-slate-50 cursor-pointer transition-all duration-150"
-                >
-                  <Folder className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p
-                      className="text-xs font-medium text-slate-700 truncate leading-tight"
-                      title={project.title}
-                      style={{ letterSpacing: '-0.01em' }}
-                    >
-                      {project.title}
-                    </p>
-                    <p
-                      className="text-slate-400 mt-0.5 truncate"
-                      style={{ fontSize: '0.625rem' }}
-                      title={project.thesis}
-                    >
-                      {project.thesis.slice(0, 60)}{project.thesis.length > 60 ? '…' : ''}
-                    </p>
-                  </div>
-                </NavLink>
-              ))}
-            </div>
-            <NavLink
-              to="/projects"
-              className="block mt-3 px-3 text-xs text-emerald-600 hover:text-emerald-700 font-medium transition-colors duration-150"
-              style={{ letterSpacing: '-0.01em' }}
-            >
-              View all projects →
-            </NavLink>
-          </div>
-        )}
-
-        {/* Recent Conversations */}
+        {/* Recent sessions */}
         {!isCollapsed && sessions.length > 0 && (
-          <div className="mt-6">
-            <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3" style={{ letterSpacing: '0.05em' }}>
+          <div style={{ marginTop: 24 }}>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: '#C4C4C4',
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                padding: '0 12px',
+                marginBottom: 6,
+                fontFamily: 'IBM Plex Mono, monospace',
+              }}
+            >
               Recent
-            </p>
-            <div className="space-y-0.5">
+            </div>
+            <div>
               {sessions.map(session => (
                 <SessionRow
                   key={session.id}
@@ -394,50 +311,166 @@ function Sidebar() {
             </div>
             <NavLink
               to="/library"
-              className="block mt-3 px-3 text-xs text-emerald-600 hover:text-emerald-700 font-medium transition-colors duration-150"
-              style={{ letterSpacing: '-0.01em' }}
+              className="block mt-2 px-3 transition-colors duration-100"
+              style={{
+                fontSize: 11,
+                color: '#10B981',
+                textDecoration: 'none',
+                fontWeight: 500,
+                letterSpacing: '-0.01em',
+              }}
             >
-              View all analyses →
+              View all →
             </NavLink>
           </div>
         )}
 
-        {/* Quick Info Card */}
+        {/* Empty state prompt */}
         {!isCollapsed && sessions.length === 0 && (
-          <div className="mt-6 p-5 glass-effect rounded-2xl border border-slate-200/80 shadow-lg">
-            <div className="flex items-center gap-2.5 mb-2.5">
-              <div className="p-1.5 bg-gradient-to-br from-gold-400 to-gold-500 rounded-lg shadow-md">
-                <Sparkles className="w-3.5 h-3.5 text-white" />
-              </div>
-              <h3 className="text-sm font-semibold text-slate-900" style={{ letterSpacing: '-0.01em' }}>AI Powered</h3>
-            </div>
-            <p className="text-xs text-slate-600 leading-relaxed font-light">
-              Get intelligent financial insights using advanced AI agents
+          <div
+            style={{
+              marginTop: 20,
+              padding: '14px',
+              background: '#FAFAFA',
+              borderRadius: 10,
+              border: '1px solid #F0F0F0',
+            }}
+          >
+            <p
+              style={{
+                fontSize: 12,
+                color: '#9CA3AF',
+                lineHeight: 1.6,
+                margin: 0,
+                fontFamily: 'IBM Plex Sans, sans-serif',
+              }}
+            >
+              Search a ticker to generate your first investment memo.
             </p>
           </div>
         )}
       </nav>
 
       {/* Footer */}
-      <div className="p-5 border-t border-slate-200/60 glass-effect">
+      <div
+        style={{
+          padding: isCollapsed ? '12px 0' : '12px 20px',
+          borderTop: '1px solid #F3F3F3',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: isCollapsed ? 'center' : 'flex-start',
+          gap: 8,
+          flexShrink: 0,
+        }}
+      >
         {!isCollapsed ? (
-          <div className="text-xs text-slate-500 space-y-2">
-            <p className="font-medium text-slate-600" style={{ letterSpacing: '0.01em' }}>Powered by</p>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2.5 py-1 glass-effect rounded-lg text-slate-700 font-medium border border-slate-200/80 shadow-sm">Claude</span>
-              <span className="text-slate-400">•</span>
-              <span className="px-2.5 py-1 glass-effect rounded-lg text-slate-700 font-medium border border-slate-200/80 shadow-sm">GPT</span>
-            </div>
-          </div>
+          <span
+            style={{
+              fontSize: 10,
+              color: '#D1D5DB',
+              fontFamily: 'IBM Plex Mono, monospace',
+              letterSpacing: '0.03em',
+            }}
+          >
+            Powered by Claude
+          </span>
         ) : (
-          <div className="flex justify-center">
-            <div className="p-2 bg-gradient-to-br from-gold-400 to-gold-500 rounded-lg shadow-md">
-              <Sparkles className="w-4 h-4 text-white" />
-            </div>
-          </div>
+          <div
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#10B981',
+            }}
+          />
         )}
       </div>
     </div>
+  );
+}
+
+// Shared nav item component
+function NavItem({
+  to,
+  end,
+  icon,
+  label,
+  sub,
+  isCollapsed,
+}: {
+  to: string;
+  end?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  sub: string;
+  isCollapsed: boolean;
+}) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      title={isCollapsed ? label : undefined}
+      style={{ textDecoration: 'none' }}
+    >
+      {({ isActive }) => (
+        <div
+          className="flex items-center gap-2.5 rounded-lg transition-colors duration-100"
+          style={{
+            padding: isCollapsed ? '8px 10px' : '7px 10px',
+            marginBottom: 2,
+            background: isActive ? '#F5F5F5' : 'transparent',
+            cursor: 'pointer',
+            justifyContent: isCollapsed ? 'center' : 'flex-start',
+          }}
+        >
+          {/* Icon */}
+          <div
+            style={{
+              color: isActive ? '#10B981' : '#ABABAB',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              transition: 'color 0.12s ease',
+            }}
+          >
+            {icon}
+          </div>
+
+          {/* Label + subtitle */}
+          {!isCollapsed && (
+            <div className="flex-1 min-w-0 overflow-hidden">
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 13,
+                  fontWeight: isActive ? 600 : 500,
+                  color: isActive ? '#0F172A' : '#6B7280',
+                  letterSpacing: '-0.01em',
+                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  lineHeight: 1.3,
+                  transition: 'color 0.12s ease, font-weight 0.12s ease',
+                }}
+              >
+                {label}
+              </span>
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 10.5,
+                  color: '#BEBEBE',
+                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  marginTop: 1,
+                  lineHeight: 1.2,
+                }}
+              >
+                {sub}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </NavLink>
   );
 }
 

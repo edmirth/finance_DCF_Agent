@@ -66,6 +66,7 @@ const CHECKLIST_ITEMS = [
 
 function AgentCardRow({ card }: { card: AgentCard }) {
   const meta = AGENT_META[card.name] || { label: card.name, role: '', color: '#6B7280' };
+  const confPct = card.confidence != null ? Math.round(card.confidence * 100) : null;
 
   return (
     <div
@@ -74,25 +75,24 @@ function AgentCardRow({ card }: { card: AgentCard }) {
         alignItems: 'flex-start',
         gap: 12,
         padding: '12px 16px',
-        borderBottom: '1px solid #E5E7EB',
-        opacity: card.done ? 1 : 0.5,
-        transition: 'opacity 0.3s ease',
+        borderBottom: '1px solid #F5F5F5',
+        opacity: card.done ? 1 : 0.45,
+        transition: 'opacity 0.4s ease',
       }}
     >
       {/* Initials badge */}
       <div
         style={{
-          width: 36,
-          height: 36,
-          borderRadius: 6,
-          background: `${meta.color}18`,
-          border: `1.5px solid ${meta.color}40`,
+          width: 32,
+          height: 32,
+          borderRadius: 8,
+          background: `${meta.color}12`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           flexShrink: 0,
           fontFamily: 'IBM Plex Mono, monospace',
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: 700,
           color: meta.color,
           letterSpacing: '0.02em',
@@ -102,29 +102,61 @@ function AgentCardRow({ card }: { card: AgentCard }) {
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-          <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, fontWeight: 600, color: '#1A1A1A' }}>
-            {meta.label}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+          <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, fontWeight: 700, color: '#1A1A1A', letterSpacing: '0.04em' }}>
+            {meta.label.toUpperCase()}
           </span>
-          <span style={{ fontSize: 11, color: '#9CA3AF' }}>{meta.role}</span>
+          <span style={{ fontSize: 11, color: '#DEDEDE' }}>·</span>
+          <span style={{ fontSize: 11, color: '#ABABAB', fontFamily: 'IBM Plex Sans, sans-serif' }}>{meta.role}</span>
           {!card.done && (
             <span
               style={{
                 marginLeft: 'auto',
                 fontFamily: 'IBM Plex Mono, monospace',
-                fontSize: 10,
-                color: '#9CA3AF',
-                letterSpacing: '0.04em',
+                fontSize: 9,
+                color: '#BCBCBC',
+                letterSpacing: '0.06em',
               }}
             >
-              analyzing...
+              ANALYZING
+            </span>
+          )}
+          {card.done && card.view && (
+            <span
+              style={{
+                marginLeft: 'auto',
+                fontFamily: 'IBM Plex Mono, monospace',
+                fontSize: 9,
+                fontWeight: 700,
+                color: card.view === 'bullish' ? '#15803D' : card.view === 'bearish' ? '#DC2626' : '#6B7280',
+                letterSpacing: '0.06em',
+                background: card.view === 'bullish' ? '#F0FDF4' : card.view === 'bearish' ? '#FEF2F2' : '#F5F5F5',
+                padding: '2px 7px',
+                borderRadius: 4,
+              }}
+            >
+              {card.view.toUpperCase()}
             </span>
           )}
         </div>
         {card.done && card.reasoning && (
-          <p style={{ fontSize: 12, color: '#374151', lineHeight: 1.5, margin: 0, fontFamily: 'Inter, sans-serif' }}>
+          <p style={{ fontSize: 12, color: '#4B5563', lineHeight: 1.6, margin: 0, fontFamily: 'IBM Plex Sans, sans-serif' }}>
             {card.reasoning}
           </p>
+        )}
+        {/* Confidence bar */}
+        {card.done && confPct != null && (
+          <div style={{ marginTop: 7, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="agent-conf-track" style={{ flex: 1 }}>
+              <div
+                className="agent-conf-fill"
+                style={{ width: `${confPct}%`, background: meta.color, opacity: 0.55 }}
+              />
+            </div>
+            <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 9, color: '#C4C4C4', fontWeight: 600, letterSpacing: '0.04em', flexShrink: 0 }}>
+              {confPct}%
+            </span>
+          </div>
         )}
       </div>
     </div>
@@ -145,84 +177,88 @@ function MemoHeader({
     <div
       style={{
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-end',
         justifyContent: 'space-between',
-        marginBottom: 24,
-        paddingBottom: 16,
-        borderBottom: '1.5px solid #E5E7EB',
+        marginBottom: 28,
+        paddingBottom: 20,
+        borderBottom: '1px solid #EEEEEE',
       }}
     >
       <div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 2 }}>
+          <span
+            className="display-serif"
+            style={{
+              fontSize: 32,
+              fontWeight: 400,
+              color: '#0F172A',
+              lineHeight: 1,
+            }}
+          >
+            {ticker}
+          </span>
+          <span style={{
+            fontFamily: 'IBM Plex Sans, sans-serif',
+            fontSize: 13,
+            color: '#ABABAB',
+            fontWeight: 400,
+          }}>
+            Investment Memo
+          </span>
+        </div>
         <span style={{
           fontFamily: 'IBM Plex Mono, monospace',
-          fontSize: 22,
-          fontWeight: 700,
-          color: '#1A1A1A',
-          letterSpacing: '-0.01em',
+          fontSize: 10,
+          color: '#C4C4C4',
+          letterSpacing: '0.06em',
         }}>
-          {ticker}
-        </span>
-        <span style={{
-          fontFamily: 'Inter, sans-serif',
-          fontSize: 13,
-          color: '#6B7280',
-          marginLeft: 12,
-        }}>
-          Investment Memo
+          {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}
         </span>
       </div>
       <button
         onClick={onToggleReasoning}
         style={{
-          fontSize: 12,
-          color: '#6B7280',
+          fontSize: 11,
+          color: '#9CA3AF',
           background: 'none',
-          border: '1px solid #E5E7EB',
-          borderRadius: 6,
-          padding: '4px 10px',
+          border: '1px solid #EEEEEE',
+          borderRadius: 7,
+          padding: '5px 12px',
           cursor: 'pointer',
           fontFamily: 'IBM Plex Mono, monospace',
-          letterSpacing: '0.02em',
+          letterSpacing: '0.03em',
+          transition: 'border-color 0.12s ease, color 0.12s ease',
+        }}
+        onMouseEnter={e => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = '#CCCCCC';
+          (e.currentTarget as HTMLButtonElement).style.color = '#6B7280';
+        }}
+        onMouseLeave={e => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = '#EEEEEE';
+          (e.currentTarget as HTMLButtonElement).style.color = '#9CA3AF';
         }}
       >
-        {showReasoning ? 'Hide reasoning' : 'Show reasoning'}
+        {showReasoning ? 'hide reasoning' : 'show reasoning'}
       </button>
     </div>
   );
 }
 
 
-function MemoSection({ title, children }: { title: string; children: React.ReactNode }) {
+function MemoSection({ title, children, first }: { title: string; children: React.ReactNode; first?: boolean }) {
   return (
-    <div
-      style={{
-        border: '1px solid #E5E7EB',
-        borderRadius: 8,
-        overflow: 'hidden',
-        background: '#FFFFFF',
-      }}
-    >
-      <div
-        style={{
-          padding: '8px 16px',
-          borderBottom: '1px solid #E5E7EB',
-          background: '#F9FAFB',
-        }}
-      >
-        <span
-          style={{
-            fontFamily: 'IBM Plex Mono, monospace',
-            fontSize: 10,
-            fontWeight: 700,
-            color: '#6B7280',
-            textTransform: 'uppercase',
-            letterSpacing: '0.08em',
-          }}
-        >
-          {title}
-        </span>
-      </div>
-      <div style={{ padding: 16 }}>{children}</div>
+    <div style={{ paddingTop: 20, paddingBottom: 20, borderTop: first ? 'none' : '1px solid #EEEEEE' }}>
+      <span style={{
+        display: 'block',
+        fontFamily: 'IBM Plex Mono, monospace',
+        fontSize: 9,
+        fontWeight: 700,
+        color: '#ABABAB',
+        textTransform: 'uppercase' as const,
+        letterSpacing: '0.1em',
+        marginBottom: 10,
+      }}>{title}</span>
+      <div>{children}</div>
     </div>
   );
 }
@@ -457,6 +493,13 @@ const handleSave = async () => {
 
   const allChecked = CHECKLIST_ITEMS.every((_, i) => (checklist[i] || '').trim().length > 0);
 
+  const getErrorMessage = (err: string) => {
+    if (err.toLowerCase().includes('rate limit') || err.includes('429') || err.toLowerCase().includes('limit exceeded')) {
+      return "You've reached the daily analysis limit. Try again tomorrow.";
+    }
+    return err;
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -465,28 +508,28 @@ const handleSave = async () => {
         marginLeft: 80,
         minHeight: '100vh',
         background: '#FFFFFF',
-        fontFamily: 'Inter, -apple-system, sans-serif',
+        fontFamily: 'IBM Plex Sans, -apple-system, sans-serif',
         color: '#1A1A1A',
       }}
     >
-      <div style={{ maxWidth: 860, margin: '0 auto', padding: '48px 24px 80px' }}>
+      <div style={{ maxWidth: 820, margin: '0 auto', padding: '52px 24px 100px' }}>
 
         {/* Header */}
-        <div style={{ marginBottom: 32 }}>
+        <div style={{ marginBottom: 36 }}>
           <h1
+            className="display-serif"
             style={{
-              fontFamily: 'IBM Plex Mono, monospace',
-              fontSize: 22,
-              fontWeight: 700,
-              color: '#1A1A1A',
-              margin: '0 0 6px',
-              letterSpacing: '-0.02em',
+              fontSize: 30,
+              fontWeight: 400,
+              color: '#0F172A',
+              margin: '0 0 8px',
+              lineHeight: 1.2,
             }}
           >
             Investment Memo
           </h1>
-          <p style={{ fontSize: 14, color: '#6B7280', margin: 0 }}>
-            Enter a ticker. Get a 5-analyst investment committee memo in 90 seconds.
+          <p style={{ fontSize: 13, color: '#9CA3AF', margin: 0, fontFamily: 'IBM Plex Sans, sans-serif' }}>
+            Enter a ticker — get a 5-analyst investment committee memo in ~90 seconds.
           </p>
         </div>
 
@@ -495,7 +538,7 @@ const handleSave = async () => {
           style={{
             display: 'flex',
             gap: 8,
-            marginBottom: 32,
+            marginBottom: 36,
             alignItems: 'center',
           }}
         >
@@ -509,18 +552,12 @@ const handleSave = async () => {
               onKeyDown={handleSearchKeyDown}
               onFocus={() => { if (suggestions.length > 0) setShowDropdown(true); }}
               placeholder="Search ticker or company…"
+              aria-label="Search ticker or company name"
               disabled={pageState === 'analyzing'}
+              className="ticker-input"
               style={{
                 width: 240,
-                padding: '10px 14px',
-                border: '1.5px solid #D1D5DB',
-                borderRadius: 8,
-                fontFamily: 'Inter, sans-serif',
-                fontSize: 14,
-                color: '#1A1A1A',
-                background: pageState === 'analyzing' ? '#F9FAFB' : '#FFFFFF',
-                outline: 'none',
-                boxSizing: 'border-box',
+                opacity: pageState === 'analyzing' ? 0.6 : 1,
               }}
             />
             {loadingSuggestions && (
@@ -568,7 +605,7 @@ const handleSave = async () => {
                       minWidth: 54,
                     }}>{s.symbol}</span>
                     <span style={{
-                      fontFamily: 'Inter, sans-serif',
+                      fontFamily: 'IBM Plex Sans, sans-serif',
                       fontSize: 13,
                       color: '#6B7280',
                       flex: 1,
@@ -577,7 +614,7 @@ const handleSave = async () => {
                       whiteSpace: 'nowrap',
                     }}>{s.name}</span>
                     <span style={{
-                      fontFamily: 'Inter, sans-serif',
+                      fontFamily: 'IBM Plex Sans, sans-serif',
                       fontSize: 11,
                       color: '#9CA3AF',
                       flexShrink: 0,
@@ -594,14 +631,16 @@ const handleSave = async () => {
             disabled={pageState === 'analyzing'}
             style={{
               padding: '10px 14px',
-              border: '1.5px solid #D1D5DB',
-              borderRadius: 8,
-              fontFamily: 'Inter, sans-serif',
+              border: '1px solid #E0E0E0',
+              borderRadius: 9,
+              fontFamily: 'IBM Plex Sans, sans-serif',
               fontSize: 13,
               color: '#374151',
-              background: pageState === 'analyzing' ? '#F9FAFB' : '#FFFFFF',
+              background: '#FFFFFF',
               outline: 'none',
               cursor: 'pointer',
+              opacity: pageState === 'analyzing' ? 0.6 : 1,
+              transition: 'border-color 0.15s ease',
             }}
           >
             <option value="full_ic">Full IC — 5 analysts</option>
@@ -616,19 +655,19 @@ const handleSave = async () => {
             disabled={pageState === 'analyzing' || !ticker.trim()}
             style={{
               padding: '10px 22px',
-              background: pageState === 'analyzing' || !ticker.trim() ? '#E5E7EB' : '#1A1A1A',
-              color: pageState === 'analyzing' || !ticker.trim() ? '#9CA3AF' : '#FFFFFF',
+              background: pageState === 'analyzing' || !ticker.trim() ? '#F3F4F6' : '#0F172A',
+              color: pageState === 'analyzing' || !ticker.trim() ? '#ABABAB' : '#FFFFFF',
               border: 'none',
-              borderRadius: 8,
+              borderRadius: 9,
               fontFamily: 'IBM Plex Mono, monospace',
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: 700,
               cursor: pageState === 'analyzing' || !ticker.trim() ? 'not-allowed' : 'pointer',
-              letterSpacing: '0.02em',
-              transition: 'background 0.15s',
+              letterSpacing: '0.04em',
+              transition: 'background 0.15s, opacity 0.15s',
             }}
           >
-            {pageState === 'analyzing' ? 'Analyzing...' : 'Run Analysis'}
+            {pageState === 'analyzing' ? 'ANALYZING...' : 'RUN ANALYSIS'}
           </button>
         </div>
 
@@ -646,7 +685,33 @@ const handleSave = async () => {
               fontFamily: 'IBM Plex Mono, monospace',
             }}
           >
-            Error: {error}
+            {getErrorMessage(error)}
+          </div>
+        )}
+
+        {/* Ghost memo — idle empty state */}
+        {pageState === 'idle' && !result && (
+          <div style={{ opacity: 0.22, pointerEvents: 'none', userSelect: 'none', marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+              <span className="verdict-badge buy">BUY</span>
+              <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, color: '#9CA3AF', letterSpacing: '0.04em' }}>
+                78% committee confidence — sample output
+              </span>
+            </div>
+            <div style={{ marginBottom: 24, paddingBottom: 20, borderBottom: '1px solid #EEEEEE' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 2 }}>
+                <span className="display-serif" style={{ fontSize: 32, fontWeight: 400, color: '#0F172A', lineHeight: 1 }}>AAPL</span>
+                <span style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: 13, color: '#ABABAB' }}>Investment Memo</span>
+              </div>
+            </div>
+            {['Investment Thesis', 'Bear Case', 'Key Risks', 'Valuation Range'].map((title, i) => (
+              <div key={i} style={{ paddingTop: 20, paddingBottom: 20, borderTop: '1px solid #EEEEEE' }}>
+                <span style={{ display: 'block', fontFamily: 'IBM Plex Mono, monospace', fontSize: 9, fontWeight: 700, color: '#ABABAB', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>{title}</span>
+                <div style={{ height: 11, background: '#E5E7EB', borderRadius: 4, marginBottom: 6, width: '82%' }} />
+                <div style={{ height: 11, background: '#E5E7EB', borderRadius: 4, marginBottom: 6, width: '67%' }} />
+                <div style={{ height: 11, background: '#E5E7EB', borderRadius: 4, width: '55%' }} />
+              </div>
+            ))}
           </div>
         )}
 
@@ -661,21 +726,14 @@ const handleSave = async () => {
                 marginBottom: 16,
               }}
             >
-              <div
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: '#10B981',
-                  animation: 'pulse 1.4s ease-in-out infinite',
-                }}
-              />
+              <div className="live-dot" />
               <span
                 style={{
                   fontFamily: 'IBM Plex Mono, monospace',
-                  fontSize: 13,
+                  fontSize: 12,
                   color: '#374151',
                   flex: 1,
+                  letterSpacing: '0.02em',
                 }}
               >
                 {statusLine || 'Running debate...'}
@@ -683,48 +741,33 @@ const handleSave = async () => {
               <button
                 onClick={handleCancel}
                 style={{
-                  padding: '6px 14px',
+                  padding: '5px 12px',
                   background: 'transparent',
-                  color: '#6B7280',
-                  border: '1px solid #D1D5DB',
+                  color: '#9CA3AF',
+                  border: '1px solid #E5E7EB',
                   borderRadius: 6,
                   fontFamily: 'IBM Plex Mono, monospace',
-                  fontSize: 11,
+                  fontSize: 10,
                   cursor: 'pointer',
-                  letterSpacing: '0.02em',
+                  letterSpacing: '0.04em',
+                  transition: 'border-color 0.12s, color 0.12s',
+                }}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = '#D1D5DB';
+                  (e.currentTarget as HTMLButtonElement).style.color = '#6B7280';
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = '#E5E7EB';
+                  (e.currentTarget as HTMLButtonElement).style.color = '#9CA3AF';
                 }}
               >
-                Cancel analysis
+                CANCEL
               </button>
             </div>
 
-            <div
-              style={{
-                border: '1px solid #E5E7EB',
-                borderRadius: 8,
-                overflow: 'hidden',
-                background: '#FFFFFF',
-              }}
-            >
-              <div
-                style={{
-                  padding: '8px 16px',
-                  borderBottom: '1px solid #E5E7EB',
-                  background: '#F9FAFB',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'IBM Plex Mono, monospace',
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: '#6B7280',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.08em',
-                  }}
-                >
-                  Agent Signals — Live
-                </span>
+            <div className="agent-panel">
+              <div className="agent-panel-header">
+                Agent Signals — Live
               </div>
               {agents.map(card => (
                 <AgentCardRow key={card.name} card={card} />
@@ -736,17 +779,90 @@ const handleSave = async () => {
         {/* Memo ready */}
         {pageState === 'memo_ready' && result && (() => {
           const memo = result.structured_memo;
+          const verdictClass = result.verdict === 'BUY' ? 'buy' : result.verdict === 'PASS' ? 'pass' : 'watch';
+          const confPct = Math.round(result.confidence * 100);
           return (
             <div>
+              {/* Verdict strip */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  marginBottom: 24,
+                }}
+              >
+                <span className={`verdict-badge ${verdictClass}`}>
+                  {result.verdict}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+                  <div className="agent-conf-track" style={{ flex: 1, maxWidth: 120 }}>
+                    <div
+                      className="agent-conf-fill"
+                      style={{
+                        width: `${confPct}%`,
+                        background: result.verdict === 'BUY' ? '#16A34A' : result.verdict === 'PASS' ? '#DC2626' : '#F59E0B',
+                        opacity: 0.6,
+                      }}
+                    />
+                  </div>
+                  <span
+                    style={{
+                      fontFamily: 'IBM Plex Mono, monospace',
+                      fontSize: 10,
+                      color: '#9CA3AF',
+                      fontWeight: 600,
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    {confPct}% committee confidence
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    setPageState('idle');
+                    setResult(null);
+                    setAgents(INITIAL_AGENTS);
+                    setShareSlug(null);
+                    setCopied(false);
+                    setChecklist({});
+                    setTicker('');
+                    setSearchQuery('');
+                  }}
+                  style={{
+                    padding: '5px 12px',
+                    background: 'transparent',
+                    color: '#9CA3AF',
+                    border: '1px solid #E5E7EB',
+                    borderRadius: 6,
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    letterSpacing: '0.04em',
+                    transition: 'border-color 0.12s, color 0.12s',
+                  }}
+                  onMouseEnter={e => {
+                    (e.currentTarget as HTMLButtonElement).style.borderColor = '#D1D5DB';
+                    (e.currentTarget as HTMLButtonElement).style.color = '#6B7280';
+                  }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLButtonElement).style.borderColor = '#E5E7EB';
+                    (e.currentTarget as HTMLButtonElement).style.color = '#9CA3AF';
+                  }}
+                >
+                  NEW ANALYSIS
+                </button>
+              </div>
+
               <MemoHeader
                 ticker={activeTicker.current}
                 onToggleReasoning={() => setShowReasoning(v => !v)}
                 showReasoning={showReasoning}
               />
 
-              {/* 2-column memo grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-                <MemoSection title="Investment Thesis">
+              {/* Document flow — vertical sections */}
+              <div style={{ marginBottom: 24 }}>
+                <MemoSection title="Investment Thesis" first>
                   {memo.thesis
                     ? <p style={{ fontSize: 13, color: '#1A1A1A', lineHeight: 1.6, margin: 0 }}>{memo.thesis}</p>
                     : <Unavailable />}
@@ -851,10 +967,6 @@ const handleSave = async () => {
                     )
                     : <Unavailable />}
                 </MemoSection>
-              </div>
-
-              {/* Full-width: What Would Make This Wrong */}
-              <div style={{ marginBottom: 24 }}>
                 <MemoSection title="What Would Make This Wrong">
                   {memo.what_would_make_this_wrong
                     ? <p style={{ fontSize: 13, color: '#1A1A1A', lineHeight: 1.6, margin: 0 }}>{memo.what_would_make_this_wrong}</p>
@@ -872,19 +984,14 @@ const handleSave = async () => {
                   background: '#FAFAFA',
                 }}
               >
-                <p
-                  style={{
-                    fontFamily: 'IBM Plex Mono, monospace',
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: '#6B7280',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.08em',
-                    margin: '0 0 16px',
-                  }}
-                >
-                  Decision Checklist — required before saving
-                </p>
+                <div style={{ marginBottom: 16 }}>
+                  <p style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, fontWeight: 700, color: '#0F172A', margin: '0 0 3px', letterSpacing: '-0.01em' }}>
+                    Before you act
+                  </p>
+                  <p style={{ fontFamily: 'IBM Plex Sans, sans-serif', fontSize: 12, color: '#9CA3AF', margin: 0 }}>
+                    Four questions that separate conviction from noise.
+                  </p>
+                </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {CHECKLIST_ITEMS.map((question, i) => (
                     <div key={i}>
@@ -914,7 +1021,7 @@ const handleSave = async () => {
                           background: '#FFFFFF',
                           outline: 'none',
                           boxSizing: 'border-box',
-                          fontFamily: 'Inter, sans-serif',
+                          fontFamily: 'IBM Plex Sans, sans-serif',
                         }}
                       />
                     </div>
@@ -974,35 +1081,41 @@ const handleSave = async () => {
                 </div>
               )}
 
+              {/* Post-save nudge */}
+              {shareSlug && (
+                <div style={{ textAlign: 'center', marginBottom: 32 }}>
+                  <button
+                    onClick={() => {
+                      setPageState('idle');
+                      setResult(null);
+                      setAgents(INITIAL_AGENTS);
+                      setShareSlug(null);
+                      setCopied(false);
+                      setChecklist({});
+                      setTicker('');
+                      setSearchQuery('');
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      color: '#10B981',
+                      fontFamily: 'IBM Plex Sans, sans-serif',
+                      padding: 0,
+                    }}
+                  >
+                    Analyze another company →
+                  </button>
+                </div>
+              )}
+
               {/* Collapsible reasoning panel */}
               {showReasoning && (
                 <div style={{ marginTop: 8 }}>
-                  <div
-                    style={{
-                      border: '1px solid #E5E7EB',
-                      borderRadius: 8,
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <div
-                      style={{
-                        padding: '8px 16px',
-                        borderBottom: '1px solid #E5E7EB',
-                        background: '#F9FAFB',
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: 'IBM Plex Mono, monospace',
-                          fontSize: 10,
-                          fontWeight: 700,
-                          color: '#6B7280',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.08em',
-                        }}
-                      >
-                        Full Agent Signals
-                      </span>
+                  <div className="agent-panel">
+                    <div className="agent-panel-header">
+                      Full Agent Signals
                     </div>
                     {agents.map(card => (
                       <AgentCardRow key={card.name} card={{ ...card, done: true }} />
@@ -1011,32 +1124,9 @@ const handleSave = async () => {
 
                   {result.debate_log.length > 0 && (
                     <div style={{ marginTop: 12 }}>
-                      <div
-                        style={{
-                          border: '1px solid #E5E7EB',
-                          borderRadius: 8,
-                          overflow: 'hidden',
-                        }}
-                      >
-                        <div
-                          style={{
-                            padding: '8px 16px',
-                            borderBottom: '1px solid #E5E7EB',
-                            background: '#F9FAFB',
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontFamily: 'IBM Plex Mono, monospace',
-                              fontSize: 10,
-                              fontWeight: 700,
-                              color: '#6B7280',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.08em',
-                            }}
-                          >
-                            Debate Transcript ({result.debate_log.length} entries)
-                          </span>
+                      <div className="agent-panel">
+                        <div className="agent-panel-header">
+                          Debate Transcript ({result.debate_log.length} entries)
                         </div>
                         <div style={{ maxHeight: 360, overflowY: 'auto' }}>
                           {result.debate_log.map((entry, i) => (
