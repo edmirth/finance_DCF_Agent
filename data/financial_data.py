@@ -517,9 +517,14 @@ class FinancialDataFetcher:
                 capex_values = []
 
                 for stmt in cash_flow_statements[:5]:
-                    fcf = stmt.get("free_cash_flow", 0) or 0
+                    fcf = stmt.get("free_cash_flow") or 0
                     da = stmt.get("depreciation_and_amortization", 0) or stmt.get("depreciation_amortization", 0) or 0
                     capex = abs(stmt.get("capital_expenditure", 0) or stmt.get("capex", 0) or stmt.get("purchase_of_ppe", 0) or 0)
+                    if not fcf:
+                        # API sometimes returns free_cash_flow=None even when operating cash flow is available.
+                        # Fall back to: operating_cash_flow - capex
+                        ocf = stmt.get("net_cash_flow_from_operations") or stmt.get("operating_cash_flow") or 0
+                        fcf = float(ocf) - float(capex) if ocf else 0
 
                     free_cash_flows.append(float(fcf))
                     depreciation_amortization.append(float(da))
