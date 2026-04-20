@@ -299,8 +299,8 @@ def calculate_factor_scores(financials: dict) -> dict:
         # FCF yield = Free Cash Flow / Market Cap
         fcf = float(latest_cf.get("free_cash_flow") or 0)
         if not fcf:
-            op = float(latest_cf.get("operating_cash_flow") or 0)
-            capex = abs(float(latest_cf.get("capital_expenditures") or 0))
+            op = float(latest_cf.get("net_cash_flow_from_operations") or latest_cf.get("operating_cash_flow") or 0)
+            capex = abs(float(latest_cf.get("capital_expenditure") or latest_cf.get("capital_expenditures") or 0))
             fcf = op - capex
         if market_cap > 0 and fcf > 0:
             fcf_y = fcf / market_cap
@@ -511,7 +511,82 @@ def score_pillars(financials: dict, price_data: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Section 3 — LLM reasoning
+# Section 2b — Data-CoT: reason about what the quant data means
+# ---------------------------------------------------------------------------
+
+def run_data_cot(
+    ticker: str,
+    financials: dict,
+    price_data: dict,
+    pillar_scores: dict,
+) -> str:
+    """
+    Step 1 of 3 in the CoT pipeline.
+    Haiku thinks step-by-step through price, factor, and revision signals.
+    Output feeds into run_concept_cot() as grounded observations.
+    Never raises — falls back to a compact metrics string.
+    """
+    r12 = pillar_scores.get("return_12m")
+    r6 = pillar_scores.get("return_6m")
+    r3 = pillar_scores.get("return_3m")
+    rel = pillar_scores.get("relative_return_12m")
+    ey = pillar_scores.get("earnings_yield")
+    roe = pillar_scores.get("roe")
+
+    data_snapshot = (
+        f"Ticker: {ticker}\n"
+        f"Price momentum: 12m={f'{r12:.1f}%' if r12 is not None else 'N/A'} | "
+        f"6m={f'{r6:.1f}%' if r6 is not None else 'N/A'} | "
+        f"3m={f'{r3:.1f}%' if r3 is not None else 'N/A'} | "
+        f"vs S&P 12m={f'{rel:+.1f}%' if rel is not None else 'N/A'}\n"
+        f"Factor score: {pillar_scores.get('factor_score', 0):+d}/5 | "
+        f"EY={f'{ey:.1f}%' if ey is not None else 'N/A'} | "
+        f"ROE={f'{roe:.1f}%' if roe is not None else 'N/A'}\n"
+        f"Vol: {pillar_scores.get('annualised_vol_pct', 25.0):.1f}% ann. | "
+        f"VIX={pillar_scores.get('vix_level', 20.0):.1f} | "
+        f"regime={pillar_scores.get('vol_regime', 'normal')}\n"
+        f"Revisions: direction={pillar_scores.get('revisions_direction', 'stable')} | "
+        f"beats streak={pillar_scores.get('consecutive_beats', 0)} | "
+        f"net upgrades 90d={pillar_scores.get('net_upgrades_90d', 0):+d}\n"
+        f"Pillar votes: Momentum={pillar_scores.get('momentum_signal')} | "
+        f"Factors={pillar_scores.get('factor_signal')} | "
+        f"Vol={pillar_scores.get('vol_signal')} | "
+        f"Revisions={pillar_scores.get('revision_signal')}"
+    )
+
+    prompt = (
+        f"You are a quantitative analyst looking at {ticker} for the first time.\n\n"
+        f"Quant data:\n{data_snapshot}\n\n"
+        f"Think step by step through this data:\n"
+        f"1. What are the 2-3 most important quant signals here? "
+        f"Are momentum and factor scores aligned or conflicting?\n"
+        f"2. What does the volatility regime imply for position sizing and conviction?\n"
+        f"3. What is the earnings revision story telling you — are analysts upgrading "
+        f"or downgrading, and does that match the price action?\n\n"
+        f"Write your observations in 150-200 words. Use specific numbers. "
+        f"Do not give a final verdict yet — just analyze the signals."
+    )
+
+    try:
+        client = Anthropic()
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=350,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"[Quant] run_data_cot failed: {e}")
+        return (
+            f"Momentum: 12m={f'{r12:.1f}%' if r12 is not None else 'N/A'} | "
+            f"3m={f'{r3:.1f}%' if r3 is not None else 'N/A'}. "
+            f"Factor score: {pillar_scores.get('factor_score', 0):+d}/5. "
+            f"Vol regime: {pillar_scores.get('vol_regime', 'normal')}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 3 — Concept-CoT + Signal (LLM reasoning)
 # ---------------------------------------------------------------------------
 
 def _build_peer_context(state: ThesisState) -> str:
@@ -560,122 +635,133 @@ def _build_peer_context(state: ThesisState) -> str:
     )
 
 
-def run_llm_reasoning(
+def run_concept_cot(
     ticker: str,
     pillar_scores: dict,
     conflicts: list,
     state: ThesisState,
-) -> AgentSignal:
+    data_cot_text: str = "",
+) -> tuple:
     """
-    Single Haiku call to reason over quant pillar results and produce AgentSignal.
-    Falls back to pillar majority on any error.
+    Step 2 of 3 in the CoT pipeline (Concept-CoT).
+    Applies quant framework to data_cot_text observations.
+    Returns (concept_analysis_text, AgentSignal).
     """
     conflict_context = ""
     if conflicts:
         desc_list = [c.get("description", "") for c in conflicts if "quant" in c.get("agents", [])]
         if desc_list:
             conflict_context = (
-                "\nThe investment committee has flagged these conflicts from other analysts:\n"
+                "\nCommittee conflicts flagged:\n"
                 + "\n".join(f"- {d}" for d in desc_list)
-                + "\nFactor this into your confidence — revise downward if it introduces genuine uncertainty."
+                + "\nRevise confidence downward if the conflict introduces genuine uncertainty."
             )
 
     peer_context = _build_peer_context(state)
-
-    # Format momentum return string safely
     r12 = pillar_scores.get("return_12m")
-    r6 = pillar_scores.get("return_6m")
     r3 = pillar_scores.get("return_3m")
     rel = pillar_scores.get("relative_return_12m")
-
-    momentum_str = (
-        f"12m={r12:.1f}% " if r12 is not None else "12m=N/A "
-    ) + (
-        f"6m={r6:.1f}% " if r6 is not None else "6m=N/A "
-    ) + (
-        f"3m={r3:.1f}% " if r3 is not None else "3m=N/A "
-    ) + (
-        f"vs S&P: {rel:+.1f}%" if rel is not None else "vs S&P: N/A"
-    )
-
-    ey = pillar_scores.get("earnings_yield")
-    fcfy = pillar_scores.get("fcf_yield")
     roe = pillar_scores.get("roe")
-    factor_str = (
-        f"score={pillar_scores.get('factor_score', 0):+d} "
-        f"EY={ey:.1f}% " if ey is not None else f"score={pillar_scores.get('factor_score', 0):+d} EY=N/A "
-    )
 
-    prompt = f"""You are a Quantitative Analyst at a hedge fund investment committee.
-You have completed a 4-pillar quantitative analysis of {ticker}.
-Your signals are purely data-driven — price, factor, vol, and revision momentum.
+    prompt = f"""You are a Quantitative Analyst at a hedge fund investment committee presenting on {ticker}.
+
+DATA OBSERVATIONS (from your step-1 analysis):
+{data_cot_text}
 
 Pillar results:
-- Price momentum:         {pillar_scores['momentum_signal']} ({momentum_str})
-- Factor scores:          {pillar_scores['factor_signal']} (composite score: {pillar_scores.get('factor_score', 0):+d}/5, ROE: {f"{roe:.1f}%" if roe is not None else "N/A"})
-- Volatility regime:      {pillar_scores['vol_signal']} (vol: {pillar_scores.get('annualised_vol_pct', 25.0):.1f}%, VIX: {pillar_scores.get('vix_level', 20.0):.1f}, regime: {pillar_scores.get('vol_regime', 'normal')})
-- Earnings revisions:     {pillar_scores['revision_signal']} (direction: {pillar_scores.get('revisions_direction', 'stable')}, beats streak: {pillar_scores.get('consecutive_beats', 0)}, net upgrades 90d: {pillar_scores.get('net_upgrades_90d', 0):+d})
+- Price momentum:     {pillar_scores['momentum_signal']} (12m={f'{r12:.1f}%' if r12 is not None else 'N/A'}, 3m={f'{r3:.1f}%' if r3 is not None else 'N/A'}, vs S&P={f'{rel:+.1f}%' if rel is not None else 'N/A'})
+- Factor scores:      {pillar_scores['factor_signal']} (score: {pillar_scores.get('factor_score', 0):+d}/5, ROE: {f'{roe:.1f}%' if roe is not None else 'N/A'})
+- Volatility regime:  {pillar_scores['vol_signal']} ({pillar_scores.get('annualised_vol_pct', 25.0):.1f}% ann. vol, VIX={pillar_scores.get('vix_level', 20.0):.1f}, {pillar_scores.get('vol_regime', 'normal')})
+- Earnings revisions: {pillar_scores['revision_signal']} (direction: {pillar_scores.get('revisions_direction', 'stable')}, beats streak: {pillar_scores.get('consecutive_beats', 0)}, net upgrades 90d: {pillar_scores.get('net_upgrades_90d', 0):+d})
 
-Data quality: {pillar_scores['data_quality']:.0%} of expected data was available.
+Data quality: {pillar_scores['data_quality']:.0%}
 {peer_context}
 {conflict_context}
 
-Respond with ONLY a JSON object — no preamble, no markdown:
-{{
-  "view": "bullish" | "bearish" | "neutral" | "cautious",
-  "reasoning": "one sentence with specific numbers from the quant signals",
-  "confidence": 0.0 to 1.0
-}}
+Apply your quant framework to these observations:
+- Do momentum and factor signals agree? If not, which is more reliable here?
+- Does the volatility regime change how much weight to put on the directional signal?
+- Are earnings revisions confirming or contradicting the price action?
+- What is the overall quant verdict — and what one data point would change it?
 
-Quant-specific guidance:
-- Strong momentum + good factors = "bullish" with higher conviction
-- Poor momentum + poor factors = "bearish" or "cautious"
-- High vol regime reduces confidence regardless of direction
-- "cautious" when momentum/factors conflict (one strong, one weak)
-- Maintain data independence from fundamental narrative
+Respond in exactly this format (SIGNAL first, then ANALYSIS):
 
-Confidence calibration:
-- 3 or 4 pillars agree AND data quality > 80%  → 0.75–0.90
-- 2 pillars agree OR data quality 50–80%        → 0.55–0.74
-- Pillars conflict OR data quality < 50%        → 0.35–0.54
-- Reduce by 0.10 when in high-vol regime (VIX > 25)"""
+SIGNAL:
+{{"view": "bullish"|"bearish"|"neutral"|"cautious", "reasoning": "one sentence with the key quant number", "confidence": 0.0-1.0}}
+
+ANALYSIS: [2-3 sentences applying quant framework. Reference specific numbers.]
+
+Note: Reduce confidence by 0.10 in high-vol regime (VIX >25). Maintain independence from fundamental narrative."""
+
+    fallback_signal: AgentSignal = {
+        "view": pillar_scores["overall_signal"],
+        "reasoning": f"Pillar majority: {pillar_scores['overall_signal']}",
+        "confidence": 0.45,
+    }
 
     try:
         client = Anthropic()
         response = client.messages.create(
             model=HAIKU_MODEL,
-            max_tokens=300,
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
 
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        text = text.strip()
+        # SIGNAL comes first — truncation-safe extraction
+        analysis_text = ""
+        signal_text = ""
+        if "SIGNAL:" in text:
+            parts = text.split("SIGNAL:", 1)
+            after_signal = parts[1].strip()
+            if "ANALYSIS:" in after_signal:
+                signal_parts = after_signal.split("ANALYSIS:", 1)
+                signal_text = signal_parts[0].strip()
+                analysis_text = signal_parts[1].strip()
+            else:
+                signal_text = after_signal
+        else:
+            analysis_text = text
 
-        parsed = json.loads(text)
-        view = str(parsed.get("view", "")).lower().strip()
-        if view not in VALID_VIEWS:
-            view = pillar_scores["overall_signal"]
+        signal = fallback_signal
+        if signal_text:
+            clean = signal_text
+            if clean.startswith("```"):
+                clean = clean.split("```")[1]
+                if clean.startswith("json"):
+                    clean = clean[4:]
+            clean = clean.strip()
+            try:
+                parsed = json.loads(clean)
+                view = str(parsed.get("view", "")).lower().strip()
+                if view not in VALID_VIEWS:
+                    view = pillar_scores["overall_signal"]
+                confidence = round(min(max(float(parsed.get("confidence", 0.5)), 0.0), 1.0), 2)
+                signal = {
+                    "view": view,
+                    "reasoning": str(parsed.get("reasoning", "Quantitative analysis complete.")),
+                    "confidence": confidence,
+                }
+            except (json.JSONDecodeError, ValueError):
+                print(f"[Quant] run_concept_cot: signal JSON parse failed, using pillar majority")
 
-        confidence = float(parsed.get("confidence", 0.5))
-        confidence = round(min(max(confidence, 0.0), 1.0), 2)
-
-        return {
-            "view": view,
-            "reasoning": str(parsed.get("reasoning", "Quantitative analysis complete.")),
-            "confidence": confidence,
-        }
+        return analysis_text, signal
 
     except Exception as e:
-        print(f"[Quant] run_llm_reasoning failed: {e}")
-        return {
-            "view": pillar_scores["overall_signal"],
-            "reasoning": f"LLM parse failed — pillar majority: {pillar_scores['overall_signal']}",
-            "confidence": 0.45,
-        }
+        print(f"[Quant] run_concept_cot failed: {e}")
+        return "", fallback_signal
+
+
+def run_llm_reasoning(
+    ticker: str,
+    pillar_scores: dict,
+    conflicts: list,
+    state: ThesisState,
+    data_cot_text: str = "",
+) -> AgentSignal:
+    """Backward-compatible wrapper."""
+    _, signal = run_concept_cot(ticker, pillar_scores, conflicts, state, data_cot_text)
+    return signal
 
 
 # ---------------------------------------------------------------------------
@@ -821,7 +907,11 @@ def run_quant_agent(state: ThesisState) -> dict:
             f"data_quality={pillar_scores['data_quality']:.0%}"
         )
 
-        signal: AgentSignal = run_llm_reasoning(ticker, pillar_scores, conflicts, state)
+        # Stage 1 — Data-CoT: reason about what the quant signals mean
+        data_cot_text = run_data_cot(ticker, financials, price_data, pillar_scores)
+
+        # Stage 2 — Concept-CoT: apply quant framework, produce signal
+        concept_text, signal = run_concept_cot(ticker, pillar_scores, conflicts, state, data_cot_text)
 
         # Level 3: Q&A
         incoming_questions = _read_questions("quant", state)
@@ -835,25 +925,17 @@ def run_quant_agent(state: ThesisState) -> dict:
         roe = pillar_scores.get("roe")
 
         raw_findings = (
-            f"QUANT ANALYSIS — {ticker}\n"
-            f"Momentum: 12m={f'{r12:.1f}%' if r12 is not None else 'N/A'} | "
+            f"QUANT ANALYSIS — {ticker}\n\n"
+            f"DATA OBSERVATIONS:\n{data_cot_text}\n\n"
+            f"FRAMEWORK APPLICATION:\n{concept_text}\n\n"
+            f"SIGNAL: {signal['view'].upper()} ({signal['confidence']:.0%} confidence)\n"
+            f"REASONING: {signal['reasoning']}\n\n"
+            f"METRICS: 12m={f'{r12:.1f}%' if r12 is not None else 'N/A'} | "
             f"3m={f'{r3:.1f}%' if r3 is not None else 'N/A'} | "
-            f"vs S&P: {f'{rel:+.1f}%' if rel is not None else 'N/A'}\n"
-            f"Factors: score={pillar_scores.get('factor_score', 0):+d}/5 | "
-            f"EY={f'{ey:.1f}%' if ey is not None else 'N/A'} | "
-            f"ROE={f'{roe:.1f}%' if roe is not None else 'N/A'}\n"
-            f"Volatility: {pillar_scores.get('annualised_vol_pct', 25.0):.1f}% ann. | "
-            f"VIX={pillar_scores.get('vix_level', 20.0):.1f} | "
-            f"regime={pillar_scores.get('vol_regime', 'normal')}\n"
-            f"Revisions: {pillar_scores.get('revisions_direction', 'stable')} | "
-            f"beats streak={pillar_scores.get('consecutive_beats', 0)} | "
-            f"net upgrades 90d={pillar_scores.get('net_upgrades_90d', 0):+d}\n"
-            f"Pillar signals: Momentum={pillar_scores.get('momentum_signal')} | "
-            f"Factors={pillar_scores.get('factor_signal')} | "
-            f"Vol={pillar_scores.get('vol_signal')} | "
-            f"Revisions={pillar_scores.get('revision_signal')}\n"
-            f"Final view: {signal['view']} ({signal['confidence']:.0%} confidence)\n"
-            f"Reasoning: {signal['reasoning']}"
+            f"vs S&P={f'{rel:+.1f}%' if rel is not None else 'N/A'} | "
+            f"factors={pillar_scores.get('factor_score', 0):+d}/5 | "
+            f"vol={pillar_scores.get('annualised_vol_pct', 25.0):.1f}% | "
+            f"VIX={pillar_scores.get('vix_level', 20.0):.1f}"
         )
 
         if incoming_questions:

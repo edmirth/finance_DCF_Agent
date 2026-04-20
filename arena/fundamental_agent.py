@@ -80,8 +80,10 @@ def fetch_financials(ticker: str) -> dict:
 
 def fetch_market_context(ticker: str) -> dict:
     """
-    One Tavily search for current beta, sector P/E, analyst consensus.
-    Haiku extracts structured numbers from raw search content.
+    Two Tavily searches: sector multiples + company-specific recent context.
+    Haiku extracts structured numbers from the multiples search.
+    Company context (recent earnings, guidance, catalysts) passes through as raw text
+    for the Data-CoT to reason about directly.
     Falls back to safe defaults on any error.
     """
     defaults = {
@@ -91,30 +93,50 @@ def fetch_market_context(ticker: str) -> dict:
         "sector_ev_ebitda": 12.0,
         "analyst_consensus": "neutral",
         "news_sentiment": "neutral",
+        "company_context": "",
     }
 
     try:
         tavily = get_tavily_client()
-        search_result = tavily.search(
+
+        # Search 1: sector multiples and valuation benchmarks
+        multiples_result = tavily.search(
             query=f"{ticker} stock current price beta P/E ratio EV/EBITDA sector average multiples analyst consensus",
             topic="finance",
             search_depth="basic",
             max_results=5,
         )
 
-        # Combine answer + top result snippets into one context block
+        # Search 2: company-specific recent context (earnings, guidance, catalysts)
+        company_result = tavily.search(
+            query=f"{ticker} recent earnings results revenue growth guidance 2025 2026 competitive position growth drivers",
+            topic="finance",
+            search_depth="basic",
+            max_results=5,
+        )
+
+        # Combine multiples search into context block for Haiku extraction
         content_parts = []
-        if search_result.get("answer"):
-            content_parts.append(search_result["answer"])
-        for r in search_result.get("results", [])[:3]:
+        if multiples_result.get("answer"):
+            content_parts.append(multiples_result["answer"])
+        for r in multiples_result.get("results", [])[:3]:
             if r.get("content"):
                 content_parts.append(r["content"][:400])
         raw_content = "\n\n".join(content_parts)[:2000]
 
-        if not raw_content.strip():
-            return defaults
+        # Combine company context search into a separate text block
+        company_parts = []
+        if company_result.get("answer"):
+            company_parts.append(company_result["answer"])
+        for r in company_result.get("results", [])[:3]:
+            if r.get("content"):
+                company_parts.append(r["content"][:400])
+        company_context = "\n\n".join(company_parts)[:1500]
 
-        # Haiku extraction call
+        if not raw_content.strip():
+            return {**defaults, "company_context": company_context}
+
+        # Haiku extraction for structured multiples fields
         client = Anthropic()
         extraction_prompt = (
             f"Extract from these search results for {ticker}:\n"
@@ -146,6 +168,7 @@ def fetch_market_context(ticker: str) -> dict:
             "sector_ev_ebitda": float(parsed.get("sector_ev_ebitda") or 12.0),
             "analyst_consensus": str(parsed.get("analyst_consensus") or "neutral").lower(),
             "news_sentiment": str(parsed.get("news_sentiment") or "neutral").lower(),
+            "company_context": company_context,
         }
 
     except Exception as e:
@@ -285,9 +308,9 @@ def score_pillars(financials: dict, market_context: dict, valuation: dict) -> di
         cf_latest = cf_statements[0] if cf_statements else {}
         fcf = cf_latest.get("free_cash_flow") or 0
         if not fcf:
-            op = cf_latest.get("operating_cash_flow") or 0
-            capex = abs(cf_latest.get("capital_expenditures") or 0)
-            fcf = op - capex
+            op = cf_latest.get("net_cash_flow_from_operations") or cf_latest.get("operating_cash_flow") or 0
+            capex = abs(cf_latest.get("capital_expenditure") or cf_latest.get("capital_expenditures") or 0)
+            fcf = float(op) - float(capex)
         fcf = float(fcf)
         if latest_revenue > 0:
             fcf_margin = fcf / latest_revenue
@@ -399,7 +422,79 @@ def score_pillars(financials: dict, market_context: dict, valuation: dict) -> di
 
 
 # ---------------------------------------------------------------------------
-# Section 4 — LLM reasoning
+# Section 3b — Data-CoT: reason about what the data actually means
+# ---------------------------------------------------------------------------
+
+def run_data_cot(
+    ticker: str,
+    financials: dict,
+    market_context: dict,
+    pillar_scores: dict,
+) -> str:
+    """
+    Step 1 of 3 in the CoT pipeline.
+    Haiku thinks step-by-step through the raw numbers before any framework is applied.
+    Output feeds directly into run_concept_cot() as grounded observations.
+    Never raises — falls back to a compact metrics string.
+    """
+    ev_ebitda = pillar_scores.get("ev_ebitda")
+    sector_ev_ebitda = pillar_scores.get("sector_ev_ebitda", 12.0)
+    premium_pct = (
+        round((ev_ebitda / sector_ev_ebitda - 1) * 100, 1)
+        if ev_ebitda and sector_ev_ebitda
+        else None
+    )
+
+    data_snapshot = (
+        f"Ticker: {ticker} | Sector: {financials.get('sector', 'Unknown')}\n"
+        f"EV/EBITDA: {ev_ebitda}x vs sector {sector_ev_ebitda}x "
+        f"({'premium' if premium_pct and premium_pct > 0 else 'discount'}: "
+        f"{abs(premium_pct) if premium_pct is not None else 'N/A'}%)\n"
+        f"Implied upside from sector multiple: {pillar_scores.get('upside_pct', 0):.1f}%\n"
+        f"Revenue CAGR (3yr): {pillar_scores.get('revenue_cagr', 0):.1f}%\n"
+        f"FCF margin: {pillar_scores.get('fcf_margin', 0):.1f}%\n"
+        f"D/E ratio: {pillar_scores.get('de_ratio', 0):.2f}\n"
+        f"P/E vs sector: {pillar_scores.get('pe_vs_sector', 'N/A')}\n"
+        f"Analyst consensus: {market_context.get('analyst_consensus', 'N/A')}\n"
+        f"Pillar votes: Valuation={pillar_scores.get('valuation_signal')} | "
+        f"Growth={pillar_scores.get('growth_signal')} | "
+        f"Multiples={pillar_scores.get('multiples_signal')} | "
+        f"Balance={pillar_scores.get('balance_signal')}\n"
+        f"Recent context: {market_context.get('company_context', 'N/A')}"
+    )
+
+    prompt = (
+        f"You are a fundamental analyst looking at {ticker} for the first time.\n\n"
+        f"Raw financial data:\n{data_snapshot}\n\n"
+        f"Think step by step through this data:\n"
+        f"1. What are the 2-3 most important signals here? Why does each matter?\n"
+        f"2. What data is missing or uncertain — where are you flying blind?\n"
+        f"3. What would a bull say about this data? What would a bear say?\n\n"
+        f"Write your observations in 150-200 words. Use specific numbers. "
+        f"Do not give a final verdict yet — just analyze what the data is telling you."
+    )
+
+    try:
+        client = Anthropic()
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=350,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"[Fundamental] run_data_cot failed: {e}")
+        ev_str = f"{ev_ebitda}x vs sector {sector_ev_ebitda}x" if ev_ebitda else "N/A"
+        return (
+            f"EV/EBITDA: {ev_str} (implied upside: {pillar_scores.get('upside_pct', 0):.1f}%). "
+            f"Revenue CAGR: {pillar_scores.get('revenue_cagr', 0):.1f}%. "
+            f"FCF margin: {pillar_scores.get('fcf_margin', 0):.1f}%. "
+            f"D/E: {pillar_scores.get('de_ratio', 0):.2f}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 4 — Concept-CoT + Signal (LLM reasoning)
 # ---------------------------------------------------------------------------
 
 def _build_peer_context(state: ThesisState) -> str:
@@ -446,94 +541,137 @@ def _build_peer_context(state: ThesisState) -> str:
     )
 
 
-def run_llm_reasoning(
+def run_concept_cot(
     ticker: str,
     pillar_scores: dict,
     conflicts: list,
     state: ThesisState,
-) -> AgentSignal:
+    data_cot_text: str = "",
+) -> tuple:
     """
-    Single Haiku call to reason over pillar results and produce AgentSignal.
-    Falls back to pillar majority on any error.
+    Step 2 of 3 in the CoT pipeline (Concept-CoT).
+    Receives data_cot_text and applies the fundamental valuation framework to it.
+    Returns (concept_analysis_text, AgentSignal) — the prose becomes part of raw_findings.
+    Falls back to pillar majority signal on any error.
     """
-    # Build conflict context
     conflict_context = ""
     if conflicts:
         desc_list = [c.get("description", "") for c in conflicts if "fundamental" in c.get("agents", [])]
         if desc_list:
             conflict_context = (
-                "\nThe investment committee has flagged these conflicts from other analysts:\n"
+                "\nCommittee conflicts flagged:\n"
                 + "\n".join(f"- {d}" for d in desc_list)
-                + "\nFactor this into your confidence — revise downward if it introduces genuine uncertainty."
+                + "\nRevise confidence downward if the conflict introduces genuine uncertainty."
             )
 
     peer_context = _build_peer_context(state)
 
-    prompt = f"""You are a fundamental analyst at a hedge fund investment committee.
-You have completed a 4-pillar fundamental analysis of {ticker}.
-Your job is to give a structured investment signal.
+    prompt = f"""You are a fundamental analyst at a hedge fund investment committee presenting on {ticker}.
+
+DATA OBSERVATIONS (from your step-1 analysis):
+{data_cot_text}
 
 Pillar results:
-- EV/EBITDA valuation:         {pillar_scores['valuation_signal']} (implied upside: {pillar_scores['upside_pct']:.1f}%, EV/EBITDA: {pillar_scores['ev_ebitda']}x vs sector {pillar_scores['sector_ev_ebitda']}x)
-- Earnings quality & growth:   {pillar_scores['growth_signal']} (Revenue CAGR: {pillar_scores['revenue_cagr']:.1f}%, FCF margin: {pillar_scores['fcf_margin']:.1f}%)
-- Valuation multiples:         {pillar_scores['multiples_signal']} (P/E vs sector: {pillar_scores['pe_vs_sector']})
-- Balance sheet quality:       {pillar_scores['balance_signal']} (D/E ratio: {pillar_scores['de_ratio']:.2f})
+- EV/EBITDA valuation:       {pillar_scores['valuation_signal']} (implied upside: {pillar_scores['upside_pct']:.1f}%, {pillar_scores['ev_ebitda']}x vs sector {pillar_scores['sector_ev_ebitda']}x)
+- Earnings quality & growth: {pillar_scores['growth_signal']} (Revenue CAGR: {pillar_scores['revenue_cagr']:.1f}%, FCF margin: {pillar_scores['fcf_margin']:.1f}%)
+- Valuation multiples:       {pillar_scores['multiples_signal']} (P/E vs sector: {pillar_scores['pe_vs_sector']})
+- Balance sheet quality:     {pillar_scores['balance_signal']} (D/E ratio: {pillar_scores['de_ratio']:.2f})
 
-Data quality: {pillar_scores['data_quality']:.0%} of expected data was available.
+Data quality: {pillar_scores['data_quality']:.0%}
 {peer_context}
 {conflict_context}
 
-Respond with ONLY a JSON object — no preamble, no markdown:
-{{
-  "view": "bullish" | "bearish" | "neutral" | "cautious",
-  "reasoning": "one sentence with specific numbers",
-  "confidence": 0.0 to 1.0
-}}
+Now apply your fundamental framework to these observations:
+- Is the valuation premium/discount justified by the growth and FCF quality profile?
+- Does the balance sheet support the investment case or introduce asymmetric downside?
+- What is the single most important conclusion that should drive the investment decision?
+- What one condition would materially change your view?
+
+Respond in exactly this format (SIGNAL first, then ANALYSIS):
+
+SIGNAL:
+{{"view": "bullish"|"bearish"|"neutral"|"cautious", "reasoning": "one sentence with the key number driving the view", "confidence": 0.0-1.0}}
+
+ANALYSIS: [2-3 sentences applying your framework to the data above. Reference specific numbers.]
 
 Confidence calibration:
-- 3 or 4 pillars agree AND data quality > 80%  → 0.75–0.90
-- 2 pillars agree OR data quality 50–80%        → 0.55–0.74
-- Pillars conflict OR data quality < 50%        → 0.35–0.54
-- Use "neutral" when signals are mixed or data is limited — not "cautious"
-- Only use "cautious" if there is a specific, material downside risk in the data"""
+- 3-4 pillars agree AND data quality >80%  → 0.75–0.90
+- 2 pillars agree OR data quality 50–80%   → 0.55–0.74
+- Pillars conflict OR data quality <50%    → 0.35–0.54
+- Use "cautious" only for specific material downside risk, not general uncertainty"""
+
+    fallback_signal: AgentSignal = {
+        "view": pillar_scores["overall_signal"],
+        "reasoning": f"Pillar majority: {pillar_scores['overall_signal']}",
+        "confidence": 0.45,
+    }
 
     try:
         client = Anthropic()
         response = client.messages.create(
             model=HAIKU_MODEL,
-            max_tokens=300,
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
 
-        # Strip markdown fences if present
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        text = text.strip()
+        # SIGNAL comes first — extract it before ANALYSIS (truncation-safe)
+        analysis_text = ""
+        signal_text = ""
+        if "SIGNAL:" in text:
+            parts = text.split("SIGNAL:", 1)
+            after_signal = parts[1].strip()
+            if "ANALYSIS:" in after_signal:
+                signal_parts = after_signal.split("ANALYSIS:", 1)
+                signal_text = signal_parts[0].strip()
+                analysis_text = signal_parts[1].strip()
+            else:
+                signal_text = after_signal
+        else:
+            analysis_text = text
 
-        parsed = json.loads(text)
-        view = str(parsed.get("view", "")).lower().strip()
-        if view not in VALID_VIEWS:
-            view = pillar_scores["overall_signal"]
+        # Parse signal JSON
+        signal = fallback_signal
+        if signal_text:
+            clean = signal_text
+            if clean.startswith("```"):
+                clean = clean.split("```")[1]
+                if clean.startswith("json"):
+                    clean = clean[4:]
+            clean = clean.strip()
+            try:
+                parsed = json.loads(clean)
+                view = str(parsed.get("view", "")).lower().strip()
+                if view not in VALID_VIEWS:
+                    view = pillar_scores["overall_signal"]
+                confidence = float(parsed.get("confidence", 0.5))
+                confidence = round(min(max(confidence, 0.0), 1.0), 2)
+                signal = {
+                    "view": view,
+                    "reasoning": str(parsed.get("reasoning", "Fundamental analysis complete.")),
+                    "confidence": confidence,
+                }
+            except (json.JSONDecodeError, ValueError):
+                print(f"[Fundamental] run_concept_cot: signal JSON parse failed, using pillar majority")
 
-        confidence = float(parsed.get("confidence", 0.5))
-        confidence = round(min(max(confidence, 0.0), 1.0), 2)
-
-        return {
-            "view": view,
-            "reasoning": str(parsed.get("reasoning", "Fundamental analysis complete.")),
-            "confidence": confidence,
-        }
+        return analysis_text, signal
 
     except Exception as e:
-        print(f"[Fundamental] run_llm_reasoning failed: {e}")
-        return {
-            "view": pillar_scores["overall_signal"],
-            "reasoning": f"LLM parse failed — pillar majority: {pillar_scores['overall_signal']}",
-            "confidence": 0.45,
-        }
+        print(f"[Fundamental] run_concept_cot failed: {e}")
+        return "", fallback_signal
+
+
+# Keep backward-compatible alias
+def run_llm_reasoning(
+    ticker: str,
+    pillar_scores: dict,
+    conflicts: list,
+    state: ThesisState,
+    data_cot_text: str = "",
+) -> AgentSignal:
+    """Backward-compatible wrapper — returns only AgentSignal (drops concept prose)."""
+    _, signal = run_concept_cot(ticker, pillar_scores, conflicts, state, data_cot_text)
+    return signal
 
 
 # ---------------------------------------------------------------------------
@@ -680,27 +818,28 @@ def run_fundamental_agent(state: ThesisState) -> dict:
             f"data_quality={pillar_scores['data_quality']:.0%}"
         )
 
-        signal: AgentSignal = run_llm_reasoning(ticker, pillar_scores, conflicts, state)
+        # Stage 1 — Data-CoT: reason about what the data means
+        data_cot_text = run_data_cot(ticker, financials, market_context, pillar_scores)
+
+        # Stage 2 — Concept-CoT: apply valuation framework, produce signal
+        concept_text, signal = run_concept_cot(ticker, pillar_scores, conflicts, state, data_cot_text)
 
         # Level 3: Q&A
         incoming_questions = _read_questions("fundamental", state)
         updated_questions = _generate_question("fundamental", pillar_scores, signal, state)
         updated_answers = _extract_answers("fundamental", incoming_questions, signal, pillar_scores, state)
 
+        # Rich findings: full CoT chain for peer agents to reason from
         raw_findings = (
-            f"FUNDAMENTAL ANALYSIS — {ticker}\n"
-            f"EV/EBITDA: {pillar_scores.get('ev_ebitda')}x vs sector {pillar_scores.get('sector_ev_ebitda')}x | "
-            f"Implied upside: {pillar_scores.get('upside_pct', 0):.1f}%\n"
-            f"FCF margin: {pillar_scores.get('fcf_margin', 0):.1f}% | "
-            f"Revenue CAGR: {pillar_scores.get('revenue_cagr', 0):.1f}%\n"
-            f"P/E vs sector: {pillar_scores.get('pe_vs_sector', 'N/A')}\n"
-            f"D/E ratio: {pillar_scores.get('de_ratio', 0):.2f}\n"
-            f"Pillar signals: Valuation={pillar_scores.get('valuation_signal')} | "
-            f"Growth={pillar_scores.get('growth_signal')} | "
-            f"Multiples={pillar_scores.get('multiples_signal')} | "
-            f"Balance={pillar_scores.get('balance_signal')}\n"
-            f"Final view: {signal['view']} ({signal['confidence']:.0%} confidence)\n"
-            f"Reasoning: {signal['reasoning']}"
+            f"FUNDAMENTAL ANALYSIS — {ticker}\n\n"
+            f"DATA OBSERVATIONS:\n{data_cot_text}\n\n"
+            f"FRAMEWORK APPLICATION:\n{concept_text}\n\n"
+            f"SIGNAL: {signal['view'].upper()} ({signal['confidence']:.0%} confidence)\n"
+            f"REASONING: {signal['reasoning']}\n\n"
+            f"METRICS: EV/EBITDA={pillar_scores.get('ev_ebitda')}x vs {pillar_scores.get('sector_ev_ebitda')}x sector | "
+            f"Upside={pillar_scores.get('upside_pct', 0):.1f}% | FCF={pillar_scores.get('fcf_margin', 0):.1f}% | "
+            f"RevCAGR={pillar_scores.get('revenue_cagr', 0):.1f}% | D/E={pillar_scores.get('de_ratio', 0):.2f} | "
+            f"P/E vs sector={pillar_scores.get('pe_vs_sector', 'N/A')}"
         )
 
         if incoming_questions:

@@ -202,9 +202,9 @@ def calculate_risk_metrics(financials: dict, market_context: dict) -> dict:
         for cf in cf_statements[:3]:
             fcf = cf.get("free_cash_flow") or 0
             if not fcf:
-                op = cf.get("operating_cash_flow") or 0
-                capex = abs(cf.get("capital_expenditures") or 0)
-                fcf = op - capex
+                op = cf.get("net_cash_flow_from_operations") or cf.get("operating_cash_flow") or 0
+                capex = abs(cf.get("capital_expenditure") or cf.get("capital_expenditures") or 0)
+                fcf = float(op) - float(capex)
             fcf_vals.append(float(fcf))
 
         if len(fcf_vals) >= 2:
@@ -387,7 +387,70 @@ def score_pillars(financials: dict, market_context: dict, risk_metrics: dict) ->
 
 
 # ---------------------------------------------------------------------------
-# Section 4 — LLM reasoning
+# Section 3b — Data-CoT: reason about what the risk data actually means
+# ---------------------------------------------------------------------------
+
+def run_data_cot(
+    ticker: str,
+    financials: dict,
+    market_context: dict,
+    pillar_scores: dict,
+) -> str:
+    """
+    Step 1 of 3 in the CoT pipeline.
+    Haiku thinks step-by-step through the risk metrics before any framework is applied.
+    Output feeds into run_concept_cot() as grounded observations.
+    Never raises — falls back to a compact metrics string.
+    """
+    data_snapshot = (
+        f"Ticker: {ticker} | Sector: {financials.get('sector', 'Unknown')}\n"
+        f"Leverage: D/E={pillar_scores.get('de_ratio', 0):.2f} | "
+        f"Interest coverage={pillar_scores.get('interest_coverage', 999):.1f}x\n"
+        f"Liquidity: Current ratio={pillar_scores.get('current_ratio', 0):.2f} | "
+        f"FCF trend={pillar_scores.get('fcf_trend', 'unknown')}\n"
+        f"Earnings stability: Volatility={pillar_scores.get('earnings_volatility', 0):.0%} | "
+        f"Loss years (last 3)={pillar_scores.get('loss_years', 0)}\n"
+        f"Market risk: Beta={pillar_scores.get('beta', 1.0):.2f} | "
+        f"Drawdown from 52w high={pillar_scores.get('drawdown_from_high_pct', 0):.1f}%\n"
+        f"Pillar votes: Leverage={pillar_scores.get('leverage_signal')} | "
+        f"Liquidity={pillar_scores.get('liquidity_signal')} | "
+        f"Stability={pillar_scores.get('stability_signal')} | "
+        f"Market={pillar_scores.get('market_signal')}"
+    )
+
+    prompt = (
+        f"You are a risk manager looking at {ticker} for the first time.\n\n"
+        f"Risk data:\n{data_snapshot}\n\n"
+        f"Think step by step through this data:\n"
+        f"1. What are the 2-3 most important risk signals here? Why does each matter?\n"
+        f"2. What data is missing — where is your risk assessment weakest?\n"
+        f"3. Is this risk profile normal for the sector, or genuinely elevated? "
+        f"What's the key distinction?\n\n"
+        f"Write your observations in 150-200 words. Use specific numbers. "
+        f"Do not give a final verdict yet — just analyze what the risk data is telling you."
+    )
+
+    try:
+        client = Anthropic()
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=350,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"[Risk] run_data_cot failed: {e}")
+        return (
+            f"D/E: {pillar_scores.get('de_ratio', 0):.2f} | "
+            f"Coverage: {pillar_scores.get('interest_coverage', 999):.1f}x | "
+            f"Current ratio: {pillar_scores.get('current_ratio', 0):.2f} | "
+            f"FCF trend: {pillar_scores.get('fcf_trend', 'unknown')} | "
+            f"Beta: {pillar_scores.get('beta', 1.0):.2f}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 4 — Concept-CoT + Signal (LLM reasoning)
 # ---------------------------------------------------------------------------
 
 def _build_peer_context(state: ThesisState) -> str:
@@ -436,100 +499,130 @@ def _build_peer_context(state: ThesisState) -> str:
     )
 
 
-def run_llm_reasoning(
+def run_concept_cot(
     ticker: str,
     pillar_scores: dict,
     conflicts: list,
     state: ThesisState,
-) -> AgentSignal:
+    data_cot_text: str = "",
+) -> tuple:
     """
-    Single Haiku call to reason over risk pillar results and produce AgentSignal.
-    Falls back to pillar majority on any error.
+    Step 2 of 3 in the CoT pipeline (Concept-CoT).
+    Applies risk framework to data_cot_text observations.
+    Returns (concept_analysis_text, AgentSignal).
     """
     conflict_context = ""
     if conflicts:
         desc_list = [c.get("description", "") for c in conflicts if "risk" in c.get("agents", [])]
         if desc_list:
             conflict_context = (
-                "\nThe investment committee has flagged these conflicts from other analysts:\n"
+                "\nCommittee conflicts flagged:\n"
                 + "\n".join(f"- {d}" for d in desc_list)
-                + "\nFactor this into your confidence — revise downward if it introduces genuine uncertainty."
+                + "\nRevise confidence downward if the conflict introduces genuine uncertainty."
             )
 
     peer_context = _build_peer_context(state)
 
-    prompt = f"""You are a Risk Manager at a hedge fund investment committee.
-You have completed a 4-pillar risk analysis of {ticker}.
-Your job is to assess the risk profile and give a structured signal.
+    prompt = f"""You are a Risk Manager at a hedge fund investment committee presenting on {ticker}.
+
+DATA OBSERVATIONS (from your step-1 analysis):
+{data_cot_text}
 
 Pillar results:
-- Leverage risk:         {pillar_scores['leverage_signal']} (D/E: {pillar_scores['de_ratio']:.2f}, coverage: {pillar_scores['interest_coverage']:.1f}x)
-- Liquidity risk:        {pillar_scores['liquidity_signal']} (current ratio: {pillar_scores['current_ratio']:.2f}, FCF trend: {pillar_scores['fcf_trend']})
-- Earnings stability:    {pillar_scores['stability_signal']} (volatility: {pillar_scores['earnings_volatility']:.0%}, loss years: {pillar_scores['loss_years']})
-- Market/systematic:     {pillar_scores['market_signal']} (beta: {pillar_scores['beta']:.2f}, drawdown from high: {pillar_scores['drawdown_from_high_pct']:.1f}%)
+- Leverage risk:      {pillar_scores['leverage_signal']} (D/E: {pillar_scores['de_ratio']:.2f}, coverage: {pillar_scores['interest_coverage']:.1f}x)
+- Liquidity risk:     {pillar_scores['liquidity_signal']} (current ratio: {pillar_scores['current_ratio']:.2f}, FCF trend: {pillar_scores['fcf_trend']})
+- Earnings stability: {pillar_scores['stability_signal']} (volatility: {pillar_scores['earnings_volatility']:.0%}, loss years: {pillar_scores['loss_years']})
+- Market/systematic:  {pillar_scores['market_signal']} (beta: {pillar_scores['beta']:.2f}, drawdown: {pillar_scores['drawdown_from_high_pct']:.1f}%)
 
-Data quality: {pillar_scores['data_quality']:.0%} of expected data was available.
+Data quality: {pillar_scores['data_quality']:.0%}
 {peer_context}
 {conflict_context}
 
-Respond with ONLY a JSON object — no preamble, no markdown:
-{{
-  "view": "bullish" | "bearish" | "neutral" | "cautious",
-  "reasoning": "one sentence with specific risk numbers",
-  "confidence": 0.0 to 1.0
-}}
+Apply your risk framework to these observations:
+- Is this leverage level tolerable given the FCF profile and interest coverage?
+- Does the liquidity position support the business through a downturn?
+- Is the market risk (beta, drawdown) consistent with the fundamental picture?
+- What is the single most dangerous risk factor — the one that could blow up the thesis?
 
-Risk-specific guidance:
-- "cautious" = elevated but manageable risk, proceed with smaller position
-- "bearish" = risk profile makes the investment unattractive regardless of upside
-- "bullish" = risk is low, supports taking a full position
-- "neutral" = balanced risk, no strong view either way
-- High leverage + low coverage + negative FCF = bearish regardless of valuation
-- If fundamental shows high upside but you see high leverage, lean cautious not bearish
+Respond in exactly this format (SIGNAL first, then ANALYSIS):
 
-Confidence calibration:
-- 3 or 4 pillars agree AND data quality > 80%  → 0.75–0.90
-- 2 pillars agree OR data quality 50–80%        → 0.55–0.74
-- Pillars conflict OR data quality < 50%        → 0.35–0.54
-- Use "neutral" for ambiguous risk profiles — reserve "cautious" for genuinely elevated risk
-- "bearish" requires multiple simultaneous risk flags, not just one elevated metric"""
+SIGNAL:
+{{"view": "bullish"|"bearish"|"neutral"|"cautious", "reasoning": "one sentence with the key risk number", "confidence": 0.0-1.0}}
+
+ANALYSIS: [2-3 sentences applying risk framework. Reference specific numbers.]
+
+Guidance: "bearish" requires multiple simultaneous red flags. "cautious" = elevated but manageable.
+Use "bullish" only if risk is genuinely low (D/E <0.5, positive FCF, low beta)."""
+
+    fallback_signal: AgentSignal = {
+        "view": pillar_scores["overall_signal"],
+        "reasoning": f"Pillar majority: {pillar_scores['overall_signal']}",
+        "confidence": 0.45,
+    }
 
     try:
         client = Anthropic()
         response = client.messages.create(
             model=HAIKU_MODEL,
-            max_tokens=300,
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
 
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        text = text.strip()
+        # SIGNAL comes first — truncation-safe extraction
+        analysis_text = ""
+        signal_text = ""
+        if "SIGNAL:" in text:
+            parts = text.split("SIGNAL:", 1)
+            after_signal = parts[1].strip()
+            if "ANALYSIS:" in after_signal:
+                signal_parts = after_signal.split("ANALYSIS:", 1)
+                signal_text = signal_parts[0].strip()
+                analysis_text = signal_parts[1].strip()
+            else:
+                signal_text = after_signal
+        else:
+            analysis_text = text
 
-        parsed = json.loads(text)
-        view = str(parsed.get("view", "")).lower().strip()
-        if view not in VALID_VIEWS:
-            view = pillar_scores["overall_signal"]
+        signal = fallback_signal
+        if signal_text:
+            clean = signal_text
+            if clean.startswith("```"):
+                clean = clean.split("```")[1]
+                if clean.startswith("json"):
+                    clean = clean[4:]
+            clean = clean.strip()
+            try:
+                parsed = json.loads(clean)
+                view = str(parsed.get("view", "")).lower().strip()
+                if view not in VALID_VIEWS:
+                    view = pillar_scores["overall_signal"]
+                confidence = round(min(max(float(parsed.get("confidence", 0.5)), 0.0), 1.0), 2)
+                signal = {
+                    "view": view,
+                    "reasoning": str(parsed.get("reasoning", "Risk analysis complete.")),
+                    "confidence": confidence,
+                }
+            except (json.JSONDecodeError, ValueError):
+                print(f"[Risk] run_concept_cot: signal JSON parse failed, using pillar majority")
 
-        confidence = float(parsed.get("confidence", 0.5))
-        confidence = round(min(max(confidence, 0.0), 1.0), 2)
-
-        return {
-            "view": view,
-            "reasoning": str(parsed.get("reasoning", "Risk analysis complete.")),
-            "confidence": confidence,
-        }
+        return analysis_text, signal
 
     except Exception as e:
-        print(f"[Risk] run_llm_reasoning failed: {e}")
-        return {
-            "view": pillar_scores["overall_signal"],
-            "reasoning": f"LLM parse failed — pillar majority: {pillar_scores['overall_signal']}",
-            "confidence": 0.45,
-        }
+        print(f"[Risk] run_concept_cot failed: {e}")
+        return "", fallback_signal
+
+
+def run_llm_reasoning(
+    ticker: str,
+    pillar_scores: dict,
+    conflicts: list,
+    state: ThesisState,
+    data_cot_text: str = "",
+) -> AgentSignal:
+    """Backward-compatible wrapper — returns only AgentSignal."""
+    _, signal = run_concept_cot(ticker, pillar_scores, conflicts, state, data_cot_text)
+    return signal
 
 
 # ---------------------------------------------------------------------------
@@ -676,7 +769,11 @@ def run_risk_agent(state: ThesisState) -> dict:
             f"data_quality={pillar_scores['data_quality']:.0%}"
         )
 
-        signal: AgentSignal = run_llm_reasoning(ticker, pillar_scores, conflicts, state)
+        # Stage 1 — Data-CoT: reason about what the risk data means
+        data_cot_text = run_data_cot(ticker, financials, market_context, pillar_scores)
+
+        # Stage 2 — Concept-CoT: apply risk framework, produce signal
+        concept_text, signal = run_concept_cot(ticker, pillar_scores, conflicts, state, data_cot_text)
 
         # Level 3: Q&A
         incoming_questions = _read_questions("risk", state)
@@ -684,21 +781,17 @@ def run_risk_agent(state: ThesisState) -> dict:
         updated_answers = _extract_answers("risk", incoming_questions, signal, pillar_scores, state)
 
         raw_findings = (
-            f"RISK ANALYSIS — {ticker}\n"
-            f"Leverage: D/E={risk_metrics.get('de_ratio', 0):.2f} | "
-            f"Coverage={risk_metrics.get('interest_coverage', 0):.1f}x\n"
-            f"Liquidity: Current ratio={risk_metrics.get('current_ratio', 0):.2f} | "
-            f"FCF trend={risk_metrics.get('fcf_trend', 'N/A')}\n"
-            f"Stability: Earnings volatility={risk_metrics.get('earnings_volatility', 0):.0%} | "
-            f"Loss years={pillar_scores.get('loss_years', 0)}\n"
-            f"Market: Beta={risk_metrics.get('beta', 1.0):.2f} | "
-            f"Drawdown from high={risk_metrics.get('drawdown_from_high_pct', 0):.1f}%\n"
-            f"Pillar signals: Leverage={pillar_scores.get('leverage_signal')} | "
-            f"Liquidity={pillar_scores.get('liquidity_signal')} | "
-            f"Stability={pillar_scores.get('stability_signal')} | "
-            f"Market={pillar_scores.get('market_signal')}\n"
-            f"Final view: {signal['view']} ({signal['confidence']:.0%} confidence)\n"
-            f"Reasoning: {signal['reasoning']}"
+            f"RISK ANALYSIS — {ticker}\n\n"
+            f"DATA OBSERVATIONS:\n{data_cot_text}\n\n"
+            f"FRAMEWORK APPLICATION:\n{concept_text}\n\n"
+            f"SIGNAL: {signal['view'].upper()} ({signal['confidence']:.0%} confidence)\n"
+            f"REASONING: {signal['reasoning']}\n\n"
+            f"METRICS: D/E={risk_metrics.get('de_ratio', 0):.2f} | "
+            f"Coverage={risk_metrics.get('interest_coverage', 0):.1f}x | "
+            f"Current ratio={risk_metrics.get('current_ratio', 0):.2f} | "
+            f"FCF trend={risk_metrics.get('fcf_trend', 'N/A')} | "
+            f"Beta={risk_metrics.get('beta', 1.0):.2f} | "
+            f"Drawdown={risk_metrics.get('drawdown_from_high_pct', 0):.1f}%"
         )
 
         if incoming_questions:
