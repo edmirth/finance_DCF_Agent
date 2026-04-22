@@ -118,8 +118,22 @@ def _check_memo_rate_limits(client_ip: str) -> None:
 # Path to frontend build — defined early so root route can reference it
 FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
 
+# ASGI middleware that strips /api prefix so production requests from the
+# frontend (which use /api/... paths) reach the same routes as the Vite
+# dev proxy did locally. Uses raw ASGI to avoid buffering SSE streams.
+class StripApiPrefix:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/api/"):
+            scope["path"] = scope["path"][4:]
+            scope["raw_path"] = scope["path"].encode("utf-8")
+        await self.app(scope, receive, send)
+
 # Initialize FastAPI app
 app = FastAPI(title="Financial Analysis API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(StripApiPrefix)
 
 # Register scheduled agents router
 from backend.scheduled_agents_router import router as scheduled_agents_router
@@ -808,16 +822,6 @@ async def _persist_conversation(
     except Exception as e:
         logger.error(f"[DB] Persistence error: {e}")
 
-
-@app.get("/api/health")
-async def health():
-    """Health check endpoint"""
-    return {
-        "status": "online",
-        "service": "Financial Analysis API",
-        "version": "1.0.0",
-        "agents": ["research", "market", "portfolio", "earnings", "arena"]
-    }
 
 @app.get("/")
 async def root():
