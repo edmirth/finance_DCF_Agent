@@ -16,7 +16,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
@@ -2165,6 +2166,43 @@ async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession
     await db.delete(doc)
     await db.commit()
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Static file serving for production (serves React build)
+# ---------------------------------------------------------------------------
+
+# Path to frontend build directory
+FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+
+# Mount static files if build exists (production mode)
+if os.path.isdir(FRONTEND_BUILD_DIR):
+    # Serve static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_BUILD_DIR, "assets")), name="static")
+    
+    # Catch-all route for SPA - must be registered last
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Serve React SPA for all non-API routes"""
+        # Don't serve SPA for API routes
+        if full_path.startswith("api/") or full_path in ["docs", "redoc", "openapi.json"]:
+            raise HTTPException(status_code=404)
+        
+        # Check if requesting a specific file that exists
+        file_path = os.path.join(FRONTEND_BUILD_DIR, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        
+        # Otherwise serve index.html for SPA routing
+        index_path = os.path.join(FRONTEND_BUILD_DIR, "index.html")
+        if os.path.isfile(index_path):
+            return FileResponse(index_path)
+        
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    logger.info(f"Serving frontend from {FRONTEND_BUILD_DIR}")
+else:
+    logger.info("Frontend build not found - API-only mode")
 
 
 if __name__ == "__main__":
