@@ -77,13 +77,57 @@ def fetch_financials(ticker: str) -> dict:
     return result
 
 
+def _closest_price(prices: list, target_date: "date") -> Optional[float]:
+    """
+    Return the closing price for the trading day closest to target_date.
+    prices is sorted newest-first: [{"date": "YYYY-MM-DD", "close": float}, ...]
+    Returns None if prices is empty.
+    """
+    if not prices:
+        return None
+    best = min(prices, key=lambda r: abs((_parse_date(r["date"]) - target_date).days))
+    return best["close"]
+
+
+def _parse_date(date_str: str) -> "date":
+    from datetime import date as _date
+    y, m, d = date_str.split("-")
+    return _date(int(y), int(m), int(d))
+
+
+def _annualised_vol(prices: list, trading_days: int = 252) -> Optional[float]:
+    """
+    Compute annualised volatility (%) from a list of daily closes (newest first).
+    Uses the most recent `trading_days` sessions.
+    Returns None if fewer than 10 data points.
+    """
+    import math
+    closes = [r["close"] for r in prices[:trading_days + 1]]
+    if len(closes) < 10:
+        return None
+    returns = [math.log(closes[i] / closes[i + 1]) for i in range(len(closes) - 1)]
+    mean = sum(returns) / len(returns)
+    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+    daily_std = math.sqrt(variance)
+    return round(daily_std * math.sqrt(252) * 100, 1)
+
+
 def fetch_price_and_market_data(ticker: str) -> dict:
     """
-    Two Tavily searches combined into one Haiku extraction call.
-    Search 1: price history (12m, 6m, 3m, current) and S&P 500 return.
-    Search 2: EPS revisions, upgrades/downgrades, earnings surprises, VIX.
-    Falls back to safe defaults on any error.
+    Price history from FMP (real daily closes) + one Tavily search for
+    qualitative revision/earnings-surprise/VIX data.
+
+    Price data (FMP):
+      - current_price, price_12m_ago, price_6m_ago, price_3m_ago  — exact closes
+      - sp500_return_12m  — computed from SPY history
+      - annualised_vol_pct — computed from 252-day log returns
+
+    Qualitative data (Tavily, one search):
+      - earnings_revisions_direction, earnings_surprises,
+        analyst_upgrades_90d, analyst_downgrades_90d, vix_level
     """
+    from datetime import date, timedelta
+
     defaults = {
         "current_price": None,
         "price_12m_ago": None,
@@ -98,18 +142,46 @@ def fetch_price_and_market_data(ticker: str) -> dict:
         "vix_level": 20.0,
     }
 
+    result = dict(defaults)
+
+    # ── 1. FMP price history ──────────────────────────────────────────────────
+    try:
+        fetcher = FinancialDataFetcher()
+        today = date.today()
+
+        ticker_prices = fetcher.get_price_history(ticker, days=400)
+        spy_prices    = fetcher.get_price_history("SPY",   days=400)
+
+        if ticker_prices:
+            result["current_price"]  = ticker_prices[0]["close"]
+            result["price_12m_ago"]  = _closest_price(ticker_prices, today - timedelta(days=365))
+            result["price_6m_ago"]   = _closest_price(ticker_prices, today - timedelta(days=182))
+            result["price_3m_ago"]   = _closest_price(ticker_prices, today - timedelta(days=91))
+            vol = _annualised_vol(ticker_prices)
+            if vol is not None:
+                result["annualised_vol_pct"] = vol
+
+        if spy_prices and len(spy_prices) >= 2:
+            spy_now  = spy_prices[0]["close"]
+            spy_then = _closest_price(spy_prices, today - timedelta(days=365))
+            if spy_then and spy_then > 0:
+                result["sp500_return_12m"] = round((spy_now - spy_then) / spy_then, 4)
+
+        print(
+            f"[Quant] FMP prices for {ticker}: "
+            f"current={result['current_price']} "
+            f"12m_ago={result['price_12m_ago']} "
+            f"6m_ago={result['price_6m_ago']} "
+            f"3m_ago={result['price_3m_ago']} "
+            f"vol={result['annualised_vol_pct']}% "
+            f"SPY_12m={result['sp500_return_12m']:.1%}"
+        )
+    except Exception as e:
+        print(f"[Quant] FMP price fetch failed for {ticker}: {e}")
+
+    # ── 2. Tavily — qualitative signals only (revisions, VIX, surprises) ─────
     try:
         tavily = get_tavily_client()
-
-        # Search 1: price history and momentum
-        price_result = tavily.search(
-            query=f"{ticker} stock price 12 months ago 6 months ago 3 months ago current price total return vs S&P 500",
-            topic="finance",
-            search_depth="basic",
-            max_results=5,
-        )
-
-        # Search 2: earnings revisions and sentiment
         revision_result = tavily.search(
             query=f"{ticker} analyst EPS estimate revisions upgrades downgrades earnings surprise beat miss current VIX level",
             topic="finance",
@@ -117,82 +189,50 @@ def fetch_price_and_market_data(ticker: str) -> dict:
             max_results=5,
         )
 
-        # Combine both searches into one context block
-        def _extract_content(result: dict) -> str:
-            parts = []
-            if result.get("answer"):
-                parts.append(result["answer"])
-            for r in result.get("results", [])[:3]:
-                if r.get("content"):
-                    parts.append(r["content"][:400])
-            return "\n\n".join(parts)
+        parts = []
+        if revision_result.get("answer"):
+            parts.append(revision_result["answer"])
+        for r in revision_result.get("results", [])[:3]:
+            if r.get("content"):
+                parts.append(r["content"][:400])
+        content = "\n\n".join(parts)[:2000]
 
-        combined_content = (
-            "=== PRICE HISTORY SEARCH ===\n"
-            + _extract_content(price_result)
-            + "\n\n=== REVISIONS & SENTIMENT SEARCH ===\n"
-            + _extract_content(revision_result)
-        )[:3000]
+        if content.strip():
+            client = Anthropic()
+            extraction_prompt = (
+                f"Extract from these search results for {ticker}.\n"
+                f"Respond ONLY with a JSON object. Use null if not found:\n"
+                f"- earnings_revisions_direction: 'up', 'down', or 'stable'\n"
+                f"- earnings_surprises: last 4 quarters as ['beat'/'miss'/'in-line']\n"
+                f"- analyst_upgrades_90d: integer or null\n"
+                f"- analyst_downgrades_90d: integer or null\n"
+                f"- vix_level: current VIX level as number or null\n\n"
+                f"Search results:\n{content}"
+            )
+            response = client.messages.create(
+                model=HAIKU_MODEL,
+                max_tokens=200,
+                messages=[{"role": "user", "content": extraction_prompt}],
+            )
+            text = response.content[0].text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            parsed = json.loads(text.strip())
 
-        if not combined_content.strip():
-            return defaults
-
-        client = Anthropic()
-        extraction_prompt = (
-            f"Extract from these search results for {ticker}.\n"
-            f"Respond ONLY with a JSON object with these exact fields. Use null if not found:\n"
-            f"- current_price: current stock price (number)\n"
-            f"- price_12m_ago: stock price ~12 months ago (number)\n"
-            f"- price_6m_ago: stock price ~6 months ago (number)\n"
-            f"- price_3m_ago: stock price ~3 months ago (number)\n"
-            f"- sp500_return_12m: S&P 500 total return over last 12 months as decimal e.g. 0.15 (number)\n"
-            f"- annualised_vol_pct: annualised stock volatility percentage e.g. 28.5 (number)\n"
-            f"- earnings_revisions_direction: direction of recent EPS estimate revisions — 'up', 'down', or 'stable' (string)\n"
-            f"- earnings_surprises: list of last 4 quarters beat/miss as strings e.g. ['beat', 'beat', 'miss', 'beat'] (array)\n"
-            f"- analyst_upgrades_90d: number of analyst upgrades in last 90 days (number)\n"
-            f"- analyst_downgrades_90d: number of analyst downgrades in last 90 days (number)\n"
-            f"- vix_level: current VIX index level (number)\n\n"
-            f"Search results:\n{combined_content}"
-        )
-
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=400,
-            messages=[{"role": "user", "content": extraction_prompt}],
-        )
-        text = response.content[0].text.strip()
-
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        text = text.strip()
-
-        parsed = json.loads(text)
-
-        surprises_raw = parsed.get("earnings_surprises") or []
-        if isinstance(surprises_raw, list):
-            surprises = [str(s).lower() for s in surprises_raw[:4]]
-        else:
-            surprises = []
-
-        return {
-            "current_price": float(parsed["current_price"]) if parsed.get("current_price") else None,
-            "price_12m_ago": float(parsed["price_12m_ago"]) if parsed.get("price_12m_ago") else None,
-            "price_6m_ago": float(parsed["price_6m_ago"]) if parsed.get("price_6m_ago") else None,
-            "price_3m_ago": float(parsed["price_3m_ago"]) if parsed.get("price_3m_ago") else None,
-            "sp500_return_12m": float(parsed.get("sp500_return_12m") or 0.10),
-            "annualised_vol_pct": float(parsed.get("annualised_vol_pct") or 25.0),
-            "earnings_revisions_direction": str(parsed.get("earnings_revisions_direction") or "stable").lower(),
-            "earnings_surprises": surprises,
-            "analyst_upgrades_90d": int(parsed.get("analyst_upgrades_90d") or 0),
-            "analyst_downgrades_90d": int(parsed.get("analyst_downgrades_90d") or 0),
-            "vix_level": float(parsed.get("vix_level") or 20.0),
-        }
+            surprises_raw = parsed.get("earnings_surprises") or []
+            result["earnings_revisions_direction"] = str(parsed.get("earnings_revisions_direction") or "stable").lower()
+            result["earnings_surprises"] = [str(s).lower() for s in surprises_raw[:4]] if isinstance(surprises_raw, list) else []
+            result["analyst_upgrades_90d"]   = int(parsed.get("analyst_upgrades_90d") or 0)
+            result["analyst_downgrades_90d"] = int(parsed.get("analyst_downgrades_90d") or 0)
+            if parsed.get("vix_level"):
+                result["vix_level"] = float(parsed["vix_level"])
 
     except Exception as e:
-        print(f"[Quant] fetch_price_and_market_data failed for {ticker}: {e}")
-        return defaults
+        print(f"[Quant] Tavily revision fetch failed for {ticker}: {e}")
+
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -66,7 +66,6 @@ const CHECKLIST_ITEMS = [
 
 function AgentCardRow({ card }: { card: AgentCard }) {
   const meta = AGENT_META[card.name] || { label: card.name, role: '', color: '#6B7280' };
-  const confPct = card.confidence != null ? Math.round(card.confidence * 100) : null;
 
   return (
     <div
@@ -143,20 +142,6 @@ function AgentCardRow({ card }: { card: AgentCard }) {
           <p style={{ fontSize: 12, color: '#4B5563', lineHeight: 1.6, margin: 0, fontFamily: 'IBM Plex Sans, sans-serif' }}>
             {card.reasoning}
           </p>
-        )}
-        {/* Confidence bar */}
-        {card.done && confPct != null && (
-          <div style={{ marginTop: 7, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className="agent-conf-track" style={{ flex: 1 }}>
-              <div
-                className="agent-conf-fill"
-                style={{ width: `${confPct}%`, background: meta.color, opacity: 0.55 }}
-              />
-            </div>
-            <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 9, color: '#C4C4C4', fontWeight: 600, letterSpacing: '0.04em', flexShrink: 0 }}>
-              {confPct}%
-            </span>
-          </div>
         )}
       </div>
     </div>

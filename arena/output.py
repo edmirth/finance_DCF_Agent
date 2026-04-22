@@ -42,9 +42,9 @@ def extract_structured_memo(state: ThesisState) -> dict:
             for name, sig in signals.items()
         )
 
-        # Truncate raw_outputs to avoid exceeding context limits
+        # Include all agents at 1500 chars each — price target lines must survive truncation
         raw_summary = "\n\n".join(
-            f"[{agent}]:\n{text[:800]}" for agent, text in list(raw_outputs.items())[:3]
+            f"[{agent}]:\n{text[:1500]}" for agent, text in raw_outputs.items()
         )
 
         conflict_text = (
@@ -63,28 +63,28 @@ PM THESIS:
 CONFLICTS:
 {conflict_text}
 
-AGENT FINDINGS (excerpts):
+AGENT FINDINGS (read carefully — all specific numbers must come from here):
 {raw_summary}
 
 Return ONLY a valid JSON object with these exact keys:
 {{
-  "thesis": "2-3 sentence bull thesis with specific numbers",
-  "bear_case": "2-3 sentence bear case with specific numbers",
-  "key_risks": ["risk 1 with metric", "risk 2 with metric", "risk 3 with metric"],
-  "valuation_range": {{"bear": "$XX", "base": "$XX", "bull": "$XX"}},
-  "what_would_make_this_wrong": "1-2 sentences on what would invalidate the thesis"
+  "thesis": "2-3 sentences. Must cite at least two specific numbers pulled directly from the agent findings above (e.g. revenue CAGR %, FCF margin %, EV/EBITDA multiple, insider buying amount, rate level, D/E ratio). No generic statements.",
+  "bear_case": "2-3 sentences with specific numbers and thresholds pulled from the agent findings.",
+  "key_risks": ["risk 1 — name the specific metric and threshold from the findings", "risk 2 — name the specific metric and threshold", "risk 3 — name the specific metric and threshold"],
+  "valuation_range": {{"bear": "$XX", "base": "$XX", "bull": "$XX"}} or null,
+  "what_would_make_this_wrong": "1-2 sentences citing the specific indicator or event that would invalidate the thesis"
 }}
 
 Rules:
-- Use actual numbers from the agent signals and findings
-- Each key_risk must cite a specific metric or threshold
-- valuation_range values must be dollar amounts or ranges (e.g. "$150-160")
+- Every sentence in thesis and bear_case must contain at least one specific number
+- Each key_risk must name a metric with a threshold (e.g. 'D/E ratio above 1.5x', 'FCF margin below 5%')
+- For valuation_range: ONLY populate if you see an explicit 'PRICE TARGETS' line in the agent findings above. Use those exact numbers. If no PRICE TARGETS line exists, return null — do not fabricate dollar amounts
 - Return raw JSON only — no markdown fences, no preamble"""
 
         client = Anthropic()
         response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=800,
+            model=SONNET_MODEL,
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
         raw_text = response.content[0].text.strip()
@@ -120,6 +120,7 @@ def _write_memo_narrative(
     conflicts: list,
     agent_questions: dict,
     agent_answers: dict,
+    raw_outputs: dict | None = None,
 ) -> str:
     """
     Uses Sonnet to write the narrative body of the investment memo.
@@ -147,50 +148,64 @@ def _write_memo_narrative(
     else:
         qa_text = "  None."
 
+    # Full agent findings — this is the primary source for specific numbers
+    agent_findings_text = ""
+    if raw_outputs:
+        sections = []
+        for agent_name, text in raw_outputs.items():
+            sections.append(f"--- {agent_name.upper()} ---\n{text[:1500]}")
+        agent_findings_text = "\n\n".join(sections)
+
     prompt = f"""You are the CIO of a systematic hedge fund writing the final investment committee memo for {ticker}.
+
+Each analyst has provided detailed findings including specific computed metrics. Your job is to synthesize their actual numbers — not just their headline view — into a memo a PM would act on.
 
 COMMITTEE OUTPUT:
 Decision: {final_decision}
 Consensus: {consensus:.0%} across {rounds_run} debate round(s)
 Conviction: {conviction}
 
-Analyst signals:
+ANALYST SIGNALS (headlines):
 {signal_lines}
 
-PM thesis synthesis:
+PM THESIS SYNTHESIS:
 {thesis_summary}
 
-Conflicts identified:
+CONFLICTS IDENTIFIED:
 {conflict_text}
 
-Q&A exchanges:
+FULL ANALYST FINDINGS — read these for specific numbers to cite:
+{agent_findings_text}
+
+Q&A EXCHANGES:
 {qa_text}
 
 Write the narrative body of the investment memo in exactly four sections with these plain-text headers:
 
 INVESTMENT THESIS
-[2-3 sentences. State the core argument with the most important numbers. Be specific about what drives the view.]
+[2-3 sentences. Build the argument from the analysts' actual data — cite the specific numbers from their findings (EV/EBITDA multiple, revenue CAGR, FCF margin, D/E ratio, rate level, insider buying amount, whatever is most relevant). Explain why those numbers, in combination, support the decision. No generic phrases like "strong fundamentals" — say what the number is and why it matters.]
 
 KEY RISKS
-[3 bullet points, each one sentence. Cite specific metrics where possible.]
+[3 bullet points. Each must name a specific metric with a threshold pulled from the analyst findings. Example format: "FCF margin at 8.2% is thin — compression below 5% would eliminate the valuation premium." Not acceptable: "Margins could compress."]
 
 WHAT THE DEBATE RESOLVED
-[1-2 sentences. What did the Q&A or multi-round debate clarify? If no Q&A occurred, say what drove consensus.]
+[1-2 sentences. Where did analysts with different frameworks agree? Where did they conflict, and what does that tension mean for position sizing or entry timing?]
 
 RECOMMENDATION
-[1-2 sentences. State the position decision, sizing guidance (e.g. underweight, full position, no position), and the one condition that would cause a re-rating.]
+[1-2 sentences. State the position decision and sizing guidance. Name the single most important metric to monitor that would trigger a re-rating up or down.]
 
 Rules:
-- Use actual numbers from the analyst signals and Q&A throughout
+- Pull specific numbers from the FULL ANALYST FINDINGS — not just the signal summaries
+- Every sentence in INVESTMENT THESIS must contain at least one specific number
 - No preamble, no closing remarks, no markdown formatting
-- Write in the voice of a senior portfolio manager — direct, precise, professional
+- Write in the voice of a senior PM — direct, precise, no hedging language like "may", "could potentially", "might"
 - Do not repeat the decision header — it will be prepended separately"""
 
     try:
         client = Anthropic()
         response = client.messages.create(
             model=SONNET_MODEL,
-            max_tokens=600,
+            max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text.strip()
@@ -253,7 +268,7 @@ def output_node(state: ThesisState) -> dict:
         f"ANALYST SIGNALS:\n{signal_lines}\n"
     )
 
-    # LLM-written narrative body
+    # LLM-written narrative body — pass full raw_outputs so Sonnet has actual numbers
     narrative = _write_memo_narrative(
         ticker, final_decision, conviction, consensus, rounds_run,
         signals,
@@ -261,6 +276,7 @@ def output_node(state: ThesisState) -> dict:
         state.get("conflicts", []),
         agent_questions,
         agent_answers,
+        raw_outputs=state.get("raw_outputs", {}),
     )
 
     if narrative:

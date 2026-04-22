@@ -326,7 +326,6 @@ function ConflictRow({ msg }: { msg: Extract<ChatMsg, { kind: 'conflict' }> }) {
 
 function SynthesisRow({ msg }: { msg: Extract<ChatMsg, { kind: 'synthesis' }> }) {
   const pct = Math.round(msg.consensus * 100);
-  const barColor = pct >= 70 ? '#10B981' : pct >= 50 ? '#F59E0B' : '#EF4444';
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -339,27 +338,13 @@ function SynthesisRow({ msg }: { msg: Extract<ChatMsg, { kind: 'synthesis' }> })
         <div className="flex items-baseline gap-1.5 mb-1.5">
           <span className="text-sm font-semibold" style={{ color: '#1A1A1A', fontFamily: 'Inter, sans-serif' }}>PM</span>
           <span className="text-xs" style={{ color: '#9CA3AF', fontFamily: 'Inter, sans-serif' }}>
-            Round {msg.round} synthesis
+            Round {msg.round} · {pct}% consensus
           </span>
         </div>
         <div
           className="rounded-2xl rounded-tl-sm px-4 py-3.5 prose prose-sm max-w-none"
           style={{ background: '#F9FAFB', border: '1px solid #E5E7EB', fontFamily: 'Inter, sans-serif', color: '#374151' }}
         >
-          <div className="flex items-center gap-3 mb-3">
-            <div className="flex-1 h-1.5 bg-[#E5E7EB] rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${pct}%` }}
-                transition={{ duration: 0.7, ease: 'easeOut' }}
-                className="h-full rounded-full"
-                style={{ background: barColor }}
-              />
-            </div>
-            <span className="text-xs tabular-nums flex-shrink-0" style={{ color: '#6B7280', fontFamily: 'Inter, sans-serif' }}>
-              {pct}% consensus
-            </span>
-          </div>
           <ReactMarkdown
             components={{
               h1: ({ children }) => <p className="text-sm font-semibold mb-2" style={{ color: '#1A1A1A' }}>{children}</p>,

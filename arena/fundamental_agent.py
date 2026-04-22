@@ -829,6 +829,20 @@ def run_fundamental_agent(state: ThesisState) -> dict:
         updated_questions = _generate_question("fundamental", pillar_scores, signal, state)
         updated_answers = _extract_answers("fundamental", incoming_questions, signal, pillar_scores, state)
 
+        # Build explicit price target line for memo extraction — grounded in computed numbers
+        implied_price = valuation.get("implied_price")
+        current_price_val = valuation.get("current_price")
+        price_target_line = ""
+        if implied_price and current_price_val:
+            upside = pillar_scores.get("upside_pct", 0)
+            bear_price = round(implied_price * 0.75, 2)
+            bull_price = round(implied_price * 1.20, 2)
+            price_target_line = (
+                f"\nPRICE TARGETS (EV/EBITDA implied): "
+                f"bear=${bear_price} | base=${implied_price} | bull=${bull_price} "
+                f"(current=${current_price_val}, implied upside={upside:+.1f}%)"
+            )
+
         # Rich findings: full CoT chain for peer agents to reason from
         raw_findings = (
             f"FUNDAMENTAL ANALYSIS — {ticker}\n\n"
@@ -840,6 +854,7 @@ def run_fundamental_agent(state: ThesisState) -> dict:
             f"Upside={pillar_scores.get('upside_pct', 0):.1f}% | FCF={pillar_scores.get('fcf_margin', 0):.1f}% | "
             f"RevCAGR={pillar_scores.get('revenue_cagr', 0):.1f}% | D/E={pillar_scores.get('de_ratio', 0):.2f} | "
             f"P/E vs sector={pillar_scores.get('pe_vs_sector', 'N/A')}"
+            f"{price_target_line}"
         )
 
         if incoming_questions:

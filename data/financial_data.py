@@ -860,3 +860,53 @@ class FinancialDataFetcher:
             logger.error(f"Error making FMP request to {endpoint}: {e}")
             return None
 
+    def get_price_history(self, ticker: str, days: int = 400) -> List[Dict]:
+        """
+        Fetch daily closing prices from FMP for the last `days` calendar days.
+        Returns list of {"date": "YYYY-MM-DD", "close": float} sorted newest first.
+        Never raises — returns [] on any failure.
+
+        Uses FMP historical-price-eod/full endpoint (included in free plan).
+        """
+        if not self.fmp_api_key:
+            logger.warning("get_price_history: FMP_API_KEY not set, returning empty list.")
+            return []
+
+        from datetime import date, timedelta
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days)
+
+        url = f"{FMP_BASE_URL}/historical-price-eod/full"
+        params = {
+            "symbol": ticker,
+            "from": start_date.isoformat(),
+            "to": end_date.isoformat(),
+            "apikey": self.fmp_api_key,
+        }
+
+        try:
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if not isinstance(data, list):
+                logger.warning(f"get_price_history: unexpected response format for {ticker}")
+                return []
+
+            result = []
+            for row in data:
+                try:
+                    result.append({
+                        "date": row["date"],
+                        "close": float(row["close"]),
+                    })
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+            # FMP returns newest first — keep that order
+            return result
+
+        except Exception as e:
+            logger.error(f"get_price_history failed for {ticker}: {e}")
+            return []
+
