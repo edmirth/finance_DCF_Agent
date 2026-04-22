@@ -115,6 +115,9 @@ def _check_memo_rate_limits(client_ip: str) -> None:
         raise HTTPException(status_code=429, detail="Rate limit reached — try again later")
 
 
+# Path to frontend build — defined early so root route can reference it
+FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+
 # Initialize FastAPI app
 app = FastAPI(title="Financial Analysis API", version="1.0.0", lifespan=lifespan)
 
@@ -806,9 +809,22 @@ async def _persist_conversation(
         logger.error(f"[DB] Persistence error: {e}")
 
 
+@app.get("/api/health")
+async def health():
+    """Health check endpoint"""
+    return {
+        "status": "online",
+        "service": "Financial Analysis API",
+        "version": "1.0.0",
+        "agents": ["research", "market", "portfolio", "earnings", "arena"]
+    }
+
 @app.get("/")
 async def root():
-    """Health check endpoint"""
+    """Serve frontend or health check"""
+    index_path = os.path.join(FRONTEND_BUILD_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
     return {
         "status": "online",
         "service": "Financial Analysis API",
@@ -2171,9 +2187,6 @@ async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession
 # ---------------------------------------------------------------------------
 # Static file serving for production (serves React build)
 # ---------------------------------------------------------------------------
-
-# Path to frontend build directory
-FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
 
 # Mount static files if build exists (production mode)
 if os.path.isdir(FRONTEND_BUILD_DIR):
