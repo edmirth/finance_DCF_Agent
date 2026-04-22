@@ -8,6 +8,7 @@ from agents.finance_qa_agent import create_finance_qa_agent, interactive_session
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
 from agents.earnings_agent import create_earnings_agent
+from agents.dcf_agent import DCFAgent
 import argparse
 
 
@@ -52,13 +53,14 @@ Modes:
   research  - Finance Q&A: quick data lookups, calculations, comparisons, and news (conversational)
   portfolio - Portfolio analysis (metrics, diversification, tax optimization)
   earnings  - Earnings-focused equity research with quarterly trends and estimates
+  dcf       - DCF valuation with two-stage pipeline (data fetch → analysis)
         """
     )
 
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["research", "market", "portfolio", "earnings", "arena"],
+        choices=["research", "market", "portfolio", "earnings", "arena", "dcf"],
         default="research",
         help="Agent mode (default: research)"
     )
@@ -141,6 +143,23 @@ Modes:
         except Exception as e:
             print(f"Error initializing earnings agent: {e}")
             sys.exit(1)
+    elif args.mode == "dcf":
+        # DCF mode - two-stage pipeline
+        if not args.ticker:
+            print("DCF mode requires --ticker")
+            sys.exit(1)
+        
+        print(f"Initializing DCF Agent (two-stage pipeline)...")
+        try:
+            agent = DCFAgent(model=args.model)
+            print(f"DCF Agent initialized with model: {args.model}\n")
+            result = agent.analyze(args.ticker)
+            print(agent.format_report(result))
+        except Exception as e:
+            print(f"Error running DCF agent: {e}")
+            sys.exit(1)
+        return
+
     elif args.mode == "arena":
         import re
         from arena.run import run_arena
