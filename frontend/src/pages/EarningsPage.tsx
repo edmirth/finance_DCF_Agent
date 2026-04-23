@@ -224,11 +224,11 @@ function EarningsPage() {
   const hasResults = !isAnalyzing && rawResponse;
 
   return (
-    <div className="earnings-page pl-20">
+    <div className="earnings-page">
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
       <main id="main-content" tabIndex={-1} className="flex justify-center items-start min-h-screen">
-        <div className="w-full max-w-[720px] px-6 py-8 mx-auto">
+        <div className="w-full max-w-[720px] px-4 sm:px-6 py-6 sm:py-8 mx-auto">
 
           {/* Empty State */}
           {!isAnalyzing && !rawResponse && (

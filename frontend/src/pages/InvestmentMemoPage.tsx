@@ -160,41 +160,21 @@ function MemoHeader({
 }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'flex-end',
-        justifyContent: 'space-between',
-        marginBottom: 28,
-        paddingBottom: 20,
-        borderBottom: '1px solid #EEEEEE',
-      }}
+      className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-5 sm:mb-7 pb-4 sm:pb-5 border-b border-gray-200"
     >
       <div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 2 }}>
+        <div className="flex items-baseline gap-2 sm:gap-3 mb-1">
           <span
-            className="display-serif"
-            style={{
-              fontSize: 32,
-              fontWeight: 400,
-              color: '#0F172A',
-              lineHeight: 1,
-            }}
+            className="display-serif text-2xl sm:text-[32px] font-normal text-slate-900 leading-none"
           >
             {ticker}
           </span>
-          <span style={{
-            fontFamily: 'IBM Plex Sans, sans-serif',
-            fontSize: 13,
-            color: '#ABABAB',
-            fontWeight: 400,
-          }}>
+          <span className="text-xs sm:text-[13px] text-gray-400 font-normal" style={{ fontFamily: 'IBM Plex Sans, sans-serif' }}>
             Investment Memo
           </span>
         </div>
-        <span style={{
+        <span className="text-[10px] text-gray-300" style={{
           fontFamily: 'IBM Plex Mono, monospace',
-          fontSize: 10,
-          color: '#C4C4C4',
           letterSpacing: '0.06em',
         }}>
           {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}
@@ -202,6 +182,7 @@ function MemoHeader({
       </div>
       <button
         onClick={onToggleReasoning}
+        className="self-start sm:self-auto min-h-[36px]"
         style={{
           fontSize: 11,
           color: '#9CA3AF',
@@ -489,46 +470,32 @@ const handleSave = async () => {
 
   return (
     <div
+      className="min-h-screen bg-white"
       style={{
-        marginLeft: 80,
-        minHeight: '100vh',
-        background: '#FFFFFF',
         fontFamily: 'IBM Plex Sans, -apple-system, sans-serif',
         color: '#1A1A1A',
       }}
     >
-      <div style={{ maxWidth: 820, margin: '0 auto', padding: '52px 24px 100px' }}>
+      <div className="max-w-[820px] mx-auto px-4 sm:px-6 py-6 sm:py-12 pb-24">
 
         {/* Header */}
-        <div style={{ marginBottom: 36 }}>
+        <div className="mb-6 sm:mb-9">
           <h1
-            className="display-serif"
-            style={{
-              fontSize: 30,
-              fontWeight: 400,
-              color: '#0F172A',
-              margin: '0 0 8px',
-              lineHeight: 1.2,
-            }}
+            className="display-serif text-2xl sm:text-[30px] font-normal text-slate-900 mb-2 leading-tight"
           >
             Investment Memo
           </h1>
-          <p style={{ fontSize: 13, color: '#9CA3AF', margin: 0, fontFamily: 'IBM Plex Sans, sans-serif' }}>
+          <p className="text-xs sm:text-[13px] text-slate-400 m-0" style={{ fontFamily: 'IBM Plex Sans, sans-serif' }}>
             Enter a ticker — get a 5-analyst investment committee memo in ~90 seconds.
           </p>
         </div>
 
         {/* Input bar */}
         <div
-          style={{
-            display: 'flex',
-            gap: 8,
-            marginBottom: 36,
-            alignItems: 'center',
-          }}
+          className="flex flex-col sm:flex-row gap-3 sm:gap-2 mb-6 sm:mb-9"
         >
           {/* Ticker search combobox */}
-          <div style={{ position: 'relative' }}>
+          <div className="relative flex-1 sm:flex-none">
             <input
               ref={searchInputRef}
               type="text"
@@ -539,9 +506,8 @@ const handleSave = async () => {
               placeholder="Search ticker or company…"
               aria-label="Search ticker or company name"
               disabled={pageState === 'analyzing'}
-              className="ticker-input"
+              className="ticker-input w-full sm:w-[240px]"
               style={{
-                width: 240,
                 opacity: pageState === 'analyzing' ? 0.6 : 1,
               }}
             />
@@ -558,7 +524,9 @@ const handleSave = async () => {
                   position: 'absolute',
                   top: 'calc(100% + 4px)',
                   left: 0,
-                  width: 320,
+                  right: 0,
+                  minWidth: 280,
+                  maxWidth: 320,
                   background: '#FFFFFF',
                   border: '1.5px solid #E5E7EB',
                   borderRadius: 10,
@@ -614,6 +582,7 @@ const handleSave = async () => {
             value={queryMode}
             onChange={e => setQueryMode(e.target.value)}
             disabled={pageState === 'analyzing'}
+            className="flex-1 sm:flex-none min-h-[44px]"
             style={{
               padding: '10px 14px',
               border: '1px solid #E0E0E0',
@@ -638,6 +607,7 @@ const handleSave = async () => {
           <button
             onClick={handleSubmit}
             disabled={pageState === 'analyzing' || !ticker.trim()}
+            className="w-full sm:w-auto min-h-[44px]"
             style={{
               padding: '10px 22px',
               background: pageState === 'analyzing' || !ticker.trim() ? '#F3F4F6' : '#0F172A',
@@ -770,38 +740,36 @@ const handleSave = async () => {
             <div>
               {/* Verdict strip */}
               <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  marginBottom: 24,
-                }}
+                className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 mb-6"
               >
-                <span className={`verdict-badge ${verdictClass}`}>
-                  {result.verdict}
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-                  <div className="agent-conf-track" style={{ flex: 1, maxWidth: 120 }}>
-                    <div
-                      className="agent-conf-fill"
-                      style={{
-                        width: `${confPct}%`,
-                        background: result.verdict === 'BUY' ? '#16A34A' : result.verdict === 'PASS' ? '#DC2626' : '#F59E0B',
-                        opacity: 0.6,
-                      }}
-                    />
-                  </div>
-                  <span
-                    style={{
-                      fontFamily: 'IBM Plex Mono, monospace',
-                      fontSize: 10,
-                      color: '#9CA3AF',
-                      fontWeight: 600,
-                      letterSpacing: '0.04em',
-                    }}
-                  >
-                    {confPct}% committee confidence
+                <div className="flex items-center gap-3">
+                  <span className={`verdict-badge ${verdictClass}`}>
+                    {result.verdict}
                   </span>
+                  <div className="flex items-center gap-2 flex-1">
+                    <div className="agent-conf-track flex-1 max-w-[100px] sm:max-w-[120px]">
+                      <div
+                        className="agent-conf-fill"
+                        style={{
+                          width: `${confPct}%`,
+                          background: result.verdict === 'BUY' ? '#16A34A' : result.verdict === 'PASS' ? '#DC2626' : '#F59E0B',
+                          opacity: 0.6,
+                        }}
+                      />
+                    </div>
+                    <span
+                      className="hidden sm:inline"
+                      style={{
+                        fontFamily: 'IBM Plex Mono, monospace',
+                        fontSize: 10,
+                        color: '#9CA3AF',
+                        fontWeight: 600,
+                        letterSpacing: '0.04em',
+                      }}
+                    >
+                      {confPct}% committee confidence
+                    </span>
+                  </div>
                 </div>
                 <button
                   onClick={() => {
@@ -814,8 +782,9 @@ const handleSave = async () => {
                     setTicker('');
                     setSearchQuery('');
                   }}
+                  className="w-full sm:w-auto sm:ml-auto min-h-[40px]"
                   style={{
-                    padding: '5px 12px',
+                    padding: '8px 16px',
                     background: 'transparent',
                     color: '#9CA3AF',
                     border: '1px solid #E5E7EB',

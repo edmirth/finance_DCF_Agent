@@ -20,8 +20,8 @@ function App() {
       {/* Fixed Sidebar - overlays content */}
       <Sidebar />
 
-      {/* Main Content Area */}
-      <div>
+      {/* Main Content Area - offset for mobile header and desktop sidebar */}
+      <div className="pt-14 md:pt-0 md:pl-[60px] lg:pl-[240px] transition-all duration-300">
         <Routes>
           <Route path="/" element={<InvestmentMemoPage />} />
           <Route path="/portfolio" element={<Portfolio />} />
