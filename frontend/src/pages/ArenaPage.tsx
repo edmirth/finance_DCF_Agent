@@ -483,15 +483,15 @@ function EmptyState({
       </div>
 
       {/* Title */}
-      <h1 className="text-[2.5rem] font-semibold text-[#1A1A1A] mb-3 text-center" style={{ fontFamily: 'Inter, sans-serif', letterSpacing: '-0.03em' }}>
+      <h1 className="text-2xl sm:text-[2.5rem] font-semibold text-[#1A1A1A] mb-3 text-center" style={{ fontFamily: 'Inter, sans-serif', letterSpacing: '-0.03em' }}>
         Agent Arena
       </h1>
-      <p className="text-lg text-center max-w-sm mb-8" style={{ color: '#6B7280', fontFamily: 'Inter, sans-serif', lineHeight: 1.6 }}>
+      <p className="text-base sm:text-lg text-center max-w-sm mb-6 sm:mb-8 px-4" style={{ color: '#6B7280', fontFamily: 'Inter, sans-serif', lineHeight: 1.6 }}>
         Ask anything about a stock. Five AI analysts debate it live and deliver a conviction-rated verdict.
       </p>
 
       {/* Mode pills */}
-      <div className="flex flex-wrap justify-center gap-2 mb-2 max-w-[520px]">
+      <div className="flex flex-wrap justify-center gap-2 mb-2 max-w-[520px] px-4">
         {MODES.map(m => (
           <button
             key={m.id}
@@ -513,7 +513,7 @@ function EmptyState({
       </p>
 
       {/* Suggestions */}
-      <div className="flex flex-col gap-2 w-full max-w-[480px]">
+      <div className="flex flex-col gap-2 w-full max-w-[480px] px-4">
         <p className="text-xs mb-1 text-center" style={{ color: '#C4C4C4', fontFamily: 'Inter, sans-serif' }}>
           Try asking…
         </p>
@@ -913,11 +913,11 @@ export default function ArenaPage() {
       `}</style>
 
       {/* Main scrollable content — padded bottom for fixed input bar */}
-      <div className="earnings-page pl-20" style={{ paddingBottom: 140 }}>
+      <div className="earnings-page" style={{ paddingBottom: 140 }}>
         <a href="#main-content" className="skip-link">Skip to main content</a>
 
         <main id="main-content" tabIndex={-1} className="flex justify-center items-start min-h-screen">
-          <div className="w-full max-w-[720px] px-6 py-8 mx-auto">
+          <div className="w-full max-w-[720px] px-4 sm:px-6 py-6 sm:py-8 mx-auto">
 
             {/* Empty state */}
             {!hasStarted && (
