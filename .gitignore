@@ -74,3 +74,14 @@ frontend/build/
 .DS_Store
 Thumbs.db
 .gstack/
+
+# Database files
+*.db
+
+# Cache files
+data/filing_cache/
+
+# Claude/AI config
+.claude/
+frontend/.claude/
+frontend/.agents/

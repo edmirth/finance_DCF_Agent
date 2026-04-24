@@ -631,10 +631,10 @@ function InputBar({
 
   return (
     <div
-      className="fixed bottom-0 left-20 right-0 pb-6 pt-4 z-50"
+      className="fixed bottom-0 left-0 md:left-[60px] lg:left-[240px] right-0 pb-4 sm:pb-6 pt-4 z-50 transition-all duration-300"
       style={{ background: 'linear-gradient(to top, #FFFFFF 60%, transparent)' }}
     >
-      <div className="max-w-[720px] mx-auto px-6">
+      <div className="max-w-[720px] mx-auto px-4 sm:px-6">
         {/* @mention picker — floats above the input */}
         {mentionOpen && filteredAgents.length > 0 && (
           <div
@@ -684,8 +684,8 @@ function InputBar({
 
           {/* Toolbar */}
           <div className="toolbar">
-            {/* Mode pills on the left */}
-            <div className="rogo-toolbar-left" style={{ gap: '0.375rem', overflow: 'hidden' }}>
+            {/* Mode pills on the left - horizontal scroll on mobile */}
+            <div className="rogo-toolbar-left overflow-x-auto scrollbar-hide" style={{ gap: '0.375rem' }}>
               {MODES.map(m => (
                 <button
                   key={m.id}
