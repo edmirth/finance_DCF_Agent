@@ -11,8 +11,10 @@ Pillars:
   3. Inflation Regime       (CPI, core CPI, trend — cross with sector)
   4. Sector Rotation        (institutional positioning, regime mapping)
 
-Macro data is 100% Tavily-sourced — real-time, never invented.
-FinancialDataFetcher used only to fetch company sector/name.
+Macro data is 100% Tavily-sourced — pre-fetched by data_fetch_node into
+shared_data keys: macro_rates_text, macro_cycle_text, macro_inflation_text,
+macro_sector_text. No live network calls are made during agent execution.
+Company sector/name also read from shared_data.
 
 Uses claude-haiku-4-5-20251001 for ALL LLM calls.
 Never crashes the arena — all errors produce a fallback neutral signal.
@@ -25,8 +27,6 @@ import logging
 from anthropic import Anthropic
 
 from arena.state import AgentSignal, ThesisState
-from data.financial_data import FinancialDataFetcher
-from shared.tavily_client import get_tavily_client
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +51,8 @@ _SECTOR_DISINFLATION_FAVOUR = {"Technology", "Consumer Discretionary", "Communic
 # Section 1 — Data fetching helpers
 # ---------------------------------------------------------------------------
 
-def fetch_company_sector(ticker: str) -> dict:
-    """
-    Fetch only company name, sector, and industry from FinancialDataFetcher.
-    This is the only FinancialDataFetcher call in this agent.
-    All macro data comes from Tavily.
-    Never raises.
-    """
+def _company_sector_from_shared(ticker: str, shared_data: dict) -> dict:
+    """Extract company name, sector, and industry from pre-fetched shared_data."""
     result = {
         "ticker": ticker,
         "company_name": ticker,
@@ -66,24 +61,21 @@ def fetch_company_sector(ticker: str) -> dict:
         "market_cap": None,
     }
 
-    try:
-        fetcher = FinancialDataFetcher()
-        stock_info = fetcher.get_stock_info(ticker)
-        if stock_info:
-            result["company_name"] = stock_info.get("name") or stock_info.get("company_name") or ticker
-            result["sector"] = stock_info.get("sector") or "Unknown"
-            result["industry"] = stock_info.get("industry") or "Unknown"
-            result["market_cap"] = stock_info.get("market_cap")
-    except Exception as e:
-        print(f"[Macro] fetch_company_sector failed for {ticker}: {e}")
+    stock_info = shared_data.get("stock_info", {})
+    if stock_info:
+        result["company_name"] = stock_info.get("name") or stock_info.get("company_name") or ticker
+        result["sector"]       = stock_info.get("sector") or "Unknown"
+        result["industry"]     = stock_info.get("industry") or "Unknown"
+        result["market_cap"]   = stock_info.get("market_cap")
 
     return result
 
 
-def fetch_macro_data(ticker: str, sector: str) -> dict:
+def _macro_data_from_shared(ticker: str, sector: str, shared_data: dict) -> dict:
     """
-    Four Tavily searches (one per pillar) combined into one Haiku extraction call.
-    Each search uses search_depth='basic', max_results=5.
+    Extracts structured macro indicators from pre-fetched Tavily texts in shared_data.
+    Combines the four text blobs and runs one Haiku extraction call — identical logic
+    to the former fetch_macro_data(), only the data source changes.
     Returns structured macro indicators — never invented, never hallucinated.
     Falls back to safe defaults if extraction fails.
     """
@@ -110,50 +102,10 @@ def fetch_macro_data(ticker: str, sector: str) -> dict:
     }
 
     try:
-        tavily = get_tavily_client()
-
-        def _search(query: str) -> str:
-            try:
-                result = tavily.search(
-                    query=query,
-                    topic="finance",
-                    search_depth="basic",
-                    max_results=5,
-                )
-                parts = []
-                if result.get("answer"):
-                    parts.append(result["answer"])
-                for r in result.get("results", [])[:3]:
-                    if r.get("content"):
-                        parts.append(r["content"][:400])
-                return "\n\n".join(parts)
-            except Exception as e:
-                print(f"[Macro] Tavily search failed: {e}")
-                return ""
-
-        # Pillar 1 — Interest rates
-        rates_text = _search(
-            "Federal Reserve interest rate current level direction next meeting "
-            "expectations 10-year Treasury yield today yield curve 2-year vs 10-year spread"
-        )
-
-        # Pillar 2 — Economic cycle
-        cycle_text = _search(
-            "US GDP growth latest quarter unemployment rate PMI manufacturing services "
-            "leading indicators recession probability current economic cycle"
-        )
-
-        # Pillar 3 — Inflation
-        inflation_text = _search(
-            "CPI inflation rate latest month core inflation PCE Federal Reserve "
-            "inflation target trend rising falling disinflation"
-        )
-
-        # Pillar 4 — Sector rotation (ticker-specific)
-        sector_text = _search(
-            f"{ticker} sector {sector} performance outlook current macro environment "
-            "sector rotation analyst view institutional positioning"
-        )
+        rates_text     = shared_data.get("macro_rates_text", "")
+        cycle_text     = shared_data.get("macro_cycle_text", "")
+        inflation_text = shared_data.get("macro_inflation_text", "")
+        sector_text    = shared_data.get("macro_sector_text", "")
 
         combined = (
             "=== INTEREST RATES SEARCH ===\n" + rates_text[:700]
@@ -163,7 +115,7 @@ def fetch_macro_data(ticker: str, sector: str) -> dict:
         )
 
         if not combined.strip():
-            print(f"[Macro] All Tavily searches returned empty for {ticker}")
+            print(f"[Macro] All macro texts empty in shared_data for {ticker}")
             return defaults
 
         client = Anthropic()
@@ -252,7 +204,7 @@ def fetch_macro_data(ticker: str, sector: str) -> dict:
         }
 
     except Exception as e:
-        print(f"[Macro] fetch_macro_data failed for {ticker}: {e}")
+        print(f"[Macro] _macro_data_from_shared failed for {ticker}: {e}")
         return defaults
 
 
@@ -836,11 +788,11 @@ def run_macro_agent(state: ThesisState) -> dict:
     _emit({"type": "arena_agent_start", "agent": "macro", "round": state.get("round", 0) + 1})
 
     try:
-        company_info = fetch_company_sector(ticker)
+        company_info = _company_sector_from_shared(ticker, state.get("shared_data", {}))
         sector = company_info.get("sector") or "Unknown"
 
-        print(f"[Macro] Fetching macro data for {ticker} (sector: {sector})")
-        macro_data = fetch_macro_data(ticker, sector)
+        print(f"[Macro] Reading macro data from shared_data for {ticker} (sector: {sector})")
+        macro_data = _macro_data_from_shared(ticker, sector, state.get("shared_data", {}))
 
         pillar_scores = score_pillars(macro_data, sector)
 
