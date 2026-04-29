@@ -26,14 +26,20 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from anthropic import Anthropic
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import ScheduledAgent, AgentRun
-from backend.scheduler import register_agent_job, next_run_time
+from backend.scheduler import register_agent_job, next_run_time, SUPPORTED_SCHEDULE_LABELS
+from backend.scheduled_agent_config import (
+    normalize_tickers,
+    validate_template,
+    validate_ticker_requirement,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cio"])
@@ -55,6 +61,15 @@ SCHEDULE_LABELS = {
     "weekly_friday": "Every Friday",
     "monthly":       "Monthly",
 }
+
+
+def _validate_schedule_label(schedule_label: str) -> str:
+    normalized = (schedule_label or "").strip()
+    if normalized not in SUPPORTED_SCHEDULE_LABELS:
+        raise ValueError(
+            f"Invalid schedule_label. Must be one of: {sorted(SUPPORTED_SCHEDULE_LABELS)}"
+        )
+    return normalized
 
 
 # ── Context builder ───────────────────────────────────────────────────────────
@@ -220,6 +235,24 @@ class HireFromCioRequest(BaseModel):
     delivery_email: Optional[str] = None
 
 
+def _cio_chat_sync(system_prompt: str, messages: list[dict]) -> dict:
+    response = _anthropic.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1200,
+        system=system_prompt,
+        messages=messages,
+    )
+    raw = response.content[0].text.strip()
+
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    return json.loads(raw)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/cio/chat", response_model=CioChatResponse)
@@ -235,22 +268,7 @@ async def cio_chat(
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
     try:
-        response = _anthropic.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1200,
-            system=system_prompt,
-            messages=messages,
-        )
-        raw = response.content[0].text.strip()
-
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
-        parsed = json.loads(raw)
+        parsed = await run_in_threadpool(_cio_chat_sync, system_prompt, messages)
         action_data = parsed.get("action")
 
         return CioChatResponse(
@@ -310,20 +328,27 @@ async def cio_hire(
     """Create a new agent from a CIO proposal."""
     a = request.action
     now = datetime.now(timezone.utc)
+    try:
+        template = validate_template(a.template or "thesis_guardian")
+        schedule_label = _validate_schedule_label(a.schedule_label or "weekly_monday")
+        tickers = normalize_tickers(a.tickers or [])
+        validate_ticker_requirement(template, tickers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     agent = ScheduledAgent(
         id=str(uuid.uuid4()),
         name=a.name or "New Agent",
         description=a.description,
-        template=a.template or "thesis_guardian",
-        tickers=json.dumps(a.tickers or []),
+        template=template,
+        tickers=json.dumps(tickers),
         topics=json.dumps(a.topics or []),
         instruction=a.instruction or "",
-        schedule_label=a.schedule_label or "weekly_monday",
+        schedule_label=schedule_label,
         delivery_email=request.delivery_email,
         delivery_inapp=request.delivery_inapp,
         is_active=True,
-        next_run_at=next_run_time(a.schedule_label or "weekly_monday"),
+        next_run_at=next_run_time(schedule_label),
         created_at=now,
         updated_at=now,
     )

@@ -18,22 +18,38 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+from backend.config import MARKET_SCHEDULE_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
 # Cron expressions for each schedule label
 _CRON_MAP: dict[str, dict] = {
-    "daily_morning": {"hour": 7, "minute": 0},
-    "pre_market":    {"hour": 6, "minute": 30, "day_of_week": "mon-fri"},
-    "weekly_monday": {"hour": 7, "minute": 0,  "day_of_week": "mon"},
-    "weekly_friday": {"hour": 16, "minute": 0, "day_of_week": "fri"},
-    "monthly":       {"hour": 7, "minute": 0,  "day": 1},
+    # Generic
+    "daily_morning":       {"hour": 7,  "minute": 0},
+    "pre_market":          {"hour": 6,  "minute": 30, "day_of_week": "mon-fri"},
+    "weekly_monday":       {"hour": 7,  "minute": 0,  "day_of_week": "mon"},
+    "weekly_friday":       {"hour": 16, "minute": 0,  "day_of_week": "fri"},
+    "monthly":             {"hour": 7,  "minute": 0,  "day": 1},
+    # Phase 4 — finance-specific
+    "pre_market_brief":    {"hour": 6,  "minute": 30, "day_of_week": "mon-fri"},
+    "market_open":         {"hour": 9,  "minute": 30, "day_of_week": "mon-fri"},
+    "market_close":        {"hour": 16, "minute": 0,  "day_of_week": "mon-fri"},
+    "weekly_friday_close": {"hour": 16, "minute": 0,  "day_of_week": "fri"},
+    "monthly_first":       {"hour": 8,  "minute": 0,  "day": 1},
+    "quarterly":           {"hour": 8,  "minute": 0,  "day": 1, "month": "1,4,7,10"},
 }
+SUPPORTED_SCHEDULE_LABELS = frozenset(_CRON_MAP.keys())
 
 _scheduler: Optional[AsyncIOScheduler] = None
+
+
+def get_scheduler_timezone() -> ZoneInfo:
+    return ZoneInfo(MARKET_SCHEDULE_TIMEZONE)
 
 
 def get_scheduler() -> AsyncIOScheduler:
@@ -84,7 +100,7 @@ async def sync_jobs() -> None:
     # Add or replace jobs for active agents
     for agent in agents:
         cron_kwargs = _CRON_MAP.get(agent.schedule_label, _CRON_MAP["weekly_monday"])
-        trigger = CronTrigger(**cron_kwargs, timezone="UTC")
+        trigger = CronTrigger(**cron_kwargs, timezone=get_scheduler_timezone())
         scheduler.add_job(
             _fire_agent_run,
             trigger=trigger,
@@ -100,7 +116,7 @@ def register_agent_job(agent_id: str, name: str, schedule_label: str) -> None:
     """Add or replace a single scheduler job (call after create/update)."""
     scheduler = get_scheduler()
     cron_kwargs = _CRON_MAP.get(schedule_label, _CRON_MAP["weekly_monday"])
-    trigger = CronTrigger(**cron_kwargs, timezone="UTC")
+    trigger = CronTrigger(**cron_kwargs, timezone=get_scheduler_timezone())
     scheduler.add_job(
         _fire_agent_run,
         trigger=trigger,
@@ -121,11 +137,15 @@ def remove_agent_job(agent_id: str) -> None:
         logger.info(f"Removed scheduler job for agent {agent_id}")
 
 
-def next_run_time(schedule_label: str) -> Optional[datetime]:
-    """Return the next fire time for a given schedule label (UTC)."""
+def next_run_time(schedule_label: str, now: Optional[datetime] = None) -> Optional[datetime]:
+    """Return the next fire time for a given schedule label in UTC."""
     cron_kwargs = _CRON_MAP.get(schedule_label, _CRON_MAP["weekly_monday"])
-    trigger = CronTrigger(**cron_kwargs, timezone="UTC")
-    return trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+    trigger = CronTrigger(**cron_kwargs, timezone=get_scheduler_timezone())
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    next_fire = trigger.get_next_fire_time(None, reference.astimezone(get_scheduler_timezone()))
+    return next_fire.astimezone(timezone.utc) if next_fire else None
 
 
 # ------------------------------------------------------------------
@@ -197,9 +217,11 @@ async def _fire_agent_run(agent_id: str) -> None:
         )
         agent = result2.scalar_one_or_none()
         if agent:
+            completed_at = datetime.now(timezone.utc)
             agent.last_run_at = datetime.now(timezone.utc)
             agent.last_run_status = run.status if run else "failed"
             agent.last_run_summary = outcome.get("findings_summary", "")
+            agent.next_run_at = next_run_time(agent.schedule_label, now=completed_at)
 
         await db.commit()
 

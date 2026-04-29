@@ -13,7 +13,7 @@ from collections import OrderedDict
 from typing import Optional, AsyncGenerator, Any, Dict, List
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
@@ -44,10 +44,12 @@ from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db, SyncSessionLocal
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
 from backend.project_config import normalize_project_config
+from backend.scheduled_agent_config import normalize_tickers, validate_ticker_requirement
 from agents.finance_qa_agent import create_finance_qa_agent
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
 from agents.earnings_agent import create_earnings_agent
+from agents.dcf_agent import DCFAgent
 from arena.arena_agent import ArenaAgent
 from arena.run import run_arena
 from arena.progress import set_arena_queue, clear_arena_queue
@@ -171,10 +173,61 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 _AGENTS_CACHE_MAX = 100
 agents_cache: OrderedDict = OrderedDict()
 agents_cache_lock = threading.Lock()
+class DCFAgentAdapter:
+    """
+    Wraps DCFAgent to match the string-in / string-out interface expected by
+    the backend.  Extracts the ticker from the user's message, runs the two-
+    stage FMP DCF pipeline, and returns the formatted report as a string.
+    """
+
+    def __init__(self, model: str):
+        self._agent = DCFAgent(model=model)
+
+    def analyze(self, message: str) -> str:
+        ticker = _extract_ticker_shared(message)
+        if not ticker:
+            return (
+                "Please include a stock ticker in your message. "
+                "Example: 'Run a DCF analysis on AAPL'"
+            )
+        result = self._agent.analyze(ticker)
+        return self._agent.format_report(result)
+
+
 SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "market", "earnings", "arena"})
 
 # Hold strong references to fire-and-forget tasks so they aren't GC'd before completion
 _background_tasks: set = set()
+
+# ---------------------------------------------------------------------------
+# Research Workstation — WebSocket connection manager
+# ---------------------------------------------------------------------------
+from backend.research_orchestrator import ResearchOrchestrator, AGENT_META
+import uuid as uuid_mod_research
+
+
+class ResearchConnectionManager:
+    def __init__(self):
+        self._connections: dict = {}
+
+    async def connect(self, run_id: str, ws: WebSocket):
+        await ws.accept()
+        self._connections.setdefault(run_id, []).append(ws)
+
+    def disconnect(self, run_id: str, ws: WebSocket):
+        conns = self._connections.get(run_id, [])
+        if ws in conns:
+            conns.remove(ws)
+
+    async def broadcast(self, run_id: str, data: dict):
+        for ws in list(self._connections.get(run_id, [])):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                pass
+
+
+research_manager = ResearchConnectionManager()
 
 
 def _fire_and_forget(coro) -> asyncio.Task:
@@ -191,6 +244,7 @@ AGENT_FALLBACK_METHODS = {
     "portfolio": "analyze",
     "earnings": "analyze",
     "arena": "analyze",
+    "dcf": "analyze",
 }
 
 
@@ -222,6 +276,12 @@ class ChatResponse(BaseModel):
 def _build_agent_cache_key(agent_type: str, model: str, session_id: Optional[str]) -> Optional[str]:
     """Use session-scoped cache keys for stateful agents to prevent context leakage."""
     if agent_type in SESSION_SCOPED_AGENT_TYPES:
+        # Market analysis is conversational when a session_id is present, but a
+        # few internal/test call sites still invoke it without session context.
+        # Reuse a shared instance in that case instead of rebuilding the agent
+        # on every request.
+        if agent_type == "market" and not session_id:
+            return f"{agent_type}_{model}"
         if not session_id:
             return None
         return f"{agent_type}_{model}_{session_id}"
@@ -240,6 +300,8 @@ def _create_agent_instance(agent_type: str, model: str):
         return create_earnings_agent(model=model)
     if agent_type == "arena":
         return ArenaAgent()
+    if agent_type == "dcf":
+        return DCFAgentAdapter(model=model)
     raise ValueError(f"Unknown agent type: {agent_type}")
 
 
@@ -1118,6 +1180,7 @@ class MemoSaveRequest(BaseModel):
     checklist_answers: dict  # {why_now, exit_condition, max_position_size, quarterly_check_metric}
 
 
+@app.post("/memo/save")
 @app.post("/api/memo/save")
 async def memo_save(payload: MemoSaveRequest, db: AsyncSession = Depends(get_db)):
     """Persist a completed memo with checklist answers. Returns share_slug."""
@@ -1180,6 +1243,7 @@ async def ticker_search(q: str = ""):
         return []
 
 
+@app.get("/m/{slug}")
 @app.get("/api/m/{slug}")
 async def memo_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
     """Public read-only endpoint for a shared memo URL."""
@@ -2186,6 +2250,683 @@ async def delete_project_document(project_id: str, doc_id: str, db: AsyncSession
     await db.delete(doc)
     await db.commit()
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Research Workstation endpoints
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/research/{run_id}")
+async def research_websocket(websocket: WebSocket, run_id: str):
+    """WebSocket endpoint for real-time research workstation updates."""
+    await research_manager.connect(run_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # keep-alive ping/pong
+    except WebSocketDisconnect:
+        pass
+    finally:
+        research_manager.disconnect(run_id, websocket)
+
+
+@app.post("/research/start")
+async def research_start(request: Request):
+    """Start a parallel research run for a given ticker."""
+    body = await request.json()
+    ticker = body.get("ticker", "").strip().upper()
+    requested_agents = body.get("agents", list(AGENT_META.keys()))
+    if not isinstance(requested_agents, list):
+        requested_agents = list(AGENT_META.keys())
+    selected_agents = [a for a in requested_agents if a in AGENT_META] or list(AGENT_META.keys())
+
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker required")
+
+    run_id = str(uuid_mod_research.uuid4())
+
+    loop = asyncio.get_running_loop()
+
+    def sync_emit(event: dict):
+        asyncio.run_coroutine_threadsafe(
+            research_manager.broadcast(run_id, event), loop
+        )
+
+    async def run_orchestrator():
+        orchestrator = ResearchOrchestrator(
+            run_id=run_id,
+            ticker=ticker,
+            selected_agents=selected_agents,
+            emit_fn=sync_emit,
+        )
+        await asyncio.to_thread(orchestrator.run)
+
+    _fire_and_forget(run_orchestrator())
+    return {"run_id": run_id, "ticker": ticker}
+
+
+def _suggest_research_agents_sync(ticker: str) -> list[str]:
+    from anthropic import Anthropic as _Anthropic
+    import json as _json_mod
+
+    client = _Anthropic()
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=100,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"For the stock {ticker}, which of these analyst agents should run?\n"
+                "Agents: dcf, fundamental, quant, risk, macro, sentiment\n\n"
+                "Return ONLY a JSON array of agent names. For most stocks use all 6. "
+                "Skip \"quant\" for stocks with <6 months history. "
+                "Skip \"macro\" for micro-caps under $500M.\n"
+                "Example: [\"dcf\",\"fundamental\",\"quant\",\"risk\",\"macro\",\"sentiment\"]"
+            ),
+        }],
+    )
+    text = response.content[0].text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    try:
+        parsed = _json_mod.loads(text.strip())
+    except Exception:
+        logger.warning("[research/pm-suggest] Invalid model output for %s: %r", ticker, text[:200])
+        return list(AGENT_META.keys())
+
+    if not isinstance(parsed, list):
+        return list(AGENT_META.keys())
+
+    selected = [agent for agent in parsed if agent in AGENT_META]
+    return selected or list(AGENT_META.keys())
+
+
+@app.post("/research/pm-suggest")
+async def research_pm_suggest(request: Request):
+    """PM auto-suggests which agents to run for a given ticker."""
+    body = await request.json()
+    ticker = body.get("ticker", "").strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker required")
+
+    agents = await run_in_threadpool(_suggest_research_agents_sync, ticker)
+    return {"agents": agents}
+
+
+# ---------------------------------------------------------------------------
+# Firm Investment Mandate
+# ---------------------------------------------------------------------------
+
+class MandateUpdate(BaseModel):
+    firm_name: Optional[str] = None
+    mandate_text: Optional[str] = None
+    benchmark: Optional[str] = None
+    target_return_pct: Optional[float] = None
+    max_position_pct: Optional[float] = None
+    max_sector_pct: Optional[float] = None
+    max_portfolio_beta: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    strategy_style: Optional[str] = None
+    investment_horizon: Optional[str] = None
+    restricted_tickers: Optional[List[str]] = None
+
+
+@app.get("/firm/mandate")
+async def get_firm_mandate(db: AsyncSession = Depends(get_db)):
+    """Return the current investment mandate (singleton row, always returns defaults if unset)."""
+    from backend.mandate import get_mandate
+    mandate = await get_mandate(db)
+    return mandate
+
+
+# ---------------------------------------------------------------------------
+# Firm Routines catalog (Phase 4)
+# ---------------------------------------------------------------------------
+
+FIRM_ROUTINE_CATALOG = [
+    {
+        "id": "pre_market_brief",
+        "name": "Pre-Market Brief",
+        "icon": "🌅",
+        "description": (
+            "Every weekday at 6:30am. Runs the full investment pipeline on your "
+            "watchlist tickers so you wake up to fresh BUY/HOLD/SELL signals."
+        ),
+        "schedule_label": "pre_market_brief",
+        "schedule_human": "Weekdays 6:30am",
+        "template": "firm_pipeline",
+        "default_instruction": (
+            "Pre-market brief: re-run the full pipeline on watchlist names. "
+            "Highlight any thesis changes since yesterday."
+        ),
+    },
+    {
+        "id": "earnings_radar",
+        "name": "Earnings Radar",
+        "icon": "📰",
+        "description": (
+            "Every weekday at 6am. Catches any overnight earnings releases on your "
+            "watchlist and triggers a fresh earnings analysis task."
+        ),
+        "schedule_label": "pre_market",
+        "schedule_human": "Weekdays 6am",
+        "template": "earnings_watcher",
+        "default_instruction": (
+            "Check watchlist tickers for overnight earnings releases. "
+            "Flag any beats / misses / guidance changes."
+        ),
+    },
+    {
+        "id": "market_open_pulse",
+        "name": "Market Open Pulse",
+        "icon": "🔔",
+        "description": (
+            "Weekdays at 9:30am. Snapshots macro conditions and sector rotation "
+            "so you start the trading session with the macro Macro Agent's read."
+        ),
+        "schedule_label": "market_open",
+        "schedule_human": "Weekdays 9:30am",
+        "template": "market_pulse",
+        "default_instruction": (
+            "Market open snapshot: macro regime, sector winners/losers, "
+            "any breaking news affecting the watchlist."
+        ),
+    },
+    {
+        "id": "market_close_review",
+        "name": "Market Close Review",
+        "icon": "📊",
+        "description": (
+            "Weekdays at 4pm. End-of-day portfolio heartbeat — flags positions "
+            "that moved against your thesis or breached risk limits."
+        ),
+        "schedule_label": "market_close",
+        "schedule_human": "Weekdays 4pm",
+        "template": "portfolio_heartbeat",
+        "default_instruction": (
+            "End-of-day portfolio review: surface any drawdown, big moves, "
+            "or breaches of mandate limits."
+        ),
+    },
+    {
+        "id": "weekly_ic",
+        "name": "Weekly Investment Committee",
+        "icon": "📋",
+        "description": (
+            "Every Friday at 4pm. CIO-style end-of-week brief covering the full "
+            "watchlist with pipeline-driven recommendations for the next week."
+        ),
+        "schedule_label": "weekly_friday_close",
+        "schedule_human": "Friday 4pm",
+        "template": "firm_pipeline",
+        "default_instruction": (
+            "Weekly IC summary: full pipeline rerun on the watchlist. "
+            "Identify the top 3 names to act on next week with rationale."
+        ),
+    },
+    {
+        "id": "monthly_attribution",
+        "name": "Monthly Attribution",
+        "icon": "📈",
+        "description": (
+            "1st of every month. Full re-rating of every name in your watchlist — "
+            "DCF refresh, factor scores, thesis review."
+        ),
+        "schedule_label": "monthly_first",
+        "schedule_human": "1st of month, 8am",
+        "template": "firm_pipeline",
+        "default_instruction": (
+            "Monthly portfolio review: re-run the full pipeline on every covered name. "
+            "Flag any thesis that has materially changed."
+        ),
+    },
+    {
+        "id": "quarterly_research",
+        "name": "Quarterly Research Refresh",
+        "icon": "🧮",
+        "description": (
+            "1st of January, April, July, October. Deep refresh of all "
+            "fundamental theses with the latest financials and SEC filings."
+        ),
+        "schedule_label": "quarterly",
+        "schedule_human": "1st of Jan/Apr/Jul/Oct, 8am",
+        "template": "firm_pipeline",
+        "default_instruction": (
+            "Quarterly deep refresh: rebuild theses from latest 10-Q/10-K filings. "
+            "Update price targets, re-score conviction."
+        ),
+    },
+]
+
+
+@app.get("/firm/routines/catalog")
+async def get_firm_routines_catalog():
+    """Return the catalog of pre-built firm routines users can install with one click."""
+    return {"routines": FIRM_ROUTINE_CATALOG}
+
+
+class InstallRoutineBody(BaseModel):
+    catalog_id: str
+    tickers: List[str] = []
+    instruction: Optional[str] = None
+    delivery_email: Optional[str] = None
+
+
+@app.post("/firm/routines/install", status_code=201)
+async def install_firm_routine(body: InstallRoutineBody, db: AsyncSession = Depends(get_db)):
+    """Install one of the catalog routines as a ScheduledAgent."""
+    from backend.models import ScheduledAgent
+    from backend.scheduler import register_agent_job, next_run_time
+
+    catalog = next((r for r in FIRM_ROUTINE_CATALOG if r["id"] == body.catalog_id), None)
+    if not catalog:
+        raise HTTPException(status_code=404, detail=f"Unknown routine: {body.catalog_id}")
+
+    cleaned_tickers = normalize_tickers(body.tickers)
+    try:
+        validate_ticker_requirement(catalog["template"], cleaned_tickers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    instruction = body.instruction or catalog["default_instruction"]
+    next_run = next_run_time(catalog["schedule_label"])
+
+    agent = ScheduledAgent(
+        name=catalog["name"],
+        description=catalog["description"],
+        template=catalog["template"],
+        tickers=json.dumps(cleaned_tickers),
+        topics=json.dumps([]),
+        instruction=instruction,
+        schedule_label=catalog["schedule_label"],
+        delivery_email=body.delivery_email,
+        delivery_inapp=True,
+        is_active=True,
+        next_run_at=next_run,
+    )
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+
+    # Register the cron job immediately so it's live without restart
+    try:
+        register_agent_job(agent.id, agent.name, agent.schedule_label)
+    except Exception as e:
+        logger.warning(f"Could not register routine job immediately (will pick up on next sync): {e}")
+
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "template": agent.template,
+        "schedule_label": agent.schedule_label,
+        "schedule_human": catalog["schedule_human"],
+        "tickers": cleaned_tickers,
+        "next_run_at": agent.next_run_at.isoformat() if agent.next_run_at else None,
+        "is_active": agent.is_active,
+    }
+
+
+@app.put("/firm/mandate")
+async def update_firm_mandate(body: MandateUpdate, db: AsyncSession = Depends(get_db)):
+    """Upsert the investment mandate. Only supplied fields are updated."""
+    import json as _json
+    from backend.models import InvestmentMandate
+
+    result = await db.execute(
+        __import__('sqlalchemy').select(InvestmentMandate).where(InvestmentMandate.id == "default")
+    )
+    row = result.scalar_one_or_none()
+
+    if row is None:
+        row = InvestmentMandate(id="default")
+        db.add(row)
+
+    if body.firm_name is not None:
+        row.firm_name = body.firm_name
+    if body.mandate_text is not None:
+        row.mandate_text = body.mandate_text
+    if body.benchmark is not None:
+        row.benchmark = body.benchmark
+    if body.target_return_pct is not None:
+        row.target_return_pct = body.target_return_pct
+    if body.max_position_pct is not None:
+        row.max_position_pct = body.max_position_pct
+    if body.max_sector_pct is not None:
+        row.max_sector_pct = body.max_sector_pct
+    if body.max_portfolio_beta is not None:
+        row.max_portfolio_beta = body.max_portfolio_beta
+    if body.max_drawdown_pct is not None:
+        row.max_drawdown_pct = body.max_drawdown_pct
+    if body.strategy_style is not None:
+        row.strategy_style = body.strategy_style
+    if body.investment_horizon is not None:
+        row.investment_horizon = body.investment_horizon
+    if body.restricted_tickers is not None:
+        row.restricted_tickers = _json.dumps([t.upper() for t in body.restricted_tickers])
+
+    row.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(row)
+
+    from backend.mandate import get_mandate
+    return await get_mandate(db)
+
+
+# ---------------------------------------------------------------------------
+# Research Tasks (the firm's "issue board")
+# ---------------------------------------------------------------------------
+
+VALID_TASK_STATUSES = {"pending", "running", "in_review", "done", "cancelled", "failed"}
+VALID_TASK_TYPES = {
+    "initiate_coverage", "earnings", "thesis_update",
+    "sector_screen", "risk_review", "ad_hoc",
+}
+VALID_PRIORITIES = {"low", "medium", "high", "urgent"}
+
+TASK_TYPE_TITLES = {
+    "initiate_coverage": "Initiate Coverage",
+    "earnings": "Earnings Analysis",
+    "thesis_update": "Thesis Update",
+    "sector_screen": "Sector Screen",
+    "risk_review": "Risk Review",
+    "ad_hoc": "Ad-hoc Research",
+}
+
+
+class TaskCreate(BaseModel):
+    ticker: str
+    task_type: Optional[str] = "ad_hoc"
+    title: Optional[str] = None
+    priority: Optional[str] = "medium"
+    selected_agents: Optional[List[str]] = None
+    parent_task_id: Optional[str] = None
+    triggered_by: Optional[str] = "manual"
+    notes: Optional[str] = None
+
+
+class TaskPatch(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    title: Optional[str] = None
+    notes: Optional[str] = None
+    overall_sentiment: Optional[str] = None
+    completed_agents: Optional[List[str]] = None
+    findings: Optional[Dict[str, Any]] = None
+    pm_synthesis: Optional[Dict[str, Any]] = None
+    mandate_check: Optional[str] = None
+    risk_check: Optional[str] = None
+    compliance_check: Optional[str] = None
+    approval_status: Optional[str] = None
+    error: Optional[str] = None
+
+
+def _task_to_dict(t) -> dict:
+    """Serialize a ResearchTask row to a JSON-safe dict."""
+    try:
+        selected = json.loads(t.selected_agents or "[]")
+    except (json.JSONDecodeError, TypeError):
+        selected = []
+    try:
+        completed = json.loads(t.completed_agents or "[]")
+    except (json.JSONDecodeError, TypeError):
+        completed = []
+    try:
+        findings = json.loads(t.findings or "{}")
+    except (json.JSONDecodeError, TypeError):
+        findings = {}
+    try:
+        synthesis = json.loads(t.pm_synthesis) if t.pm_synthesis else None
+    except (json.JSONDecodeError, TypeError):
+        synthesis = None
+
+    return {
+        "id": t.id,
+        "ticker": t.ticker,
+        "task_type": t.task_type,
+        "title": t.title,
+        "status": t.status,
+        "priority": t.priority,
+        "selected_agents": selected,
+        "completed_agents": completed,
+        "findings": findings,
+        "pm_synthesis": synthesis,
+        "overall_sentiment": t.overall_sentiment,
+        "parent_task_id": t.parent_task_id,
+        "triggered_by": t.triggered_by,
+        "run_id": t.run_id,
+        "mandate_check": t.mandate_check,
+        "risk_check": t.risk_check,
+        "compliance_check": t.compliance_check,
+        "approval_status": t.approval_status,
+        "notes": t.notes,
+        "error": t.error,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "started_at": t.started_at.isoformat() if t.started_at else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+@app.post("/tasks", status_code=201)
+async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
+    """Create a new research task. Used by manual creation and by routines."""
+    from backend.models import ResearchTask
+
+    task_type = (body.task_type or "ad_hoc").lower()
+    if task_type not in VALID_TASK_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid task_type. Must be one of: {sorted(VALID_TASK_TYPES)}")
+
+    priority = (body.priority or "medium").lower()
+    if priority not in VALID_PRIORITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid priority. Must be one of: {sorted(VALID_PRIORITIES)}")
+
+    ticker = body.ticker.strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker is required")
+
+    title = body.title or f"{TASK_TYPE_TITLES.get(task_type, 'Research')}: {ticker}"
+    selected = body.selected_agents or ["fundamental", "quant", "risk", "macro", "sentiment", "dcf"]
+
+    task = ResearchTask(
+        ticker=ticker,
+        task_type=task_type,
+        title=title,
+        priority=priority,
+        selected_agents=json.dumps(selected),
+        parent_task_id=body.parent_task_id,
+        triggered_by=body.triggered_by or "manual",
+        notes=body.notes,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    return _task_to_dict(task)
+
+
+@app.get("/tasks")
+async def list_tasks(
+    status: Optional[str] = None,
+    ticker: Optional[str] = None,
+    task_type: Optional[str] = None,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """List tasks. Optional filters: status, ticker, task_type."""
+    from sqlalchemy import select, and_, desc as _desc
+    from backend.models import ResearchTask
+
+    conditions = []
+    if status:
+        if status not in VALID_TASK_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        conditions.append(ResearchTask.status == status)
+    if ticker:
+        conditions.append(ResearchTask.ticker == ticker.upper())
+    if task_type:
+        if task_type not in VALID_TASK_TYPES:
+            raise HTTPException(status_code=400, detail="Invalid task_type filter")
+        conditions.append(ResearchTask.task_type == task_type)
+
+    stmt = select(ResearchTask)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    stmt = stmt.order_by(_desc(ResearchTask.created_at)).limit(min(max(limit, 1), 1000))
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return {"tasks": [_task_to_dict(t) for t in rows]}
+
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from backend.models import ResearchTask
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return _task_to_dict(t)
+
+
+@app.patch("/tasks/{task_id}")
+async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(get_db)):
+    """Update a task's status / fields. Auto-stamps started_at and completed_at on status transitions."""
+    from sqlalchemy import select
+    from backend.models import ResearchTask
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if body.status is not None:
+        if body.status not in VALID_TASK_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        prev = t.status
+        t.status = body.status
+        if body.status == "running" and t.started_at is None:
+            t.started_at = datetime.utcnow()
+        if body.status in ("done", "cancelled", "failed") and t.completed_at is None:
+            t.completed_at = datetime.utcnow()
+    if body.priority is not None:
+        if body.priority not in VALID_PRIORITIES:
+            raise HTTPException(status_code=400, detail="Invalid priority")
+        t.priority = body.priority
+    if body.title is not None:
+        t.title = body.title
+    if body.notes is not None:
+        t.notes = body.notes
+    if body.overall_sentiment is not None:
+        t.overall_sentiment = body.overall_sentiment
+    if body.completed_agents is not None:
+        t.completed_agents = json.dumps(body.completed_agents)
+    if body.findings is not None:
+        t.findings = json.dumps(body.findings)
+    if body.pm_synthesis is not None:
+        t.pm_synthesis = json.dumps(body.pm_synthesis)
+    if body.mandate_check is not None:
+        t.mandate_check = body.mandate_check
+    if body.risk_check is not None:
+        t.risk_check = body.risk_check
+    if body.compliance_check is not None:
+        t.compliance_check = body.compliance_check
+    if body.approval_status is not None:
+        t.approval_status = body.approval_status
+    if body.error is not None:
+        t.error = body.error
+
+    t.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(t)
+    return _task_to_dict(t)
+
+
+@app.delete("/tasks/{task_id}", status_code=204)
+async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from backend.models import ResearchTask
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await db.delete(t)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@app.post("/tasks/{task_id}/run")
+async def run_task_pipeline(task_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Trigger the InvestmentPipeline for a pending task.
+    Stage 1 (parallel research) + Stages 2-4 (Risk → Compliance → PM Decision).
+
+    Returns immediately with a run_id; the pipeline runs in the background and
+    streams events via the existing /ws/research/{run_id} WebSocket.
+    """
+    from sqlalchemy import select
+    from backend.models import ResearchTask
+    from backend.investment_pipeline import InvestmentPipeline
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in ("pending", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is already in status '{task.status}'. Only pending or failed tasks can be run.",
+        )
+
+    try:
+        selected_agents = json.loads(task.selected_agents or "[]") or list(AGENT_META.keys())
+    except (json.JSONDecodeError, TypeError):
+        selected_agents = list(AGENT_META.keys())
+
+    ticker = task.ticker
+    task_type = task.task_type or "ad_hoc"
+    triggered_by = task.triggered_by or "manual"
+
+    run_id = str(uuid_mod_research.uuid4())
+    loop = asyncio.get_running_loop()
+
+    def sync_emit(event: dict):
+        asyncio.run_coroutine_threadsafe(
+            research_manager.broadcast(run_id, event), loop
+        )
+
+    async def run_pipeline():
+        pipeline = InvestmentPipeline(
+            run_id=run_id,
+            ticker=ticker,
+            selected_agents=selected_agents,
+            emit_fn=sync_emit,
+            task_id=task_id,
+            task_type=task_type,
+            triggered_by=triggered_by,
+        )
+        await asyncio.to_thread(pipeline.run)
+
+    _fire_and_forget(run_pipeline())
+    return {"run_id": run_id, "task_id": task_id, "ticker": ticker}
+
+
+@app.get("/tasks/stats/board")
+async def task_board_stats(db: AsyncSession = Depends(get_db)):
+    """Aggregated counts per status for the board header."""
+    from sqlalchemy import select, func as _func
+    from backend.models import ResearchTask
+
+    result = await db.execute(
+        select(ResearchTask.status, _func.count(ResearchTask.id))
+        .group_by(ResearchTask.status)
+    )
+    counts = {s: 0 for s in VALID_TASK_STATUSES}
+    for status_val, n in result.all():
+        if status_val in counts:
+            counts[status_val] = n
+    return {"counts": counts}
 
 
 # ---------------------------------------------------------------------------

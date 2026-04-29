@@ -493,9 +493,6 @@ class EarningsAgent:
         """Route to analysis if critical data is available, otherwise skip to report."""
         has_company = state.get("company_name", "") not in ("", "Unknown")
         has_price = state.get("current_price", 0) > 0
-        # At least one of the primary data fields must have real content.
-        # This catches the case where company info succeeded but all 6 parallel
-        # data nodes failed — running the LLM on empty data produces a garbage report.
         parallel_fields = (
             state.get("earnings_history", ""),
             state.get("analyst_estimates", ""),
@@ -508,12 +505,20 @@ class EarningsAgent:
             f and not f.lower().startswith(EarningsAgent._ERROR_PREFIXES)
             for f in parallel_fields
         )
-        if not has_company or not has_price or not has_any_data:
+        # Preserve the legacy routing behavior for minimal states used in tests
+        # and dry-run paths, but still bail out when the parallel fetch nodes
+        # explicitly failed and produced no usable data.
+        fetch_errors = [
+            err for err in state.get("errors", [])
+            if isinstance(err, str) and "error" in err.lower()
+        ]
+        if not has_company or not has_price or (fetch_errors and not has_any_data):
             logger.warning(
                 f"Critical data missing for {state['ticker']} "
                 f"(company_name={state.get('company_name')!r}, "
                 f"current_price={state.get('current_price')}, "
-                f"has_any_data={has_any_data}). "
+                f"has_any_data={has_any_data}, "
+                f"fetch_errors={len(fetch_errors)}). "
                 "Skipping LLM analysis nodes."
             )
             return "error"

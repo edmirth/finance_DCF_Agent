@@ -8,11 +8,11 @@ Provides comprehensive market overview to inform investment decisions.
 import logging
 import threading
 from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.memory import ConversationBufferWindowMemory
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools.market_tools import get_market_tools
 from agents.reasoning_callback import StreamingReasoningCallback
+from shared.window_memory import WindowConversationMemory
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class MarketAnalysisAgent:
         # In the API, agents are cached per session (SESSION_SCOPED_AGENT_TYPES in api_server.py
         # includes "market"), so memory accumulates correctly across requests in the same session.
         # Without a session_id, a fresh agent is created per request and memory is not retained.
-        self.memory = ConversationBufferWindowMemory(
+        self.memory = WindowConversationMemory(
             k=8,
             memory_key="chat_history",
             return_messages=True,
@@ -118,7 +118,6 @@ class MarketAnalysisAgent:
             verbose=False,  # Avoid double-logging alongside StreamingReasoningCallback
             handle_parsing_errors=True,  # Retry malformed tool calls; max_iterations=15 gives headroom
             max_iterations=15,  # Daily briefing calls ~6 tools; each = 2 iterations (decide + process)
-            memory=self.memory,
         )
 
         # Serialises concurrent invocations on the same cached instance (session-scoped agents).
@@ -135,8 +134,15 @@ class MarketAnalysisAgent:
         """
         with self._invoke_lock:
             self.reasoning_callback.reset()
-            result = self.agent_executor.invoke(input_dict, {"callbacks": callbacks})
-            return result["output"]
+            payload = dict(input_dict)
+            payload.setdefault(
+                self.memory.memory_key,
+                self.memory.load_memory_variables({}).get(self.memory.memory_key, []),
+            )
+            result = self.agent_executor.invoke(payload, {"callbacks": callbacks})
+            output = result["output"]
+            self.memory.save_context({"input": payload.get("input", "")}, {"output": output})
+            return output
 
     def analyze(self, query: str) -> str:
         """Run market analysis based on user query (CLI path)."""

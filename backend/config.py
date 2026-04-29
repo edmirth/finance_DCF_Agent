@@ -219,6 +219,9 @@ STOCK_CONTEXT_KEYWORDS = frozenset([
 import os as _os
 DATABASE_URL: str = _os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./finance_agent.db")
 
+# Finance routines default to U.S. market hours unless explicitly overridden.
+MARKET_SCHEDULE_TIMEZONE: str = _os.getenv("MARKET_SCHEDULE_TIMEZONE", "America/New_York")
+
 # ============================================================================
 # Agent Configuration
 # ============================================================================

@@ -28,10 +28,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import ScheduledAgent, AgentRun
-from backend.scheduler import register_agent_job, remove_agent_job, next_run_time
+from backend.scheduler import (
+    register_agent_job,
+    remove_agent_job,
+    next_run_time,
+    SUPPORTED_SCHEDULE_LABELS,
+)
+from backend.scheduled_agent_config import (
+    normalize_tickers,
+    validate_template,
+    validate_ticker_requirement,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["scheduled-agents"])
+
+
+def _validate_schedule_label(schedule_label: str) -> str:
+    normalized = (schedule_label or "").strip()
+    if normalized not in SUPPORTED_SCHEDULE_LABELS:
+        raise ValueError(
+            f"Invalid schedule_label. Must be one of: {sorted(SUPPORTED_SCHEDULE_LABELS)}"
+        )
+    return normalized
 
 
 # ------------------------------------------------------------------
@@ -120,18 +139,26 @@ async def create_scheduled_agent(
     payload: ScheduledAgentCreate,
     db: AsyncSession = Depends(get_db),
 ):
+    try:
+        template = validate_template(payload.template)
+        schedule_label = _validate_schedule_label(payload.schedule_label)
+        tickers = normalize_tickers(payload.tickers)
+        validate_ticker_requirement(template, tickers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     now = datetime.now(timezone.utc)
-    nrt = next_run_time(payload.schedule_label)
+    nrt = next_run_time(schedule_label)
 
     agent = ScheduledAgent(
         id=str(uuid.uuid4()),
         name=payload.name,
         description=payload.description,
-        template=payload.template,
-        tickers=json.dumps(payload.tickers),
+        template=template,
+        tickers=json.dumps(tickers),
         topics=json.dumps(payload.topics),
         instruction=payload.instruction,
-        schedule_label=payload.schedule_label,
+        schedule_label=schedule_label,
         delivery_email=payload.delivery_email,
         delivery_inapp=payload.delivery_inapp,
         is_active=True,
@@ -177,21 +204,31 @@ async def update_scheduled_agent(
         agent.name = payload.name
     if payload.description is not None:
         agent.description = payload.description
+    current_tickers = json.loads(agent.tickers or "[]")
     if payload.tickers is not None:
-        agent.tickers = json.dumps(payload.tickers)
+        current_tickers = normalize_tickers(payload.tickers)
+        agent.tickers = json.dumps(current_tickers)
     if payload.topics is not None:
         agent.topics = json.dumps(payload.topics)
     if payload.instruction is not None:
         agent.instruction = payload.instruction
     if payload.schedule_label is not None:
-        agent.schedule_label = payload.schedule_label
-        agent.next_run_at = next_run_time(payload.schedule_label)
+        try:
+            agent.schedule_label = _validate_schedule_label(payload.schedule_label)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        agent.next_run_at = next_run_time(agent.schedule_label)
     if payload.delivery_email is not None:
         agent.delivery_email = payload.delivery_email
     if payload.delivery_inapp is not None:
         agent.delivery_inapp = payload.delivery_inapp
     if payload.is_active is not None:
         agent.is_active = payload.is_active
+
+    try:
+        validate_ticker_requirement(agent.template, current_tickers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     agent.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -359,9 +396,11 @@ async def _execute_run_background(run_id: str, agent_id: str, config_data: dict)
         )
         agent = result2.scalar_one_or_none()
         if agent:
+            completed_at = datetime.now(timezone.utc)
             agent.last_run_at = datetime.now(timezone.utc)
             agent.last_run_status = run.status if run else "failed"
             agent.last_run_summary = outcome.get("findings_summary", "")
+            agent.next_run_at = next_run_time(agent.schedule_label, now=completed_at)
             delivery_email = agent.delivery_email
         else:
             delivery_email = None

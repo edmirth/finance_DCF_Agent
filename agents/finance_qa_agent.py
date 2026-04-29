@@ -44,11 +44,11 @@ def _strip_internal_tags(text: str) -> str:
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.memory import ConversationBufferWindowMemory
 
 from tools.research_assistant_tools import get_research_assistant_tools
 from agents.reasoning_callback import StreamingReasoningCallback
 from shared.ticker_utils import extract_ticker as _extract_ticker_shared
+from shared.window_memory import WindowConversationMemory
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -122,13 +122,10 @@ class FinanceQAAgent:
                 _tool_map[tool.name] = tool
         self.tools = list(_tool_map.values())
 
-        # Set up memory for conversation context.
-        # ConversationBufferWindowMemory keeps the last k turns without any LLM
-        # summarization calls â€” the only safe option with Anthropic chat models.
-        # ConversationSummaryBufferMemory was removed because its prune() step
-        # calls the Anthropic API with a completion-style PromptTemplate, which
-        # results in messages=[] and a 400 "at least one message is required" error.
-        self.memory = ConversationBufferWindowMemory(
+        # Keep a lightweight local window of recent turns. We inject this
+        # directly as `chat_history` on each invoke instead of relying on
+        # LangChain's deprecated memory abstractions.
+        self.memory = WindowConversationMemory(
             k=10,  # Keep last 10 conversation turns
             memory_key="chat_history",
             return_messages=True,
@@ -320,14 +317,13 @@ For uploaded project documents: `load_project_document(project_id, filename)` â†
             prompt=prompt
         )
 
-        # Create agent executor with memory
-        # Note: Anthropic models handle stop sequences natively,
-        # no special handling needed
+        # Create agent executor without LangChain memory integration.
+        # We inject `chat_history` manually on each call and persist the turn
+        # into self.memory after a successful response.
         agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,
             verbose=True,
-            memory=self.memory,
             handle_parsing_errors=True,
             max_iterations=15,  # Increased to allow for planning + execution
             return_intermediate_steps=True,  # Capture the plan
@@ -368,8 +364,9 @@ For uploaded project documents: `load_project_document(project_id, filename)` â†
             self.reasoning_callback.reset()
 
             # Run the agent with reasoning callback
+            chat_history = self.memory.load_memory_variables({}).get(self.memory.memory_key, [])
             result = self.agent_executor.invoke(
-                {"input": user_message},
+                {"input": user_message, self.memory.memory_key: chat_history},
                 {"callbacks": [self.reasoning_callback]}
             )
 
@@ -393,6 +390,7 @@ For uploaded project documents: `load_project_document(project_id, filename)` â†
 
             # Strip any internal reasoning/tool-call XML tags that leaked into output
             output = _strip_internal_tags(output)
+            self.memory.save_context({"input": user_message}, {"output": output})
 
             return output
 

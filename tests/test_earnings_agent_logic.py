@@ -254,10 +254,14 @@ class TestFollowupTTL:
 
     def test_exactly_at_boundary_is_fresh(self):
         """State cached exactly 1800 seconds ago is still within the window."""
-        adapter = self._make_adapter_with_state(1800)
+        adapter = _make_adapter()
+        adapter.last_state = _make_state()
+        adapter.last_ticker = "AAPL"
+        now = time.time()
+        adapter.last_state_time = now - 1800
         with adapter._state_lock:
             cached = None
             if adapter.last_state is not None:
-                if time.time() - adapter.last_state_time <= 1800:
+                if now - adapter.last_state_time <= 1800:
                     cached = dict(adapter.last_state)
         assert cached is not None

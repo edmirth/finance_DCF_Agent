@@ -31,13 +31,13 @@ def _make_mock_llm(response_text: str = "Mock response."):
 
 class TestMemoryConfiguration:
     """
-    The agent must use ConversationBufferWindowMemory, not
-    ConversationSummaryBufferMemory, so it never needs to call the LLM
+    The agent must use a local fixed-window memory, not LangChain's
+    summary-based memory abstractions, so it never needs to call the LLM
     for summarization.
     """
 
-    def test_memory_type_is_window_not_summary(self):
-        from langchain.memory import ConversationBufferWindowMemory, ConversationSummaryBufferMemory
+    def test_memory_type_is_local_window_memory(self):
+        from shared.window_memory import WindowConversationMemory
 
         with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
             mock_cls.return_value = _make_mock_llm()
@@ -49,28 +49,27 @@ class TestMemoryConfiguration:
             agent.llm = agent.llm_base
 
             # Instantiate memory the same way __init__ does
-            agent.memory = ConversationBufferWindowMemory(
+            agent.memory = WindowConversationMemory(
                 k=10,
                 memory_key="chat_history",
                 return_messages=True,
                 output_key="output",
             )
 
-        assert isinstance(agent.memory, ConversationBufferWindowMemory), (
-            "Memory must be ConversationBufferWindowMemory — "
-            "ConversationSummaryBufferMemory calls Anthropic with empty messages."
+        assert isinstance(agent.memory, WindowConversationMemory), (
+            "Memory must stay local and windowed — summary-based memory can "
+            "trigger LLM calls during pruning."
         )
-        assert not isinstance(agent.memory, ConversationSummaryBufferMemory)
 
     def test_memory_does_not_call_llm_on_save(self):
         """
-        Saving a context to ConversationBufferWindowMemory must never invoke
-        the LLM (which would risk the empty-messages-400 error).
+        Saving a context to local window memory must never invoke the LLM
+        (which would risk the empty-messages-400 error).
         """
-        from langchain.memory import ConversationBufferWindowMemory
+        from shared.window_memory import WindowConversationMemory
 
         llm_spy = MagicMock()
-        memory = ConversationBufferWindowMemory(
+        memory = WindowConversationMemory(
             k=10,
             memory_key="chat_history",
             return_messages=True,
@@ -84,9 +83,9 @@ class TestMemoryConfiguration:
 
     def test_memory_window_trims_old_turns(self):
         """After k+1 turns the oldest turn must be dropped."""
-        from langchain.memory import ConversationBufferWindowMemory
+        from shared.window_memory import WindowConversationMemory
 
-        memory = ConversationBufferWindowMemory(
+        memory = WindowConversationMemory(
             k=2,
             memory_key="chat_history",
             return_messages=True,
@@ -105,9 +104,9 @@ class TestMemoryConfiguration:
         )
 
     def test_memory_clear_resets_history(self):
-        from langchain.memory import ConversationBufferWindowMemory
+        from shared.window_memory import WindowConversationMemory
 
-        memory = ConversationBufferWindowMemory(
+        memory = WindowConversationMemory(
             k=10, memory_key="chat_history", return_messages=True, output_key="output"
         )
         memory.save_context({"input": "hello"}, {"output": "world"})
@@ -118,11 +117,11 @@ class TestMemoryConfiguration:
     def test_memory_handles_list_content_without_error(self):
         """
         Anthropic returns content as a list of blocks. Saving such a response
-        to ConversationBufferWindowMemory must not raise.
+        to local window memory must not raise.
         """
-        from langchain.memory import ConversationBufferWindowMemory
+        from shared.window_memory import WindowConversationMemory
 
-        memory = ConversationBufferWindowMemory(
+        memory = WindowConversationMemory(
             k=10, memory_key="chat_history", return_messages=True, output_key="output"
         )
         # Simulate Anthropic content-block output
@@ -146,7 +145,7 @@ class TestMultiTurnStability:
     def _make_agent_with_mock_llm(self):
         """Create a FinanceQAAgent instance with all LLM calls mocked out."""
         from agents.finance_qa_agent import FinanceQAAgent
-        from langchain.memory import ConversationBufferWindowMemory
+        from shared.window_memory import WindowConversationMemory
 
         mock_llm = _make_mock_llm("PLTR revenue is $2.8B with 21% growth.")
 
@@ -157,7 +156,7 @@ class TestMultiTurnStability:
             # AgentExecutor.invoke returns a dict with "output"
             mock_executor = MagicMock()
             mock_executor.invoke.return_value = {"output": "Mock answer.", "intermediate_steps": []}
-            mock_executor.memory = ConversationBufferWindowMemory(
+            mock_executor.memory = WindowConversationMemory(
                 k=10, memory_key="chat_history", return_messages=True, output_key="output"
             )
             mock_executor_cls.return_value = mock_executor
@@ -172,9 +171,9 @@ class TestMultiTurnStability:
         assert agent is not None
 
     def test_memory_attribute_is_correct_type(self):
-        from langchain.memory import ConversationBufferWindowMemory
+        from shared.window_memory import WindowConversationMemory
         agent = self._make_agent_with_mock_llm()
-        assert isinstance(agent.memory, ConversationBufferWindowMemory)
+        assert isinstance(agent.memory, WindowConversationMemory)
 
     def test_reset_conversation_works(self):
         """reset_conversation() must not raise after initialization."""
