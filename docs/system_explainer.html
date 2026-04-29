@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Agent System — Visual Explainer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --teal: #10B981;
+    --teal-light: #D1FAE5;
+    --teal-dim: #059669;
+    --ink: #1A1A1A;
+    --ink-soft: #374151;
+    --muted: #6B7280;
+    --border: #E5E7EB;
+    --bg: #FAFAFA;
+    --white: #FFFFFF;
+    --amber: #F59E0B;
+    --amber-light: #FEF3C7;
+    --blue: #3B82F6;
+    --blue-light: #DBEAFE;
+    --red: #EF4444;
+    --red-light: #FEE2E2;
+    --purple: #8B5CF6;
+    --purple-light: #EDE9FE;
+  }
+
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--white);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 40px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header .logo {
+    width: 32px; height: 32px;
+    background: var(--teal);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: 14px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header p { font-size: 13px; color: var(--muted); margin-left: auto; }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--white);
+    padding: 0 40px;
+  }
+  .tab-btn {
+    padding: 14px 24px;
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.15s;
+  }
+  .tab-btn.active {
+    color: var(--teal);
+    border-bottom-color: var(--teal);
+  }
+  .tab-btn:hover:not(.active) { color: var(--ink-soft); }
+
+  /* ── Main content ── */
+  .content { max-width: 1100px; margin: 0 auto; padding: 40px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Section titles ── */
+  .section-title {
+    font-size: 22px; font-weight: 700; margin-bottom: 8px;
+  }
+  .section-sub {
+    font-size: 14px; color: var(--muted); margin-bottom: 32px; line-height: 1.6;
+  }
+
+  /* ══════════════════════════════════════════
+     SINGLE-STOCK AGENTS
+  ══════════════════════════════════════════ */
+  .agents-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+
+  .agent-card {
+    background: var(--white);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .agent-card:hover { border-color: var(--teal); transform: translateY(-2px); box-shadow: 0 4px 16px rgba(16,185,129,0.1); }
+  .agent-card.selected { border-color: var(--teal); background: #F0FDF9; }
+
+  .agent-card .badge {
+    display: inline-flex; align-items: center;
+    padding: 3px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .agent-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .agent-card .tagline { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .agent-card .speed-row {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 12px; font-size: 11px; color: var(--muted);
+  }
+  .speed-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* Detail panel */
+  .agent-detail {
+    background: var(--white);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    display: none;
+    animation: fadeIn 0.2s ease;
+  }
+  .agent-detail.visible { display: block; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .detail-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .detail-header h2 { font-size: 20px; font-weight: 700; }
+  .detail-header p { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .close-btn {
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer; font-size: 12px; color: var(--muted);
+  }
+  .close-btn:hover { border-color: var(--ink); color: var(--ink); }
+
+  .workflow-steps { display: flex; flex-direction: column; gap: 0; }
+  .step {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .step:last-child { border-bottom: none; }
+  .step-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--teal-light); color: var(--teal-dim);
+    font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; margin-top: 1px;
+  }
+  .step-body h4 { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .step-body p { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+  .chip {
+    padding: 4px 10px; border-radius: 6px;
+    font-size: 11px; font-weight: 500;
+    font-family: 'IBM Plex Mono', monospace;
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--ink-soft);
+  }
+
+  /* ══════════════════════════════════════════
+     ARENA TAB
+  ══════════════════════════════════════════ */
+  .arena-layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 24px;
+  }
+
+  /* Left column — controls + legend */
+  .arena-controls {
+    display: flex; flex-direction: column; gap: 16px;
+  }
+
+  .control-card {
+    background: var(--white);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .control-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .ticker-row {
+    display: flex; gap: 8px; margin-bottom: 12px;
+  }
+  .ticker-input {
+    flex: 1; padding: 8px 12px; border: 1.5px solid var(--border);
+    border-radius: 8px; font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px; font-weight: 600; text-transform: uppercase;
+    outline: none;
+  }
+  .ticker-input:focus { border-color: var(--teal); }
+
+  .run-btn {
+    padding: 10px 20px;
+    background: var(--teal);
+    color: white;
+    border: none; border-radius: 8px;
+    font-family: inherit; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .run-btn:hover { background: var(--teal-dim); }
+  .run-btn:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+
+  .reset-btn {
+    width: 100%; padding: 8px;
+    background: none; border: 1px solid var(--border);
+    border-radius: 8px; font-family: inherit; font-size: 12px;
+    color: var(--muted); cursor: pointer;
+  }
+  .reset-btn:hover { border-color: var(--ink); color: var(--ink); }
+
+  .speed-control { display: flex; gap: 6px; margin-bottom: 4px; }
+  .speed-btn {
+    flex: 1; padding: 6px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 11px; font-weight: 500; cursor: pointer;
+    font-family: inherit; color: var(--muted);
+  }
+  .speed-btn.active { background: var(--teal-light); border-color: var(--teal); color: var(--teal-dim); }
+
+  .legend { display: flex; flex-direction: column; gap: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  .agent-pill-list { display: flex; flex-direction: column; gap: 6px; }
+  .agent-pill {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 8px;
+    border: 1.5px solid var(--border);
+    background: var(--bg);
+    font-size: 12px; font-weight: 500;
+    transition: all 0.2s;
+  }
+  .agent-pill.active {
+    border-color: var(--teal);
+    background: var(--teal-light);
+    color: var(--teal-dim);
+  }
+  .agent-pill.done { border-color: #D1D5DB; background: var(--white); color: var(--muted); }
+  .agent-pill .pill-icon { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
+  .agent-pill .pill-signal {
+    margin-left: auto; font-size: 11px; font-weight: 600;
+    padding: 2px 8px; border-radius: 10px;
+  }
+  .signal-bullish { background: #D1FAE5; color: #065F46; }
+  .signal-bearish { background: #FEE2E2; color: #991B1B; }
+  .signal-neutral  { background: #F3F4F6; color: #374151; }
+  .signal-cautious { background: #FEF3C7; color: #92400E; }
+
+  /* Right column — main stage */
+  .arena-stage {
+    display: flex; flex-direction: column; gap: 16px;
+  }
+
+  .stage-card {
+    background: var(--white);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .stage-card h3 {
+    font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin-bottom: 16px;
+  }
+
+  /* Pipeline viz */
+  .pipeline {
+    display: flex; align-items: center; gap: 0;
+    overflow-x: auto; padding: 4px 0;
+  }
+  .pipe-node {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    flex-shrink: 0;
+  }
+  .pipe-box {
+    width: 90px; padding: 10px 8px;
+    border-radius: 8px; border: 1.5px solid var(--border);
+    background: var(--bg);
+    text-align: center; font-size: 11px; font-weight: 500;
+    transition: all 0.3s;
+    position: relative;
+  }
+  .pipe-box.pulse {
+    border-color: var(--teal);
+    background: var(--teal-light);
+    color: var(--teal-dim);
+    box-shadow: 0 0 0 3px rgba(16,185,129,0.15);
+  }
+  .pipe-box.done-node {
+    border-color: #D1D5DB;
+    background: var(--white);
+    color: var(--muted);
+  }
+  .pipe-box .pipe-icon { font-size: 18px; margin-bottom: 4px; }
+  .pipe-arrow {
+    color: var(--border); font-size: 18px; flex-shrink: 0;
+    margin: 0 2px;
+    transition: color 0.3s;
+  }
+  .pipe-arrow.lit { color: var(--teal); }
+
+  /* Log */
+  .log-container {
+    height: 180px; overflow-y: auto;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px; line-height: 1.7;
+    color: var(--ink-soft);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .log-line { display: flex; gap: 10px; }
+  .log-time { color: var(--muted); flex-shrink: 0; }
+  .log-msg.teal { color: var(--teal-dim); font-weight: 500; }
+  .log-msg.amber { color: #B45309; }
+  .log-msg.red { color: #DC2626; }
+  .log-msg.muted { color: var(--muted); }
+
+  /* Consensus bar */
+  .consensus-wrap { margin-top: 4px; }
+  .consensus-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+  .consensus-label span:last-child { font-weight: 600; }
+  .bar-track {
+    height: 10px; border-radius: 10px; background: var(--border);
+    position: relative; overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%; border-radius: 10px; background: var(--teal);
+    width: 0%; transition: width 0.6s ease;
+  }
+  .threshold-line {
+    position: absolute; top: 0; bottom: 0;
+    left: 70%; width: 2px; background: var(--amber);
+    border-radius: 2px;
+  }
+  .threshold-label {
+    font-size: 10px; color: var(--amber); margin-top: 4px; text-align: right;
+  }
+
+  /* Final memo */
+  .memo-box {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px;
+    font-size: 13px; line-height: 1.7; color: var(--ink-soft);
+    display: none;
+    animation: fadeIn 0.4s ease;
+  }
+  .memo-box.visible { display: block; }
+  .memo-verdict {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 18px; font-weight: 700; margin-bottom: 12px;
+    padding: 8px 16px; border-radius: 8px;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 800px) {
+    .agents-grid { grid-template-columns: 1fr 1fr; }
+    .arena-layout { grid-template-columns: 1fr; }
+    .content { padding: 20px; }
+  }
+
+  /* How it works */
+  .how-section { margin-top: 40px; }
+  .how-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .how-card {
+    background: var(--white); border: 1.5px solid var(--border);
+    border-radius: 12px; padding: 20px;
+  }
+  .how-card .how-num {
+    font-size: 28px; font-weight: 700; color: var(--teal);
+    line-height: 1; margin-bottom: 10px;
+  }
+  .how-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .how-card p { font-size: 12px; color: var(--muted); line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">F</div>
+  <h1>Finance Agent System</h1>
+  <p>Interactive Visual Explainer</p>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('single')">Single-Stock Agents</button>
+  <button class="tab-btn" onclick="switchTab('arena')">Finance Agent Arena</button>
+</div>
+
+<div class="content">
+
+  <!-- ═══════════════════════════════════════
+       TAB 1: SINGLE-STOCK AGENTS
+  ═══════════════════════════════════════ -->
+  <div id="tab-single" class="tab-panel active">
+    <div class="section-title">Single-Stock Agents</div>
+    <div class="section-sub">Six specialist agents you talk to directly. Each one has a different job. Click any card to see how it works step by step.</div>
+
+    <div class="agents-grid">
+
+      <div class="agent-card" onclick="showAgent('dcf')">
+        <div class="badge" style="background:#D1FAE5; color:#065F46;">⚡ Fastest</div>
+        <h3>DCF Agent</h3>
+        <div class="tagline">Calculates intrinsic value using Discounted Cash Flow. Gives you bull, base, and bear price targets.</div>
+        <div class="speed-row">
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <span>30–60 sec</span>
+        </div>
+      </div>
+
+      <div class="agent-card" onclick="showAgent('analyst')">
+        <div class="badge" style="background:#DBEAFE; color:#1D4ED8;">📋 Most thorough</div>
+        <h3>Equity Analyst</h3>
+        <div class="tagline">Full research report — industry, competitors, moat, management, DCF. 10 fixed steps every time.</div>
+        <div class="speed-row">
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <span>2–5 min</span>
+        </div>
+      </div>
+
+      <div class="agent-card" onclick="showAgent('research')">
+        <div class="badge" style="background:#EDE9FE; color:#6D28D9;">💬 Conversational</div>
+        <h3>Research Assistant</h3>
+        <div class="tagline">Chat-style exploration. Remembers context across questions. Good for open-ended digging.</div>
+        <div class="speed-row">
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <span>Varies</span>
+        </div>
+      </div>
+
+      <div class="agent-card" onclick="showAgent('market')">
+        <div class="badge" style="background:#FEF3C7; color:#92400E;">🌍 Macro view</div>
+        <h3>Market Agent</h3>
+        <div class="tagline">Ignores individual stocks. Looks at overall market regime, sectors, VIX, sentiment.</div>
+        <div class="speed-row">
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <span>1–2 min</span>
+        </div>
+      </div>
+
+      <div class="agent-card" onclick="showAgent('portfolio')">
+        <div class="badge" style="background:#FEE2E2; color:#991B1B;">💼 Your holdings</div>
+        <h3>Portfolio Agent</h3>
+        <div class="tagline">Takes your actual holdings and evaluates them as a whole — risk, diversification, tax.</div>
+        <div class="speed-row">
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <span>1–2 min</span>
+        </div>
+      </div>
+
+      <div class="agent-card" onclick="showAgent('earnings')">
+        <div class="badge" style="background:#D1FAE5; color:#065F46;">🏗️ Most efficient</div>
+        <h3>Earnings Agent</h3>
+        <div class="tagline">Reads the actual earnings call transcript. Parallel data fetch, then exactly 2 LLM calls.</div>
+        <div class="speed-row">
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#10B981"></div>
+          <div class="speed-dot" style="background:#E5E7EB"></div>
+          <span>1–3 min</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Agent detail panel -->
+    <div id="agent-detail" class="agent-detail"></div>
+
+  </div><!-- /tab-single -->
+
+
+  <!-- ═══════════════════════════════════════
+       TAB 2: ARENA
+  ═══════════════════════════════════════ -->
+  <div id="tab-arena" class="tab-panel">
+    <div class="section-title">Finance Agent Arena</div>
+    <div class="section-sub">Five specialist agents debate an investment thesis in sequence. Each one sees what the others said. A PM node scores consensus and decides when the debate is done.</div>
+
+    <div class="arena-layout">
+
+      <!-- Left: controls -->
+      <div class="arena-controls">
+
+        <div class="control-card">
+          <h3>Run a simulation</h3>
+          <div class="ticker-row">
+            <input id="ticker-input" class="ticker-input" value="AAPL" maxlength="5" />
+            <button id="run-btn" class="run-btn" onclick="startArena()">▶ Run</button>
+          </div>
+          <div style="font-size:11px; color:var(--muted); margin-bottom:12px;">This is a simulation — no real API calls are made.</div>
+
+          <div style="font-size:12px; font-weight:500; margin-bottom:6px;">Simulation speed</div>
+          <div class="speed-control">
+            <button class="speed-btn" onclick="setSpeed(2000, this)">Slow</button>
+            <button class="speed-btn active" onclick="setSpeed(900, this)">Normal</button>
+            <button class="speed-btn" onclick="setSpeed(350, this)">Fast</button>
+          </div>
+        </div>
+
+        <div class="control-card">
+          <h3>Agents</h3>
+          <div class="agent-pill-list">
+            <div class="agent-pill" id="pill-fundamental">
+              <div class="pill-icon" style="background:#D1FAE5;">📊</div>
+              <span>Fundamental</span>
+            </div>
+            <div class="agent-pill" id="pill-risk">
+              <div class="pill-icon" style="background:#FEE2E2;">🛡️</div>
+              <span>Risk</span>
+            </div>
+            <div class="agent-pill" id="pill-quant">
+              <div class="pill-icon" style="background:#DBEAFE;">📈</div>
+              <span>Quant</span>
+            </div>
+            <div class="agent-pill" id="pill-macro">
+              <div class="pill-icon" style="background:#FEF3C7;">🌍</div>
+              <span>Macro</span>
+            </div>
+            <div class="agent-pill" id="pill-sentiment">
+              <div class="pill-icon" style="background:#EDE9FE;">💬</div>
+              <span>Sentiment</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-card">
+          <h3>Signal legend</h3>
+          <div class="legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#10B981"></div><span>Bullish — macro or fundamentals are a tailwind</span></div>
+            <div class="legend-item"><div class="legend-dot" style="background:#EF4444"></div><span>Bearish — clear headwind or negative signal</span></div>
+            <div class="legend-item"><div class="legend-dot" style="background:#6B7280"></div><span>Neutral — no strong directional view</span></div>
+            <div class="legend-item"><div class="legend-dot" style="background:#F59E0B"></div><span>Cautious — specific risk, not fully bearish</span></div>
+          </div>
+        </div>
+
+      </div><!-- /arena-controls -->
+
+      <!-- Right: stage -->
+      <div class="arena-stage">
+
+        <!-- Pipeline -->
+        <div class="stage-card">
+          <h3>Graph flow</h3>
+          <div class="pipeline" id="pipeline">
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-data_fetch">
+                <div class="pipe-icon">🗄️</div>
+                Data Fetch
+              </div>
+              <div style="font-size:10px; color:var(--muted);">16× parallel</div>
+            </div>
+            <div class="pipe-arrow" id="arr-0">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-pm">
+                <div class="pipe-icon">🎯</div>
+                PM
+              </div>
+              <div style="font-size:10px; color:var(--muted);">orchestrator</div>
+            </div>
+            <div class="pipe-arrow" id="arr-1">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-fundamental">
+                <div class="pipe-icon">📊</div>
+                Fundamental
+              </div>
+            </div>
+            <div class="pipe-arrow" id="arr-2">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-risk">
+                <div class="pipe-icon">🛡️</div>
+                Risk
+              </div>
+            </div>
+            <div class="pipe-arrow" id="arr-3">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-quant">
+                <div class="pipe-icon">📈</div>
+                Quant
+              </div>
+            </div>
+            <div class="pipe-arrow" id="arr-4">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-macro">
+                <div class="pipe-icon">🌍</div>
+                Macro
+              </div>
+            </div>
+            <div class="pipe-arrow" id="arr-5">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-sentiment">
+                <div class="pipe-icon">💬</div>
+                Sentiment
+              </div>
+            </div>
+            <div class="pipe-arrow" id="arr-6">→</div>
+            <div class="pipe-node">
+              <div class="pipe-box" id="pipe-output">
+                <div class="pipe-icon">📄</div>
+                Output
+              </div>
+              <div style="font-size:10px; color:var(--muted);">memo</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Log -->
+        <div class="stage-card">
+          <h3>Live log</h3>
+          <div class="log-container" id="log">
+            <div class="log-line"><span class="log-time">--:--</span><span class="log-msg muted">Waiting for simulation to start...</span></div>
+          </div>
+        </div>
+
+        <!-- Consensus -->
+        <div class="stage-card">
+          <h3>PM consensus score</h3>
+          <div class="consensus-wrap">
+            <div class="consensus-label">
+              <span>Agreement × confidence</span>
+              <span id="consensus-pct">0%</span>
+            </div>
+            <div class="bar-track">
+              <div class="bar-fill" id="bar-fill"></div>
+              <div class="threshold-line"></div>
+            </div>
+            <div class="threshold-label">70% threshold — debate ends here</div>
+          </div>
+        </div>
+
+        <!-- Final memo -->
+        <div class="stage-card">
+          <h3>Investment memo output</h3>
+          <div class="memo-box" id="memo-box">
+            <div id="memo-verdict" class="memo-verdict"></div>
+            <div id="memo-body"></div>
+          </div>
+          <div id="memo-placeholder" style="font-size:13px; color:var(--muted);">The final memo will appear here after the debate completes.</div>
+        </div>
+
+      </div><!-- /arena-stage -->
+    </div><!-- /arena-layout -->
+
+    <!-- How it works cards -->
+    <div class="how-section">
+      <div class="section-title" style="font-size:18px; margin-bottom:20px;">How the debate mechanics work</div>
+      <div class="how-grid">
+        <div class="how-card">
+          <div class="how-num">01</div>
+          <h4>Data snapshot first</h4>
+          <p>Before any agent starts, a data collector fetches everything once — financials, prices, 11 Tavily searches, SEC filings — all in parallel. Every agent then reads the exact same numbers. No drift, no inconsistency.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">02</div>
+          <h4>Sequential peer context</h4>
+          <p>Agents run one at a time, in order. When agent 3 starts, it can read the full findings of agents 1 and 2. This means each agent can agree, push back, or calibrate its confidence based on what its peers already said.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">03</div>
+          <h4>3-step reasoning per agent</h4>
+          <p><strong>Data-CoT:</strong> just describe what the numbers say. <strong>Concept-CoT:</strong> apply the framework and reach a view. <strong>Q&A:</strong> if confidence &lt;70%, ask another agent a direct question.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">04</div>
+          <h4>PM scores consensus</h4>
+          <p>After each round, the PM computes: alignment ratio × average confidence. Above 70% = debate over. Below 70% and under the 2-round cap = debate continues for another round.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">05</div>
+          <h4>Conflicts are flagged</h4>
+          <p>When two agents strongly disagree, the PM flags the conflict explicitly. The next round's agents see these flagged conflicts and must address them. Unresolved conflicts surface in the final memo.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">06</div>
+          <h4>Final memo</h4>
+          <p>The PM synthesises everything into a structured investment memo: verdict, conviction level, bull case, bear case, what would change the view, and a summary of the debate. All grounded in real data.</p>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tab-arena -->
+
+</div><!-- /content -->
+
+
+<script>
+// ══════════════════════════════════════════
+// TAB SWITCHING
+// ══════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ══════════════════════════════════════════
+// AGENT DETAIL DATA
+// ══════════════════════════════════════════
+const AGENTS = {
+  dcf: {
+    name: 'DCF Agent',
+    tagline: 'Fast intrinsic value calculation. Tells you if a stock is cheap or expensive right now.',
+    badge: { text: '⚡ ReAct — up to 10 tool calls', bg: '#D1FAE5', color: '#065F46' },
+    tools: ['get_stock_info', 'get_financial_metrics', 'search_web', 'perform_dcf_analysis'],
+    steps: [
+      { title: 'Get company context', desc: 'Pulls name, sector, market cap, and basic profile.' },
+      { title: 'Get historical financials', desc: 'Revenue, net income, free cash flow — last 3–5 years.' },
+      { title: 'Web search for live inputs', desc: 'Searches for current beta, 10-year Treasury yield, analyst growth estimates. These change daily so they can\'t be hardcoded.' },
+      { title: 'Decide assumptions', desc: 'Combines historical CAGR with analyst estimates for revenue growth. Uses web-sourced beta and risk-free rate.' },
+      { title: 'Run DCF calculation', desc: 'Passes all parameters into the DCF engine. Projects 5 years of FCF, applies terminal value, discounts back to today.' },
+      { title: 'Generate 3 scenarios', desc: 'Bull (1.5× growth, lower risk), Base (historical), Bear (0.5× growth, higher risk). Each has a different implied price.' },
+      { title: 'Recommendation', desc: 'Buy if upside >20%, Hold if 0–20%, Sell if negative. Explained with the key number driving the view.' },
+    ]
+  },
+  analyst: {
+    name: 'Equity Analyst',
+    tagline: 'Full institutional-grade research report. 10 fixed steps, always in the same order.',
+    badge: { text: '📋 LangGraph — 10-step workflow', bg: '#DBEAFE', color: '#1D4ED8' },
+    tools: ['get_stock_info', 'get_financial_metrics', 'analyze_industry', 'analyze_competitors', 'analyze_moat', 'search_web', 'perform_dcf_analysis', 'get_sec_filings'],
+    steps: [
+      { title: '1. Company info', desc: 'Profile, sector, market cap, recent news headlines.' },
+      { title: '2. Financials', desc: 'Revenue, margins, FCF, EPS history. Trend analysis.' },
+      { title: '3. Industry analysis', desc: 'TAM, growth rate, competitive dynamics, regulatory environment.' },
+      { title: '4. Competitor analysis', desc: 'Top 3–5 competitors. Market share, relative valuation, strategic positioning.' },
+      { title: '5. Moat evaluation', desc: 'Does the company have durable competitive advantages? Network effects, switching costs, brand, cost advantages.' },
+      { title: '6. Management quality', desc: 'Web search for CEO track record, capital allocation history, insider ownership.' },
+      { title: '7. DCF valuation', desc: 'Same as DCF Agent but with richer context feeding the assumptions.' },
+      { title: '8. Investment thesis', desc: 'Synthesises all findings into a narrative. What\'s the core thesis for owning or avoiding this stock?' },
+      { title: '9. Recommendation', desc: 'Buy / Hold / Sell with price target and key risks.' },
+      { title: '10. Final report', desc: 'Formats everything into a structured research report with sections and citations.' },
+    ]
+  },
+  research: {
+    name: 'Research Assistant',
+    tagline: 'Conversational. Ask follow-up questions, explore branches, come back to prior context.',
+    badge: { text: '💬 ReAct — conversational memory', bg: '#EDE9FE', color: '#6D28D9' },
+    tools: ['get_stock_info', 'calculate_metrics', 'compare_stocks', 'search_news', 'trigger_deep_analysis'],
+    steps: [
+      { title: 'Understand the question', desc: 'Figures out what you\'re actually asking — company comparison, specific metric, historical trend, etc.' },
+      { title: 'Fetch the relevant data', desc: 'Only fetches what\'s needed for your specific question, not a full analysis.' },
+      { title: 'Answer with context', desc: 'Gives a direct answer with the supporting numbers.' },
+      { title: 'Remember the conversation', desc: 'Stores what was discussed. If you say "now compare that to MSFT", it knows what "that" means.' },
+      { title: 'Suggest next steps', desc: 'Proactively suggests what analysis would be useful next based on what you\'re exploring.' },
+      { title: 'Trigger deep dives on demand', desc: 'Can spin up the DCF Agent or full Equity Analyst mid-conversation if needed.' },
+    ]
+  },
+  market: {
+    name: 'Market Agent',
+    tagline: 'Zooms all the way out. Tells you about the market, not any specific stock.',
+    badge: { text: '🌍 ReAct — macro-level tools', bg: '#FEF3C7', color: '#92400E' },
+    tools: ['get_market_overview', 'analyze_sector', 'get_market_news', 'classify_market_regime'],
+    steps: [
+      { title: 'Market overview', desc: 'Major indices (S&P 500, Nasdaq, Dow), performance this week/month/year.' },
+      { title: 'Sector performance', desc: 'Which sectors are outperforming and underperforming. Sector rotation signals.' },
+      { title: 'Fear & greed signals', desc: 'VIX level, put/call ratio, credit spreads. Is the market fearful or greedy?' },
+      { title: 'Market news', desc: 'What are the major macro stories moving markets right now.' },
+      { title: 'Regime classification', desc: 'Bull / bear / sideways. Early cycle / mid cycle / late cycle. Rising rates vs. cutting cycle.' },
+      { title: 'Synthesis', desc: 'Should you be positioned offensively or defensively right now? What sectors make sense in this environment?' },
+    ]
+  },
+  portfolio: {
+    name: 'Portfolio Agent',
+    tagline: 'Evaluates your actual holdings as a system, not individual stocks.',
+    badge: { text: '💼 ReAct — requires your holdings', bg: '#FEE2E2', color: '#991B1B' },
+    tools: ['calculate_portfolio_metrics', 'analyze_diversification', 'identify_tax_loss_harvesting'],
+    steps: [
+      { title: 'You provide your holdings', desc: 'Paste in a JSON with ticker, shares, and cost basis for each position.' },
+      { title: 'Portfolio metrics', desc: 'Total value, total P&L, per-position return, portfolio beta, concentration risk (any single stock >20% of portfolio?).' },
+      { title: 'Diversification assessment', desc: 'Sector exposure breakdown. Are you overweight tech? Underweight healthcare? Effective diversification score.' },
+      { title: 'Tax loss harvesting', desc: 'Identifies positions with unrealized losses above a threshold (default $1,000) that could offset gains.' },
+      { title: 'Recommendations', desc: 'Prioritised action list: rebalancing suggestions, hedging ideas, positions to reconsider.' },
+    ]
+  },
+  earnings: {
+    name: 'Earnings Agent',
+    tagline: 'Most efficient architecture — parallel data fetch, then exactly 2 LLM calls total.',
+    badge: { text: '🏗️ LangGraph 8-node — 2 LLM calls', bg: '#D1FAE5', color: '#065F46' },
+    tools: ['get_quarterly_earnings', 'get_analyst_estimates', 'get_earnings_surprises', 'get_earnings_call_insights', 'compare_peer_earnings', 'get_price_targets', 'get_analyst_ratings'],
+    steps: [
+      { title: 'Node 1: Company info', desc: 'Price, sector, market cap — synchronous first.' },
+      { title: 'Nodes 2–4: Parallel data fetch', desc: 'Three nodes run simultaneously. Node 2: quarterly earnings history. Node 3: analyst estimates. Node 4: earnings surprises + earnings call transcript + peer comparison.' },
+      { title: 'Transcript fallback chain', desc: 'For the earnings call: tries Alpha Vantage (free) → FMP (premium) → Perplexity web search. Whichever works first.' },
+      { title: 'Node 5: Aggregate', desc: 'Sync point — waits for all parallel nodes to complete, merges their results.' },
+      { title: 'Node 6: Analysis (LLM call 1)', desc: 'One single AI call covering trends, quality, guidance, competitive position, and valuation. Using all the data.' },
+      { title: 'Node 7: Thesis (LLM call 2)', desc: 'One single AI call for the investment thesis, BUY/HOLD/SELL rating, and price target.' },
+      { title: 'Node 8: Report', desc: 'Formats the final output into a clean, readable earnings report.' },
+    ]
+  }
+};
+
+function showAgent(id) {
+  const agent = AGENTS[id];
+  const detail = document.getElementById('agent-detail');
+
+  document.querySelectorAll('.agent-card').forEach(c => c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+
+  const stepsHtml = agent.steps.map((s, i) => `
+    <div class="step">
+      <div class="step-num">${i + 1}</div>
+      <div class="step-body">
+        <h4>${s.title}</h4>
+        <p>${s.desc}</p>
+      </div>
+    </div>
+  `).join('');
+
+  const toolsHtml = agent.tools.map(t => `<span class="chip">${t}</span>`).join('');
+
+  detail.innerHTML = `
+    <div class="detail-header">
+      <div>
+        <div class="badge" style="background:${agent.badge.bg}; color:${agent.badge.color}; margin-bottom:8px;">${agent.badge.text}</div>
+        <h2>${agent.name}</h2>
+        <p>${agent.tagline}</p>
+      </div>
+      <button class="close-btn" onclick="closeDetail()">✕ Close</button>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+      <div>
+        <div style="font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Workflow</div>
+        <div class="workflow-steps">${stepsHtml}</div>
+      </div>
+      <div>
+        <div style="font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Tools available</div>
+        <div class="tool-chips">${toolsHtml}</div>
+      </div>
+    </div>
+  `;
+
+  detail.classList.add('visible');
+  detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function closeDetail() {
+  document.getElementById('agent-detail').classList.remove('visible');
+  document.querySelectorAll('.agent-card').forEach(c => c.classList.remove('selected'));
+}
+
+// ══════════════════════════════════════════
+// ARENA SIMULATION
+// ══════════════════════════════════════════
+
+let simSpeed = 900;
+let simRunning = false;
+let simTimeouts = [];
+
+function setSpeed(ms, btn) {
+  simSpeed = ms;
+  document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function clearSim() {
+  simTimeouts.forEach(clearTimeout);
+  simTimeouts = [];
+}
+
+function addLog(time, msg, cls = '') {
+  const log = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${time}</span><span class="log-msg ${cls}">${msg}</span>`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function pipeActivate(id) {
+  document.querySelectorAll('.pipe-box').forEach(b => {
+    if (b.id !== 'pipe-' + id) b.classList.remove('pulse');
+  });
+  const box = document.getElementById('pipe-' + id);
+  if (box) { box.classList.remove('done-node'); box.classList.add('pulse'); }
+}
+
+function pipeDone(id, arrowIdx) {
+  const box = document.getElementById('pipe-' + id);
+  if (box) { box.classList.remove('pulse'); box.classList.add('done-node'); }
+  if (arrowIdx !== undefined) {
+    const arr = document.getElementById('arr-' + arrowIdx);
+    if (arr) arr.classList.add('lit');
+  }
+}
+
+function pillActive(name) {
+  document.querySelectorAll('.agent-pill').forEach(p => p.classList.remove('active'));
+  const pill = document.getElementById('pill-' + name);
+  if (pill) pill.classList.add('active');
+}
+
+function pillDone(name, signal) {
+  const pill = document.getElementById('pill-' + name);
+  if (!pill) return;
+  pill.classList.remove('active');
+  pill.classList.add('done');
+  const signalBadge = document.createElement('span');
+  signalBadge.className = `pill-signal signal-${signal}`;
+  signalBadge.textContent = signal;
+  pill.appendChild(signalBadge);
+}
+
+function setConsensus(pct) {
+  document.getElementById('consensus-pct').textContent = pct + '%';
+  document.getElementById('bar-fill').style.width = pct + '%';
+}
+
+function showMemo(ticker, signals) {
+  const verdictEl = document.getElementById('memo-verdict');
+  const bodyEl = document.getElementById('memo-body');
+  const memoBox = document.getElementById('memo-box');
+  const placeholder = document.getElementById('memo-placeholder');
+
+  const bullish = signals.filter(s => s === 'bullish').length;
+  const bearish = signals.filter(s => s === 'bearish').length;
+  const cautious = signals.filter(s => s === 'cautious').length;
+
+  let verdict, color, bg;
+  if (bullish >= 3) { verdict = 'BUY'; color = '#065F46'; bg = '#D1FAE5'; }
+  else if (bearish >= 3) { verdict = 'SELL'; color = '#991B1B'; bg = '#FEE2E2'; }
+  else if (cautious >= 2) { verdict = 'HOLD / CAUTIOUS'; color = '#92400E'; bg = '#FEF3C7'; }
+  else { verdict = 'HOLD'; color = '#374151'; bg = '#F3F4F6'; }
+
+  verdictEl.style.background = bg;
+  verdictEl.style.color = color;
+  verdictEl.textContent = verdict + ' — ' + ticker;
+
+  const agentNames = ['Fundamental', 'Risk', 'Quant', 'Macro', 'Sentiment'];
+  const rows = agentNames.map((n, i) => `<strong>${n}:</strong> ${signals[i]}`).join(' &nbsp;·&nbsp; ');
+
+  bodyEl.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">${rows}</p>
+    <p>The committee reached ${Math.round(bullish / 5 * 100)}% directional alignment after one debate round. ${
+      bullish >= 3
+        ? 'The majority view is constructive — valuation, growth quality, and macro tailwinds support the position.'
+        : bearish >= 3
+        ? 'The majority view is negative — headwinds across multiple dimensions outweigh the bull case.'
+        : 'The committee is mixed. Fundamental and macro outlooks diverge — position sizing should reflect the uncertainty.'
+    }</p>
+  `;
+
+  memoBox.classList.add('visible');
+  placeholder.style.display = 'none';
+}
+
+function resetArena() {
+  clearSim();
+  simRunning = false;
+  document.getElementById('run-btn').disabled = false;
+
+  document.querySelectorAll('.pipe-box').forEach(b => {
+    b.classList.remove('pulse', 'done-node');
+  });
+  document.querySelectorAll('.pipe-arrow').forEach(a => a.classList.remove('lit'));
+  document.querySelectorAll('.agent-pill').forEach(p => {
+    p.classList.remove('active', 'done');
+    const sig = p.querySelector('.pill-signal');
+    if (sig) sig.remove();
+  });
+
+  document.getElementById('log').innerHTML = '<div class="log-line"><span class="log-time">--:--</span><span class="log-msg muted">Waiting for simulation to start...</span></div>';
+  document.getElementById('consensus-pct').textContent = '0%';
+  document.getElementById('bar-fill').style.width = '0%';
+  document.getElementById('memo-box').classList.remove('visible');
+  document.getElementById('memo-placeholder').style.display = '';
+  setConsensus(0);
+}
+
+function t(offset, fn) {
+  simTimeouts.push(setTimeout(fn, offset));
+}
+
+function startArena() {
+  if (simRunning) return;
+  simRunning = true;
+  document.getElementById('run-btn').disabled = true;
+
+  resetArena();
+
+  const ticker = document.getElementById('ticker-input').value.toUpperCase() || 'AAPL';
+  const S = simSpeed;
+
+  function ts(offset) {
+    const d = new Date(Date.now() + offset);
+    return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0') + ':' + d.getSeconds().toString().padStart(2,'0');
+  }
+
+  // Deterministic but varied signals per ticker
+  const hash = ticker.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  const sigOptions = ['bullish', 'bullish', 'bullish', 'neutral', 'cautious', 'bearish'];
+  const picks = [
+    sigOptions[(hash + 0) % sigOptions.length],
+    sigOptions[(hash + 2) % sigOptions.length],
+    sigOptions[(hash + 1) % sigOptions.length],
+    sigOptions[(hash + 3) % sigOptions.length],
+    sigOptions[(hash + 4) % sigOptions.length],
+  ];
+
+  let elapsed = 100;
+
+  // ── DATA FETCH ──
+  t(elapsed, () => {
+    pipeActivate('data_fetch');
+    addLog(ts(elapsed), `[DataFetch] Starting for ${ticker}`, 'teal');
+  });
+  elapsed += S * 0.4;
+  t(elapsed, () => addLog(ts(elapsed), '[DataFetch] Fetching stock_info...', 'muted'));
+  elapsed += S * 0.4;
+  t(elapsed, () => addLog(ts(elapsed), '[DataFetch] 16 parallel tasks started (financials, 11 Tavily, SEC EDGAR, macro)', 'muted'));
+  elapsed += S * 0.8;
+  t(elapsed, () => addLog(ts(elapsed), '[DataFetch] Done — income=5 stmts, price=400 days, sec=14 filings, macro_texts=yes', 'teal'));
+  t(elapsed, () => pipeDone('data_fetch', 0));
+
+  // ── PM (round 1) ──
+  elapsed += S * 0.3;
+  t(elapsed, () => {
+    pipeActivate('pm');
+    addLog(ts(elapsed), '[PM] Round 1 — setting active agents: fundamental → risk → quant → macro → sentiment', 'teal');
+  });
+  elapsed += S * 0.5;
+  t(elapsed, () => pipeDone('pm', 1));
+
+  // ── AGENTS ──
+  const agentDefs = [
+    { id: 'fundamental', label: 'Fundamental', note: 'EV/EBITDA multiples, earnings quality, P/E, balance sheet', arrowIdx: 2 },
+    { id: 'risk',        label: 'Risk',        note: 'Leverage ratios, liquidity, tail risk, stress scenarios',   arrowIdx: 3 },
+    { id: 'quant',       label: 'Quant',       note: 'Momentum, volatility, factor signals, beta',               arrowIdx: 4 },
+    { id: 'macro',       label: 'Macro',       note: 'Rates, cycle, inflation, sector rotation (from shared_data, no API calls)', arrowIdx: 5 },
+    { id: 'sentiment',   label: 'Sentiment',   note: 'News flow, analyst upgrades, earnings tone, insider activity', arrowIdx: 6 },
+  ];
+
+  agentDefs.forEach((agent, i) => {
+    // Start
+    t(elapsed, () => {
+      pipeActivate(agent.id);
+      pillActive(agent.id);
+      addLog(ts(elapsed), `[${agent.label}] Starting analysis — ${agent.note}`, 'teal');
+      if (i > 0) addLog(ts(elapsed), `[${agent.label}] Reading ${i} prior agent finding(s) from whiteboard`, 'muted');
+    });
+    elapsed += S * 0.5;
+    t(elapsed, () => addLog(ts(elapsed), `[${agent.label}] Data-CoT: reasoning about raw numbers...`, 'muted'));
+    elapsed += S * 0.5;
+    t(elapsed, () => addLog(ts(elapsed), `[${agent.label}] Concept-CoT: applying framework...`, 'muted'));
+    elapsed += S * 0.4;
+
+    const sig = picks[i];
+    const conf = [0.78, 0.65, 0.72, 0.58, 0.81][i];
+    t(elapsed, () => {
+      addLog(ts(elapsed), `[${agent.label}] Signal: ${sig.toUpperCase()} (${Math.round(conf * 100)}% confidence)`, sig === 'bullish' ? 'teal' : sig === 'bearish' ? 'red' : 'amber');
+      pipeDone(agent.id, agent.arrowIdx);
+      pillDone(agent.id, sig);
+    });
+    elapsed += S * 0.2;
+  });
+
+  // ── PM scores consensus ──
+  elapsed += S * 0.3;
+  t(elapsed, () => {
+    pipeActivate('pm');
+    addLog(ts(elapsed), '[PM] Scoring consensus...', 'teal');
+  });
+  elapsed += S * 0.3;
+
+  const bullish = picks.filter(s => s === 'bullish').length;
+  const alignRatio = bullish / 5;
+  const avgConf = 0.71;
+  const consensusScore = Math.round(alignRatio * avgConf * 100);
+
+  t(elapsed, () => {
+    addLog(ts(elapsed), `[PM] alignment_ratio=${(alignRatio).toFixed(2)} × avg_confidence=${avgConf} = ${consensusScore}%`, 'muted');
+    setConsensus(consensusScore);
+  });
+  elapsed += S * 0.3;
+
+  if (consensusScore >= 70) {
+    t(elapsed, () => addLog(ts(elapsed), `[PM] Consensus ${consensusScore}% ≥ 70% threshold → finalising`, 'teal'));
+  } else {
+    t(elapsed, () => addLog(ts(elapsed), `[PM] Consensus ${consensusScore}% < 70% — starting round 2`, 'amber'));
+    elapsed += S * 0.3;
+    t(elapsed, () => addLog(ts(elapsed), '[PM] Round 2 complete. Hard cap reached → finalising regardless', 'amber'));
+  }
+  elapsed += S * 0.3;
+
+  // ── OUTPUT ──
+  t(elapsed, () => {
+    pipeDone('pm');
+    pipeActivate('output');
+    addLog(ts(elapsed), '[Output] Synthesising investment memo...', 'teal');
+  });
+  elapsed += S * 0.5;
+  t(elapsed, () => {
+    pipeDone('output', undefined);
+    document.querySelectorAll('.pipe-arrow').forEach(a => a.classList.add('lit'));
+    addLog(ts(elapsed), `[Output] Memo complete — ${ticker} analysis done`, 'teal');
+    showMemo(ticker, picks);
+    simRunning = false;
+    document.getElementById('run-btn').disabled = false;
+  });
+}
+</script>
+</body>
+</html>

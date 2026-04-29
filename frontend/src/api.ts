@@ -557,4 +557,225 @@ export const saveMemo = async (payload: MemoSavePayload): Promise<{ id: number; 
   return response.data;
 };
 
+// ─── Investment Mandate ─────────────────────────────────────────────────────
+
+export interface InvestmentMandate {
+  id?: string;
+  firm_name: string;
+  mandate_text: string;
+  benchmark: string;
+  target_return_pct: number;
+  max_position_pct: number;
+  max_sector_pct: number;
+  max_portfolio_beta: number;
+  max_drawdown_pct: number;
+  strategy_style: string;
+  investment_horizon: string;
+  restricted_tickers: string[];
+  updated_at?: string;
+}
+
+export const getMandate = async (): Promise<InvestmentMandate> => {
+  const response = await api.get('/firm/mandate');
+  return response.data;
+};
+
+export const updateMandate = async (
+  patch: Partial<InvestmentMandate>
+): Promise<InvestmentMandate> => {
+  const response = await api.put('/firm/mandate', patch);
+  return response.data;
+};
+
+// ─── Research Tasks (Phase 2 — the firm's "issue board") ────────────────────
+
+export type TaskStatus = 'pending' | 'running' | 'in_review' | 'done' | 'cancelled' | 'failed';
+export type TaskType =
+  | 'initiate_coverage'
+  | 'earnings'
+  | 'thesis_update'
+  | 'sector_screen'
+  | 'risk_review'
+  | 'ad_hoc';
+export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
+export type GateStatus = 'not_run' | 'pending' | 'cleared' | 'blocked' | 'applied';
+export type ApprovalStatus = 'not_required' | 'pending' | 'approved' | 'rejected';
+
+export interface AgentFinding {
+  title: string;
+  sentiment: 'bullish' | 'bearish' | 'neutral';
+  confidence: number;
+  key_points: string[];
+  duration_seconds: number;
+  error: string | null;
+}
+
+export type DecisionAction = 'BUY' | 'HOLD' | 'SELL';
+export type Conviction = 'HIGH' | 'MEDIUM' | 'LOW';
+
+export interface RiskVerdict {
+  verdict: 'approved' | 'flagged' | 'vetoed';
+  flags: string[];
+  suggested_max_size_pct: number;
+  bullish_count: number;
+  bearish_count: number;
+  neutral_count: number;
+  avg_confidence: number;
+}
+
+export interface ComplianceVerdict {
+  verdict: 'cleared' | 'blocked';
+  reasons: string[];
+  blocked_by: string | null;
+}
+
+export interface PmSynthesis {
+  // Original (Phase 1) fields
+  overall_sentiment: 'bullish' | 'bearish' | 'neutral';
+  bullish_count: number;
+  bearish_count: number;
+  neutral_count: number;
+  summary: string;
+  // Phase 3 — structured decision
+  action?: DecisionAction;
+  suggested_size_pct?: number;
+  horizon?: string;
+  conviction?: Conviction;
+  requires_approval?: boolean;
+  blocked?: boolean;
+  rationale?: string;
+  risk_verdict?: RiskVerdict;
+  compliance_verdict?: ComplianceVerdict;
+}
+
+export interface ResearchTask {
+  id: string;
+  ticker: string;
+  task_type: TaskType;
+  title: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  selected_agents: string[];
+  completed_agents: string[];
+  findings: Record<string, AgentFinding>;
+  pm_synthesis: PmSynthesis | null;
+  overall_sentiment: 'bullish' | 'bearish' | 'neutral' | null;
+  parent_task_id: string | null;
+  triggered_by: string;
+  run_id: string | null;
+  mandate_check: GateStatus;
+  risk_check: GateStatus;
+  compliance_check: GateStatus;
+  approval_status: ApprovalStatus;
+  notes: string | null;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CreateTaskBody {
+  ticker: string;
+  task_type?: TaskType;
+  title?: string;
+  priority?: TaskPriority;
+  selected_agents?: string[];
+  notes?: string;
+  triggered_by?: string;
+}
+
+export const listTasks = async (filters?: {
+  status?: TaskStatus;
+  ticker?: string;
+  task_type?: TaskType;
+  limit?: number;
+}): Promise<ResearchTask[]> => {
+  const response = await api.get('/tasks', { params: filters });
+  return response.data.tasks;
+};
+
+export const getTask = async (id: string): Promise<ResearchTask> => {
+  const response = await api.get(`/tasks/${id}`);
+  return response.data;
+};
+
+export const createTask = async (body: CreateTaskBody): Promise<ResearchTask> => {
+  const response = await api.post('/tasks', body);
+  return response.data;
+};
+
+export const updateTask = async (
+  id: string,
+  patch: Partial<{
+    status: TaskStatus;
+    priority: TaskPriority;
+    title: string;
+    notes: string;
+  }>,
+): Promise<ResearchTask> => {
+  const response = await api.patch(`/tasks/${id}`, patch);
+  return response.data;
+};
+
+export const deleteTask = async (id: string): Promise<void> => {
+  await api.delete(`/tasks/${id}`);
+};
+
+export const getTaskBoardStats = async (): Promise<Record<TaskStatus, number>> => {
+  const response = await api.get('/tasks/stats/board');
+  return response.data.counts;
+};
+
+export const runTaskPipeline = async (
+  taskId: string,
+): Promise<{ run_id: string; task_id: string; ticker: string }> => {
+  const response = await api.post(`/tasks/${taskId}/run`);
+  return response.data;
+};
+
+// ─── Firm Routines (Phase 4) ────────────────────────────────────────────────
+
+export interface FirmRoutineCatalogItem {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  schedule_label: string;
+  schedule_human: string;
+  template: string;
+  default_instruction: string;
+}
+
+export interface InstalledRoutine {
+  id: string;
+  name: string;
+  template: string;
+  schedule_label: string;
+  schedule_human?: string;
+  tickers: string[];
+  next_run_at: string | null;
+  is_active: boolean;
+}
+
+export const getFirmRoutinesCatalog = async (): Promise<FirmRoutineCatalogItem[]> => {
+  const response = await api.get('/firm/routines/catalog');
+  return response.data.routines;
+};
+
+export const installFirmRoutine = async (
+  catalogId: string,
+  tickers: string[],
+  instruction?: string,
+  deliveryEmail?: string,
+): Promise<InstalledRoutine> => {
+  const response = await api.post('/firm/routines/install', {
+    catalog_id: catalogId,
+    tickers,
+    instruction,
+    delivery_email: deliveryEmail,
+  });
+  return response.data;
+};
+
 export default api;

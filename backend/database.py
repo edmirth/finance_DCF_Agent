@@ -183,6 +183,71 @@ async def init_db() -> None:
                 pass
             else:
                 logger.error(f"Unexpected OperationalError adding key_findings column: {e}")
+        # Idempotent migration: research_tasks (firm "issues" board)
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS research_tasks (
+                id TEXT PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'ad_hoc',
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                selected_agents TEXT NOT NULL DEFAULT '[]',
+                completed_agents TEXT NOT NULL DEFAULT '[]',
+                findings TEXT NOT NULL DEFAULT '{}',
+                pm_synthesis TEXT,
+                overall_sentiment TEXT,
+                parent_task_id TEXT REFERENCES research_tasks(id) ON DELETE SET NULL,
+                triggered_by TEXT NOT NULL DEFAULT 'manual',
+                run_id TEXT,
+                mandate_check TEXT NOT NULL DEFAULT 'not_run',
+                risk_check TEXT NOT NULL DEFAULT 'not_run',
+                compliance_check TEXT NOT NULL DEFAULT 'not_run',
+                approval_status TEXT NOT NULL DEFAULT 'not_required',
+                notes TEXT,
+                error TEXT,
+                created_at DATETIME NOT NULL,
+                started_at DATETIME,
+                completed_at DATETIME,
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        for _idx in [
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_status ON research_tasks (status)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_ticker ON research_tasks (ticker)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_created_at ON research_tasks (created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_parent_task_id ON research_tasks (parent_task_id)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_run_id ON research_tasks (run_id)",
+        ]:
+            try:
+                await conn.execute(text(_idx))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating research_tasks index: {e}")
+        # Idempotent migration: investment_mandate singleton table
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS investment_mandate (
+                id TEXT PRIMARY KEY DEFAULT 'default',
+                firm_name TEXT NOT NULL DEFAULT 'My Investment Firm',
+                mandate_text TEXT NOT NULL DEFAULT '',
+                benchmark TEXT NOT NULL DEFAULT 'S&P 500',
+                target_return_pct REAL NOT NULL DEFAULT 12.0,
+                max_position_pct REAL NOT NULL DEFAULT 5.0,
+                max_sector_pct REAL NOT NULL DEFAULT 25.0,
+                max_portfolio_beta REAL NOT NULL DEFAULT 1.3,
+                max_drawdown_pct REAL NOT NULL DEFAULT 15.0,
+                strategy_style TEXT NOT NULL DEFAULT 'blend',
+                investment_horizon TEXT NOT NULL DEFAULT '12 months',
+                restricted_tickers TEXT NOT NULL DEFAULT '[]',
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        # Seed default row if the table is empty
+        await conn.execute(text("""
+            INSERT OR IGNORE INTO investment_mandate (id, updated_at)
+            VALUES ('default', CURRENT_TIMESTAMP)
+        """))
 
 
 async def get_db() -> AsyncSession:

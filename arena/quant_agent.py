@@ -23,8 +23,6 @@ from typing import Optional
 from anthropic import Anthropic
 
 from arena.state import AgentSignal, ThesisState
-from data.financial_data import FinancialDataFetcher
-from shared.tavily_client import get_tavily_client
 
 logger = logging.getLogger(__name__)
 
@@ -39,40 +37,26 @@ QUESTION_TARGET = "fundamental"
 # Section 1 — Data fetching helpers
 # ---------------------------------------------------------------------------
 
-def fetch_financials(ticker: str) -> dict:
-    """
-    Fetch stock info, financial statements, and key metrics.
-    Each call is independently wrapped — partial data is fine.
-    Never raises.
-    """
+def _financials_from_shared(ticker: str, shared_data: dict) -> dict:
+    """Build the financials dict from pre-fetched shared_data."""
     result: dict = {"ticker": ticker, "_data_points_fetched": 0}
-    fetcher = FinancialDataFetcher()
 
-    try:
-        stock_info = fetcher.get_stock_info(ticker)
-        if stock_info:
-            result.update(stock_info)
-            result["_data_points_fetched"] += 1
-    except Exception as e:
-        print(f"[Quant] get_stock_info failed for {ticker}: {e}")
+    stock_info = shared_data.get("stock_info", {})
+    if stock_info:
+        result.update(stock_info)
+        result["_data_points_fetched"] += 1
 
-    try:
-        statements = fetcher.get_financial_statements(ticker)
-        if statements:
-            result["income_statements"] = statements.get("income_statements", [])
-            result["balance_sheets"] = statements.get("balance_sheets", [])
-            result["cash_flow_statements"] = statements.get("cash_flow_statements", [])
-            result["_data_points_fetched"] += 1
-    except Exception as e:
-        print(f"[Quant] get_financial_statements failed for {ticker}: {e}")
+    stmts = shared_data.get("financial_statements", {})
+    if stmts:
+        result["income_statements"]    = stmts.get("income_statements", [])
+        result["balance_sheets"]       = stmts.get("balance_sheets", [])
+        result["cash_flow_statements"] = stmts.get("cash_flow_statements", [])
+        result["_data_points_fetched"] += 1
 
-    try:
-        metrics = fetcher.get_key_metrics(ticker)
-        if metrics:
-            result["key_metrics"] = metrics
-            result["_data_points_fetched"] += 1
-    except Exception as e:
-        print(f"[Quant] get_key_metrics failed for {ticker}: {e}")
+    metrics = shared_data.get("key_metrics", {})
+    if metrics:
+        result["key_metrics"] = metrics
+        result["_data_points_fetched"] += 1
 
     return result
 
@@ -112,19 +96,11 @@ def _annualised_vol(prices: list, trading_days: int = 252) -> Optional[float]:
     return round(daily_std * math.sqrt(252) * 100, 1)
 
 
-def fetch_price_and_market_data(ticker: str) -> dict:
+def _price_and_market_data_from_shared(ticker: str, shared_data: dict) -> dict:
     """
-    Price history from FMP (real daily closes) + one Tavily search for
-    qualitative revision/earnings-surprise/VIX data.
-
-    Price data (FMP):
-      - current_price, price_12m_ago, price_6m_ago, price_3m_ago  — exact closes
-      - sp500_return_12m  — computed from SPY history
-      - annualised_vol_pct — computed from 252-day log returns
-
-    Qualitative data (Tavily, one search):
-      - earnings_revisions_direction, earnings_surprises,
-        analyst_upgrades_90d, analyst_downgrades_90d, vix_level
+    Compute price momentum metrics from pre-fetched price history and extract
+    analyst revision signals from pre-fetched Tavily text.
+    Calculation logic is identical to the old fetch_price_and_market_data.
     """
     from datetime import date, timedelta
 
@@ -144,19 +120,17 @@ def fetch_price_and_market_data(ticker: str) -> dict:
 
     result = dict(defaults)
 
-    # ── 1. FMP price history ──────────────────────────────────────────────────
+    # ── 1. Price calculations from shared price history ───────────────────────
     try:
-        fetcher = FinancialDataFetcher()
         today = date.today()
-
-        ticker_prices = fetcher.get_price_history(ticker, days=400)
-        spy_prices    = fetcher.get_price_history("SPY",   days=400)
+        ticker_prices = shared_data.get("price_history", [])
+        spy_prices    = shared_data.get("spy_price_history", [])
 
         if ticker_prices:
-            result["current_price"]  = ticker_prices[0]["close"]
-            result["price_12m_ago"]  = _closest_price(ticker_prices, today - timedelta(days=365))
-            result["price_6m_ago"]   = _closest_price(ticker_prices, today - timedelta(days=182))
-            result["price_3m_ago"]   = _closest_price(ticker_prices, today - timedelta(days=91))
+            result["current_price"] = ticker_prices[0]["close"]
+            result["price_12m_ago"] = _closest_price(ticker_prices, today - timedelta(days=365))
+            result["price_6m_ago"]  = _closest_price(ticker_prices, today - timedelta(days=182))
+            result["price_3m_ago"]  = _closest_price(ticker_prices, today - timedelta(days=91))
             vol = _annualised_vol(ticker_prices)
             if vol is not None:
                 result["annualised_vol_pct"] = vol
@@ -168,7 +142,7 @@ def fetch_price_and_market_data(ticker: str) -> dict:
                 result["sp500_return_12m"] = round((spy_now - spy_then) / spy_then, 4)
 
         print(
-            f"[Quant] FMP prices for {ticker}: "
+            f"[Quant] Prices for {ticker}: "
             f"current={result['current_price']} "
             f"12m_ago={result['price_12m_ago']} "
             f"6m_ago={result['price_6m_ago']} "
@@ -177,27 +151,12 @@ def fetch_price_and_market_data(ticker: str) -> dict:
             f"SPY_12m={result['sp500_return_12m']:.1%}"
         )
     except Exception as e:
-        print(f"[Quant] FMP price fetch failed for {ticker}: {e}")
+        print(f"[Quant] Price computation from shared_data failed: {e}")
 
-    # ── 2. Tavily — qualitative signals only (revisions, VIX, surprises) ─────
-    try:
-        tavily = get_tavily_client()
-        revision_result = tavily.search(
-            query=f"{ticker} analyst EPS estimate revisions upgrades downgrades earnings surprise beat miss current VIX level",
-            topic="finance",
-            search_depth="basic",
-            max_results=5,
-        )
-
-        parts = []
-        if revision_result.get("answer"):
-            parts.append(revision_result["answer"])
-        for r in revision_result.get("results", [])[:3]:
-            if r.get("content"):
-                parts.append(r["content"][:400])
-        content = "\n\n".join(parts)[:2000]
-
-        if content.strip():
+    # ── 2. Revisions extraction from pre-fetched Tavily text ─────────────────
+    content = shared_data.get("revisions_search_text", "")[:2000]
+    if content.strip():
+        try:
             client = Anthropic()
             extraction_prompt = (
                 f"Extract from these search results for {ticker}.\n"
@@ -228,9 +187,8 @@ def fetch_price_and_market_data(ticker: str) -> dict:
             result["analyst_downgrades_90d"] = int(parsed.get("analyst_downgrades_90d") or 0)
             if parsed.get("vix_level"):
                 result["vix_level"] = float(parsed["vix_level"])
-
-    except Exception as e:
-        print(f"[Quant] Tavily revision fetch failed for {ticker}: {e}")
+        except Exception as e:
+            print(f"[Quant] Revisions extraction from shared_data failed: {e}")
 
     return result
 
@@ -934,8 +892,9 @@ def run_quant_agent(state: ThesisState) -> dict:
     _emit({"type": "arena_agent_start", "agent": "quant", "round": state.get("round", 0) + 1})
 
     try:
-        financials = fetch_financials(ticker)
-        price_data = fetch_price_and_market_data(ticker)
+        shared_data = state.get("shared_data", {})
+        financials = _financials_from_shared(ticker, shared_data)
+        price_data = _price_and_market_data_from_shared(ticker, shared_data)
         pillar_scores = score_pillars(financials, price_data)
 
         print(

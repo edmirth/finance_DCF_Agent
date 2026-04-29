@@ -227,6 +227,13 @@ def data_fetch_node(state: ThesisState) -> dict:
             lambda: SECEdgarClient().get_recent_filings(ticker, filing_type="4", limit=30),
             [],
         ),
+        # ── FMP pre-calculated DCF valuation (independent benchmark) ──────────
+        # Returns {dcf, stock_price} — used by fundamental agent as a second
+        # opinion alongside its own Haiku-reasoned valuation.
+        "fmp_dcf": (
+            lambda: fetcher.get_fmp_dcf(ticker),
+            {},
+        ),
     }
 
     with ThreadPoolExecutor(max_workers=16) as pool:

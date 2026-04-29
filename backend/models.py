@@ -214,3 +214,77 @@ class AgentRun(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="runs")
+
+
+class ResearchTask(Base):
+    """
+    A research task / "issue" — the unit of work in the firm.
+    Like a Jira ticket but for investment research.
+
+    Status flow:
+      pending  → running  → in_review  → done
+                                       ↘ cancelled / failed
+    """
+    __tablename__ = "research_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    task_type: Mapped[str] = mapped_column(String(50), default="ad_hoc")
+    title: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    priority: Mapped[str] = mapped_column(String(20), default="medium")
+
+    # Agents lifecycle
+    selected_agents: Mapped[str] = mapped_column(Text, default="[]")     # JSON array
+    completed_agents: Mapped[str] = mapped_column(Text, default="[]")    # JSON array
+
+    # Findings (JSON of all agent outputs, keyed by agent name)
+    findings: Mapped[str] = mapped_column(Text, default="{}")            # JSON object
+    pm_synthesis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
+    overall_sentiment: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    # Linkage / triggering
+    parent_task_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("research_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    triggered_by: Mapped[str] = mapped_column(String(50), default="manual")
+    run_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+
+    # Governance / mandate gates
+    mandate_check: Mapped[str] = mapped_column(String(20), default="not_run")
+    risk_check: Mapped[str] = mapped_column(String(20), default="not_run")
+    compliance_check: Mapped[str] = mapped_column(String(20), default="not_run")
+    approval_status: Mapped[str] = mapped_column(String(20), default="not_required")
+
+    # Notes / errors
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Timing
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class InvestmentMandate(Base):
+    """
+    Singleton row (id='default') storing the firm's investment mandate.
+    Every agent reads this at run-time to understand the firm's rules,
+    return target, position limits, and restricted tickers.
+    """
+    __tablename__ = "investment_mandate"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default="default")
+    firm_name: Mapped[str] = mapped_column(String(255), default="My Investment Firm")
+    mandate_text: Mapped[str] = mapped_column(Text, default="")
+    benchmark: Mapped[str] = mapped_column(String(100), default="S&P 500")
+    target_return_pct: Mapped[float] = mapped_column(default=12.0)
+    max_position_pct: Mapped[float] = mapped_column(default=5.0)
+    max_sector_pct: Mapped[float] = mapped_column(default=25.0)
+    max_portfolio_beta: Mapped[float] = mapped_column(default=1.3)
+    max_drawdown_pct: Mapped[float] = mapped_column(default=15.0)
+    strategy_style: Mapped[str] = mapped_column(String(50), default="blend")
+    investment_horizon: Mapped[str] = mapped_column(String(50), default="12 months")
+    restricted_tickers: Mapped[str] = mapped_column(Text, default="[]")   # JSON array
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

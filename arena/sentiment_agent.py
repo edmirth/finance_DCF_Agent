@@ -11,7 +11,7 @@ Pillars:
   4. Insider & Institutional      (insider filings, 13F trends, short interest)
 
 All sentiment data is Tavily-sourced with search_depth="advanced".
-FinancialDataFetcher used only to fetch company name and sector context.
+Company name and sector context read from shared_data (pre-fetched by data_fetch_node).
 
 Uses claude-haiku-4-5-20251001 for ALL LLM calls.
 Never crashes the arena — all errors produce a fallback neutral signal.
@@ -24,9 +24,6 @@ import logging
 from anthropic import Anthropic
 
 from arena.state import AgentSignal, ThesisState
-from data.financial_data import FinancialDataFetcher
-from data.sec_edgar import SECEdgarClient
-from shared.tavily_client import get_tavily_client
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +38,8 @@ QUESTION_TARGET = "risk"
 # Section 1 — Data fetching helpers
 # ---------------------------------------------------------------------------
 
-def fetch_company_context(ticker: str) -> dict:
-    """
-    Fetch only company name, sector, and market_cap from FinancialDataFetcher.
-    This is the only FinancialDataFetcher call in this agent.
-    Never raises.
-    """
+def _company_context_from_shared(ticker: str, shared_data: dict) -> dict:
+    """Extract company name, sector, and market_cap from pre-fetched shared_data."""
     result = {
         "ticker": ticker,
         "company_name": ticker,
@@ -54,39 +47,36 @@ def fetch_company_context(ticker: str) -> dict:
         "market_cap": None,
     }
 
-    try:
-        fetcher = FinancialDataFetcher()
-        stock_info = fetcher.get_stock_info(ticker)
-        if stock_info:
-            result["company_name"] = stock_info.get("name") or stock_info.get("company_name") or ticker
-            result["sector"] = stock_info.get("sector") or "Unknown"
-            result["market_cap"] = stock_info.get("market_cap")
-    except Exception as e:
-        print(f"[Sentiment] fetch_company_context failed for {ticker}: {e}")
+    stock_info = shared_data.get("stock_info", {})
+    if stock_info:
+        result["company_name"] = stock_info.get("name") or stock_info.get("company_name") or ticker
+        result["sector"]       = stock_info.get("sector") or "Unknown"
+        result["market_cap"]   = stock_info.get("market_cap")
 
     return result
 
 
-def fetch_insider_data_from_sec(ticker: str) -> dict:
+def _insider_data_from_shared(ticker: str, shared_data: dict) -> dict:
     """
-    Fetch Form 4 insider transaction data directly from SEC EDGAR.
-    Parses non-derivative transactions for the last 90 days.
-    Returns structured data overriding Tavily's weaker insider signal.
+    Parse Form 4 insider transactions from pre-fetched SEC EDGAR filings.
+    XML parsing logic is identical to the original fetch_insider_data_from_sec —
+    only the data source changes (shared_data vs. live SEC EDGAR fetch).
     Never raises — falls back to empty result on any error.
     """
     import xml.etree.ElementTree as ET
     from datetime import datetime, timedelta
+    from data.sec_edgar import SECEdgarClient
 
     empty: dict = {
-        "insider_activity": None,          # None = no SEC data, do not override
+        "insider_activity": None,
         "insider_buying_amount_usd": None,
         "insider_transaction_count_90d": 0,
         "notable_insider_transactions": None,
     }
 
     try:
+        filings = shared_data.get("sec_insider_filings", [])
         sec = SECEdgarClient()
-        filings = sec.get_recent_filings(ticker, filing_type="4", limit=30)
         if not filings:
             return empty
 
@@ -181,18 +171,15 @@ def fetch_insider_data_from_sec(ticker: str) -> dict:
         }
 
     except Exception as e:
-        print(f"[Sentiment/SEC] fetch_insider_data_from_sec failed for {ticker}: {e}")
+        print(f"[Sentiment/SEC] _insider_data_from_shared failed for {ticker}: {e}")
         return empty
 
 
-def fetch_sentiment_data(ticker: str) -> dict:
+def _sentiment_data_from_shared(ticker: str, shared_data: dict) -> dict:
     """
-    Four Tavily searches split across two topics:
-      - topic="news"    for Pillar 1 (news flow) — recency-optimised
-      - topic="finance" for Pillars 2-4 (analyst, management, insider) — data-optimised
-
-    Two focused Haiku extraction calls (10 fields each) instead of one 20-field call.
-    Returns structured sentiment indicators — never invented.
+    Extract structured sentiment indicators from pre-fetched Tavily texts.
+    Two Haiku extraction calls (10 fields each) are identical to the original —
+    only the data source changes (shared texts vs. live Tavily searches).
     Falls back to safe defaults if extraction fails.
     """
     defaults = {
@@ -221,27 +208,7 @@ def fetch_sentiment_data(ticker: str) -> dict:
     }
 
     try:
-        tavily = get_tavily_client()
         client = Anthropic()
-
-        def _search(query: str, topic: str = "finance") -> str:
-            try:
-                result = tavily.search(
-                    query=query,
-                    topic=topic,
-                    search_depth="advanced",
-                    max_results=7,
-                )
-                parts = []
-                if result.get("answer"):
-                    parts.append(result["answer"])
-                for r in result.get("results", [])[:5]:
-                    if r.get("content"):
-                        parts.append(r["content"][:600])
-                return "\n\n".join(parts)
-            except Exception as e:
-                print(f"[Sentiment] Tavily search failed ({topic}): {e}")
-                return ""
 
         def _parse_json(text: str) -> dict:
             text = text.strip()
@@ -251,19 +218,11 @@ def fetch_sentiment_data(ticker: str) -> dict:
                     text = text[4:]
             return json.loads(text.strip())
 
-        # ── Pillar 1: News flow — topic="news" for recency ────────────────────
-        news_text = _search(
-            f"{ticker} stock news recent weeks major catalyst product launch "
-            "lawsuit regulatory issue earnings miss beat analyst reaction",
-            topic="news",
-        )
-
-        # ── Pillar 2: Analyst sentiment — topic="finance" for ratings data ────
-        analyst_text = _search(
-            f"{ticker} analyst price target consensus rating buy sell hold "
-            "upgrades downgrades 2024 2025 Wall Street forecast",
-            topic="finance",
-        )
+        # Read pre-fetched Tavily texts from shared_data
+        news_text    = shared_data.get("news_search_text", "")
+        analyst_text = shared_data.get("analyst_search_text", "")
+        mgmt_text    = shared_data.get("guidance_search_text", "")
+        insider_text = shared_data.get("insider_search_text", "")
 
         # ── Extraction call A: news + analyst (10 fields) ─────────────────────
         news_analyst_context = (
@@ -300,20 +259,6 @@ def fetch_sentiment_data(ticker: str) -> dict:
             messages=[{"role": "user", "content": prompt_a}],
         )
         parsed_a = _parse_json(resp_a.content[0].text)
-
-        # ── Pillar 3: Management signals — topic="finance" ────────────────────
-        mgmt_text = _search(
-            f"{ticker} earnings call guidance raised lowered maintained CEO CFO "
-            "outlook forward guidance buyback share repurchase dividend 2024 2025",
-            topic="finance",
-        )
-
-        # ── Pillar 4: Insider & institutional — topic="finance" ───────────────
-        insider_text = _search(
-            f"{ticker} insider buying selling Form 4 SEC filing institutional "
-            "holdings 13F short interest float hedge fund position 2024 2025",
-            topic="finance",
-        )
 
         # ── Extraction call B: management + insider (10 fields) ───────────────
         mgmt_insider_context = (
@@ -443,7 +388,7 @@ def fetch_sentiment_data(ticker: str) -> dict:
         # ── SEC EDGAR Form 4 override for insider pillar ──────────────────────
         # Tavily rarely surfaces Form 4 data reliably; SEC EDGAR is authoritative.
         # Only override when SEC returns a real activity value (not None).
-        sec_insider = fetch_insider_data_from_sec(ticker)
+        sec_insider = _insider_data_from_shared(ticker, shared_data)
         if sec_insider.get("insider_activity") is not None:
             result["insider_activity"] = sec_insider["insider_activity"]
             if sec_insider.get("insider_buying_amount_usd") is not None:
@@ -463,7 +408,7 @@ def fetch_sentiment_data(ticker: str) -> dict:
         return result
 
     except Exception as e:
-        print(f"[Sentiment] fetch_sentiment_data failed for {ticker}: {e}")
+        print(f"[Sentiment] _sentiment_data_from_shared failed for {ticker}: {e}")
         return defaults
 
 
@@ -1070,10 +1015,11 @@ def run_sentiment_agent(state: ThesisState) -> dict:
     _emit({"type": "arena_agent_start", "agent": "sentiment", "round": state.get("round", 0) + 1})
 
     try:
-        company_info = fetch_company_context(ticker)
+        shared_data = state.get("shared_data", {})
+        company_info = _company_context_from_shared(ticker, shared_data)
 
         print(f"[Sentiment] Fetching sentiment data for {ticker}")
-        sentiment_data = fetch_sentiment_data(ticker)
+        sentiment_data = _sentiment_data_from_shared(ticker, shared_data)
 
         pillar_scores = score_pillars(sentiment_data)
 

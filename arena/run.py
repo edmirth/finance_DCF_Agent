@@ -39,6 +39,7 @@ def run_arena(
         "next_action":     "",
         "round":           0,
         "active_agents":   [],
+        "shared_data":     {},
         "final_decision":  None,
         "conviction_level": None,
         "investment_memo": None,

@@ -24,8 +24,6 @@ from typing import Optional
 from anthropic import Anthropic
 
 from arena.state import AgentSignal, ThesisState
-from data.financial_data import FinancialDataFetcher
-from shared.tavily_client import get_tavily_client
 
 logger = logging.getLogger(__name__)
 
@@ -37,54 +35,38 @@ QUESTION_TARGET = "risk"
 
 
 # ---------------------------------------------------------------------------
-# Section 1 — Data fetching helpers
+# Section 1 — Data helpers (read from shared_data, no live fetching)
 # ---------------------------------------------------------------------------
 
-def fetch_financials(ticker: str) -> dict:
-    """
-    Fetch stock info, financial statements, and key metrics.
-    Each call is independently wrapped — partial data is fine.
-    Never raises.
-    """
+def _financials_from_shared(ticker: str, shared_data: dict) -> dict:
+    """Build the financials dict from pre-fetched shared_data."""
     result: dict = {"ticker": ticker, "_data_points_fetched": 0}
-    fetcher = FinancialDataFetcher()
 
-    try:
-        stock_info = fetcher.get_stock_info(ticker)
-        if stock_info:
-            result.update(stock_info)
-            result["_data_points_fetched"] += 1
-    except Exception as e:
-        print(f"[Fundamental] get_stock_info failed for {ticker}: {e}")
+    stock_info = shared_data.get("stock_info", {})
+    if stock_info:
+        result.update(stock_info)
+        result["_data_points_fetched"] += 1
 
-    try:
-        statements = fetcher.get_financial_statements(ticker)
-        if statements:
-            result["income_statements"] = statements.get("income_statements", [])
-            result["balance_sheets"] = statements.get("balance_sheets", [])
-            result["cash_flow_statements"] = statements.get("cash_flow_statements", [])
-            result["_data_points_fetched"] += 1
-    except Exception as e:
-        print(f"[Fundamental] get_financial_statements failed for {ticker}: {e}")
+    stmts = shared_data.get("financial_statements", {})
+    if stmts:
+        result["income_statements"]    = stmts.get("income_statements", [])
+        result["balance_sheets"]       = stmts.get("balance_sheets", [])
+        result["cash_flow_statements"] = stmts.get("cash_flow_statements", [])
+        result["_data_points_fetched"] += 1
 
-    try:
-        metrics = fetcher.get_key_metrics(ticker)
-        if metrics:
-            result["key_metrics"] = metrics
-            result["_data_points_fetched"] += 1
-    except Exception as e:
-        print(f"[Fundamental] get_key_metrics failed for {ticker}: {e}")
+    metrics = shared_data.get("key_metrics", {})
+    if metrics:
+        result["key_metrics"] = metrics
+        result["_data_points_fetched"] += 1
 
     return result
 
 
-def fetch_market_context(ticker: str) -> dict:
+def _market_context_from_shared(ticker: str, shared_data: dict) -> dict:
     """
-    Two Tavily searches: sector multiples + company-specific recent context.
-    Haiku extracts structured numbers from the multiples search.
-    Company context (recent earnings, guidance, catalysts) passes through as raw text
-    for the Data-CoT to reason about directly.
-    Falls back to safe defaults on any error.
+    Extract structured market context from pre-fetched Tavily texts.
+    Haiku extraction logic is identical to the old fetch_market_context —
+    only the data source changes (shared texts vs. live Tavily searches).
     """
     defaults = {
         "current_price": None,
@@ -96,47 +78,13 @@ def fetch_market_context(ticker: str) -> dict:
         "company_context": "",
     }
 
+    raw_content = shared_data.get("multiples_search_text", "")[:2000]
+    company_context = shared_data.get("company_context_text", "")[:1500]
+
+    if not raw_content.strip():
+        return {**defaults, "company_context": company_context}
+
     try:
-        tavily = get_tavily_client()
-
-        # Search 1: sector multiples and valuation benchmarks
-        multiples_result = tavily.search(
-            query=f"{ticker} stock current price beta P/E ratio EV/EBITDA sector average multiples analyst consensus",
-            topic="finance",
-            search_depth="basic",
-            max_results=5,
-        )
-
-        # Search 2: company-specific recent context (earnings, guidance, catalysts)
-        company_result = tavily.search(
-            query=f"{ticker} recent earnings results revenue growth guidance 2025 2026 competitive position growth drivers",
-            topic="finance",
-            search_depth="basic",
-            max_results=5,
-        )
-
-        # Combine multiples search into context block for Haiku extraction
-        content_parts = []
-        if multiples_result.get("answer"):
-            content_parts.append(multiples_result["answer"])
-        for r in multiples_result.get("results", [])[:3]:
-            if r.get("content"):
-                content_parts.append(r["content"][:400])
-        raw_content = "\n\n".join(content_parts)[:2000]
-
-        # Combine company context search into a separate text block
-        company_parts = []
-        if company_result.get("answer"):
-            company_parts.append(company_result["answer"])
-        for r in company_result.get("results", [])[:3]:
-            if r.get("content"):
-                company_parts.append(r["content"][:400])
-        company_context = "\n\n".join(company_parts)[:1500]
-
-        if not raw_content.strip():
-            return {**defaults, "company_context": company_context}
-
-        # Haiku extraction for structured multiples fields
         client = Anthropic()
         extraction_prompt = (
             f"Extract from these search results for {ticker}:\n"
@@ -153,7 +101,6 @@ def fetch_market_context(ticker: str) -> dict:
         )
         text = response.content[0].text.strip()
 
-        # Strip markdown fences if present
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -162,18 +109,18 @@ def fetch_market_context(ticker: str) -> dict:
 
         parsed = json.loads(text)
         return {
-            "current_price": parsed.get("current_price"),
-            "beta": float(parsed.get("beta") or 1.0),
-            "sector_pe": float(parsed.get("sector_pe") or 20.0),
+            "current_price":    parsed.get("current_price"),
+            "beta":             float(parsed.get("beta") or 1.0),
+            "sector_pe":        float(parsed.get("sector_pe") or 20.0),
             "sector_ev_ebitda": float(parsed.get("sector_ev_ebitda") or 12.0),
             "analyst_consensus": str(parsed.get("analyst_consensus") or "neutral").lower(),
-            "news_sentiment": str(parsed.get("news_sentiment") or "neutral").lower(),
-            "company_context": company_context,
+            "news_sentiment":   str(parsed.get("news_sentiment") or "neutral").lower(),
+            "company_context":  company_context,
         }
 
     except Exception as e:
-        print(f"[Fundamental] fetch_market_context failed for {ticker}: {e}")
-        return defaults
+        print(f"[Fundamental] _market_context_from_shared failed for {ticker}: {e}")
+        return {**defaults, "company_context": company_context}
 
 
 # ---------------------------------------------------------------------------
@@ -804,8 +751,9 @@ def run_fundamental_agent(state: ThesisState) -> dict:
     _emit({"type": "arena_agent_start", "agent": "fundamental", "round": state.get("round", 0) + 1})
 
     try:
-        financials = fetch_financials(ticker)
-        market_context = fetch_market_context(ticker)
+        shared_data = state.get("shared_data", {})
+        financials = _financials_from_shared(ticker, shared_data)
+        market_context = _market_context_from_shared(ticker, shared_data)
         valuation = calculate_multiples_valuation(financials, market_context)
         pillar_scores = score_pillars(financials, market_context, valuation)
 

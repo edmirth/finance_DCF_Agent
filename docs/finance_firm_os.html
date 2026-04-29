@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Finance Firm OS — AI-Powered Investment Company</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#06080f;
+  --surface:#0d1117;
+  --surface2:#161b27;
+  --surface3:#1e2535;
+  --border:#252d3d;
+  --text:#dde3f0;
+  --muted:#6b7a9a;
+  --gold:#f0b429;
+  --gold2:#fcd34d;
+  --green:#10b981;
+  --cyan:#22d3ee;
+  --blue:#3b82f6;
+  --purple:#818cf8;
+  --red:#f87171;
+  --orange:#fb923c;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:15px;line-height:1.6;overflow-x:hidden}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(6,8,15,.9);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:2px;padding:0 20px;height:50px;overflow-x:auto}
+nav a{color:var(--muted);text-decoration:none;font-size:12px;font-weight:500;padding:5px 11px;border-radius:6px;white-space:nowrap;transition:all .2s}
+nav a:hover{color:var(--text);background:var(--surface2)}
+.nav-logo{color:var(--gold);font-weight:800;font-size:15px;margin-right:16px;flex-shrink:0;letter-spacing:-.02em}
+
+/* LAYOUT */
+.page{max-width:1000px;margin:0 auto;padding:76px 24px 120px}
+section{margin-bottom:96px}
+
+h1{font-size:clamp(30px,6vw,52px);font-weight:800;line-height:1.08;letter-spacing:-.02em}
+h2{font-size:clamp(20px,4vw,30px);font-weight:700;letter-spacing:-.01em;margin-bottom:10px}
+h3{font-size:17px;font-weight:600;margin-bottom:8px}
+p{color:var(--muted);margin-bottom:14px;line-height:1.7}
+p strong{color:var(--text)}
+ul{color:var(--muted);padding-left:20px;line-height:2.1}
+ul strong{color:var(--text)}
+
+.tag{display:inline-block;padding:3px 11px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.04em;margin-bottom:12px;text-transform:uppercase}
+.tag-gold  {background:rgba(240,180,41,.12);color:var(--gold);border:1px solid rgba(240,180,41,.3)}
+.tag-green {background:rgba(16,185,129,.1);color:var(--green);border:1px solid rgba(16,185,129,.25)}
+.tag-cyan  {background:rgba(34,211,238,.1);color:var(--cyan);border:1px solid rgba(34,211,238,.25)}
+.tag-blue  {background:rgba(59,130,246,.1);color:var(--blue);border:1px solid rgba(59,130,246,.25)}
+.tag-purple{background:rgba(129,140,248,.1);color:var(--purple);border:1px solid rgba(129,140,248,.25)}
+.tag-red   {background:rgba(248,113,113,.1);color:var(--red);border:1px solid rgba(248,113,113,.25)}
+.tag-orange{background:rgba(251,146,60,.1);color:var(--orange);border:1px solid rgba(251,146,60,.25)}
+
+code{font-family:'IBM Plex Mono',monospace;font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;color:var(--cyan)}
+.divider{height:1px;background:var(--border);margin:36px 0}
+
+/* CARDS */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px;transition:border-color .2s}
+.card:hover{border-color:rgba(240,180,41,.25)}
+.grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.grid-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+
+/* HERO */
+#hero{padding-top:30px;text-align:center}
+.hero-sub{font-size:17px;color:var(--muted);max-width:560px;margin:16px auto 36px;line-height:1.75}
+.hero-stats{display:flex;gap:40px;justify-content:center;flex-wrap:wrap;margin-top:36px}
+.stat .num{font-size:26px;font-weight:800;color:var(--gold)}
+.stat .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+
+/* ORG CHART */
+.org-wrap{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 20px;position:relative;overflow:hidden}
+.org-wrap::before{content:'';position:absolute;top:-60px;left:50%;transform:translateX(-50%);width:400px;height:200px;background:radial-gradient(ellipse,rgba(240,180,41,.06) 0%,transparent 70%);pointer-events:none}
+.o-row{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin:4px 0}
+.o-node{display:flex;flex-direction:column;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:12px 16px;min-width:100px;cursor:pointer;transition:all .25s;position:relative}
+.o-node:hover{transform:translateY(-3px);box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.o-node .ico{width:38px;height:38px;border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.o-node .nm{font-size:11px;font-weight:700;color:var(--text);text-align:center}
+.o-node .rl{font-size:10px;color:var(--muted);text-align:center;margin-top:1px}
+.o-line{width:2px;height:20px;background:var(--border);margin:0 auto}
+.o-line-h{display:flex;align-items:center;justify-content:center}
+.o-line-h .seg{height:2px;background:var(--border);flex:1;max-width:100px}
+/* special colours */
+.node-cio   .ico{background:rgba(240,180,41,.15);border:1px solid rgba(240,180,41,.4)}
+.node-cio   {border-color:rgba(240,180,41,.3)}
+.node-pm    .ico{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35)}
+.node-pm    {border-color:rgba(16,185,129,.25)}
+.node-analyst .ico{background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3)}
+.node-analyst {border-color:rgba(59,130,246,.2)}
+.node-quant .ico{background:rgba(129,140,248,.1);border:1px solid rgba(129,140,248,.3)}
+.node-quant {border-color:rgba(129,140,248,.2)}
+.node-risk  .ico{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3)}
+.node-risk  {border-color:rgba(248,113,113,.2)}
+.node-macro .ico{background:rgba(34,211,238,.1);border:1px solid rgba(34,211,238,.3)}
+.node-macro {border-color:rgba(34,211,238,.2)}
+.node-compliance .ico{background:rgba(251,146,60,.1);border:1px solid rgba(251,146,60,.3)}
+.node-compliance {border-color:rgba(251,146,60,.2)}
+.node-you   .ico{background:rgba(240,180,41,.2);border:2px solid var(--gold)}
+.node-you   {border-color:rgba(240,180,41,.5)}
+
+#orgTooltip{margin-top:20px;display:none;animation:fadeIn .2s ease}
+.o-tooltip-inner{background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:18px 20px;border-left:3px solid var(--gold)}
+
+/* TABS */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+.tab-btn{padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:12px;font-weight:500;cursor:pointer;transition:all .2s;font-family:inherit}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{background:var(--gold);border-color:var(--gold);color:#000}
+.tab-panel{display:none;animation:fadeIn .25s ease}
+.tab-panel.active{display:block}
+
+/* STEPPER */
+.step{display:flex;gap:18px;position:relative;cursor:pointer;padding:14px 18px;border-radius:12px;transition:background .2s;border:1px solid transparent}
+.step:hover{background:var(--surface)}
+.step.active{background:var(--surface);border-color:var(--border)}
+.step-num{width:34px;height:34px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:var(--surface2);color:var(--muted);border:2px solid var(--border);transition:all .3s;z-index:1}
+.step.active .step-num{background:var(--gold);border-color:var(--gold);color:#000}
+.step.done .step-num{background:var(--green);border-color:var(--green);color:#fff}
+.step-line{position:absolute;left:35px;top:48px;bottom:-14px;width:2px;background:var(--border)}
+.step:last-child .step-line{display:none}
+.step-body h4{font-size:14px;font-weight:600;margin-bottom:3px}
+.step-body p{font-size:12px;margin:0}
+.step-detail{background:var(--surface2);border-radius:10px;padding:14px;margin-top:10px;border:1px solid var(--border);display:none}
+.step.active .step-detail{display:block;animation:fadeIn .2s ease}
+.step-detail pre{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--cyan);line-height:1.65;background:var(--bg);border-radius:8px;padding:12px;margin-top:8px;border:1px solid var(--border);overflow-x:auto}
+.step-controls{display:flex;gap:8px;margin-top:18px;align-items:center}
+.btn{padding:8px 18px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit;transition:all .2s}
+.btn-gold{background:var(--gold);color:#000}
+.btn-gold:hover{background:var(--gold2)}
+.btn-out{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn-out:hover{color:var(--text);border-color:var(--text)}
+
+/* CALLOUT */
+.callout{border-left:3px solid var(--gold);background:rgba(240,180,41,.06);padding:13px 17px;border-radius:0 10px 10px 0;margin:16px 0}
+.callout p{color:var(--text);margin:0;font-size:13px}
+.callout.green{border-color:var(--green);background:rgba(16,185,129,.05)}
+.callout.red{border-color:var(--red);background:rgba(248,113,113,.05)}
+.callout.blue{border-color:var(--blue);background:rgba(59,130,246,.05)}
+.callout.cyan{border-color:var(--cyan);background:rgba(34,211,238,.05)}
+
+/* ROUTINE CARDS */
+.routine{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;display:flex;gap:14px;align-items:flex-start;transition:border-color .2s;cursor:pointer}
+.routine:hover{border-color:rgba(240,180,41,.3)}
+.routine-icon{font-size:24px;flex-shrink:0;margin-top:2px}
+.routine-cron{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);background:var(--surface2);padding:3px 8px;border-radius:5px;border:1px solid var(--border)}
+
+/* PIPELINE BOXES */
+.pipe-box{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center;font-size:12px;font-weight:500;transition:all .2s;cursor:pointer;min-width:100px}
+.pipe-box:hover{border-color:var(--gold);color:var(--gold)}
+.pipe-box.active-box{border-color:var(--gold);background:rgba(240,180,41,.08);color:var(--gold)}
+.pipe-arrow{color:var(--muted);padding:0 6px;font-size:14px}
+.pipe-row{display:flex;align-items:center;flex-wrap:wrap;justify-content:center;gap:0;margin:8px 0}
+
+/* SIGNAL CARDS */
+.signal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px}
+.signal-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.signal-buy{background:var(--green)}
+.signal-hold{background:var(--gold)}
+.signal-sell{background:var(--red)}
+.signal-body .ticker{font-weight:700;font-size:14px}
+.signal-body .meta{font-size:11px;color:var(--muted)}
+.signal-right{margin-left:auto;text-align:right}
+.signal-rating{font-size:12px;font-weight:700;padding:3px 9px;border-radius:5px}
+.rating-buy{background:rgba(16,185,129,.15);color:var(--green)}
+.rating-hold{background:rgba(240,180,41,.12);color:var(--gold)}
+.rating-sell{background:rgba(248,113,113,.12);color:var(--red)}
+
+/* EVENT LOG */
+.elog{font-family:'IBM Plex Mono',monospace;font-size:11px;max-height:260px;overflow-y:auto}
+.erow{display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:5px;animation:slideIn .3s ease}
+.erow:hover{background:var(--surface2)}
+.etag{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0}
+.emsg{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.edot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+
+/* DATA SOURCES */
+.ds-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;display:flex;gap:12px;align-items:flex-start}
+.ds-card .icon{font-size:26px;flex-shrink:0}
+.ds-card h4{font-size:13px;font-weight:600;margin-bottom:2px}
+.ds-card p{font-size:11px;margin:0}
+
+/* REVEAL */
+.reveal{opacity:0;transform:translateY(20px);transition:opacity .6s ease,transform .6s ease}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.75)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* TICKER TAPE */
+.ticker-wrap{overflow:hidden;background:rgba(240,180,41,.04);border:1px solid rgba(240,180,41,.15);border-radius:8px;padding:8px 0;margin:20px 0}
+.ticker-inner{display:flex;gap:40px;width:max-content;animation:scroll 20s linear infinite}
+@keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.ticker-item{white-space:nowrap;font-family:'IBM Plex Mono',monospace;font-size:12px}
+.ticker-item .sym{color:var(--text);font-weight:600}
+.ticker-item .up{color:var(--green)}
+.ticker-item .dn{color:var(--red)}
+
+footer{text-align:center;color:var(--muted);font-size:12px;padding:36px 24px;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="nav-logo">⬛ FinFirmOS</span>
+  <a href="#hero">Overview</a>
+  <a href="#org">Org Chart</a>
+  <a href="#agents">Agents</a>
+  <a href="#issues">Research Tasks</a>
+  <a href="#pipeline">Decision Pipeline</a>
+  <a href="#routines">Routines</a>
+  <a href="#approvals">Compliance</a>
+  <a href="#data">Data Sources</a>
+  <a href="#budget">Budgets</a>
+  <a href="#realtime">Live Feed</a>
+  <a href="#arch">Architecture</a>
+</nav>
+
+<div class="page">
+
+<!-- ═══════════════════════════════════════
+     HERO
+═══════════════════════════════════════ -->
+<section id="hero">
+  <div style="margin-bottom:14px">
+    <span class="tag tag-gold">Concept Design</span>
+  </div>
+  <h1>An AI-Powered<br/><span style="color:var(--gold)">Investment Firm</span><br/>Operating System</h1>
+  <p class="hero-sub">
+    What if Paperclip's architecture — org charts, heartbeats, routines, approvals, budgets — was built specifically for a finance firm?
+    Every analyst, every trade thesis, every compliance check: orchestrated by AI.
+  </p>
+
+  <!-- ticker tape -->
+  <div class="ticker-wrap">
+    <div class="ticker-inner">
+      <span class="ticker-item"><span class="sym">AAPL</span> <span class="up">▲ 2.3% · BUY · PT $240</span></span>
+      <span class="ticker-item"><span class="sym">NVDA</span> <span class="up">▲ 4.1% · BUY · PT $1,100</span></span>
+      <span class="ticker-item"><span class="sym">TSLA</span> <span class="dn">▼ 1.7% · HOLD · PT $180</span></span>
+      <span class="ticker-item"><span class="sym">MSFT</span> <span class="up">▲ 0.9% · BUY · PT $500</span></span>
+      <span class="ticker-item"><span class="sym">META</span> <span class="up">▲ 1.4% · BUY · PT $620</span></span>
+      <span class="ticker-item"><span class="sym">JPM</span> <span class="dn">▼ 0.3% · HOLD · PT $220</span></span>
+      <span class="ticker-item"><span class="sym">GS</span> <span class="up">▲ 0.8% · BUY · PT $550</span></span>
+      <span class="ticker-item"><span class="sym">AAPL</span> <span class="up">▲ 2.3% · BUY · PT $240</span></span>
+      <span class="ticker-item"><span class="sym">NVDA</span> <span class="up">▲ 4.1% · BUY · PT $1,100</span></span>
+      <span class="ticker-item"><span class="sym">TSLA</span> <span class="dn">▼ 1.7% · HOLD · PT $180</span></span>
+      <span class="ticker-item"><span class="sym">MSFT</span> <span class="up">▲ 0.9% · BUY · PT $500</span></span>
+      <span class="ticker-item"><span class="sym">META</span> <span class="up">▲ 1.4% · BUY · PT $620</span></span>
+      <span class="ticker-item"><span class="sym">JPM</span> <span class="dn">▼ 0.3% · HOLD · PT $220</span></span>
+      <span class="ticker-item"><span class="sym">GS</span> <span class="up">▲ 0.8% · BUY · PT $550</span></span>
+    </div>
+  </div>
+
+  <div class="hero-stats">
+    <div class="stat"><div class="num">10</div><div class="lbl">AI Roles</div></div>
+    <div class="stat"><div class="num">5</div><div class="lbl">Data Sources</div></div>
+    <div class="stat"><div class="num">8</div><div class="lbl">Daily Routines</div></div>
+    <div class="stat"><div class="num">3</div><div class="lbl">Compliance Gates</div></div>
+    <div class="stat"><div class="num">24/7</div><div class="lbl">Autonomous</div></div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     ORG CHART
+═══════════════════════════════════════ -->
+<section id="org" class="reveal">
+  <span class="tag tag-gold">The Firm</span>
+  <h2>The Investment Firm Org Chart</h2>
+  <p>Every role in a real investment firm, mapped to an AI agent. Click any node to understand its job.</p>
+
+  <div class="org-wrap">
+    <!-- You -->
+    <div class="o-row">
+      <div class="o-node node-you" onclick="showOrg('you')">
+        <div class="ico">🧑‍💼</div>
+        <div class="nm">You</div>
+        <div class="rl">Managing Partner</div>
+      </div>
+    </div>
+    <div class="o-line"></div>
+
+    <!-- CIO -->
+    <div class="o-row">
+      <div class="o-node node-cio" onclick="showOrg('cio')">
+        <div class="ico">👑</div>
+        <div class="nm">CIO Agent</div>
+        <div class="rl">Chief Investment Officer</div>
+      </div>
+    </div>
+    <div class="o-line"></div>
+
+    <!-- PM level -->
+    <div class="o-row" style="gap:20px">
+      <div class="o-node node-pm" onclick="showOrg('pm')">
+        <div class="ico">📊</div>
+        <div class="nm">PM Agent</div>
+        <div class="rl">Portfolio Manager</div>
+      </div>
+      <div class="o-node node-risk" onclick="showOrg('risk')">
+        <div class="ico">🛡️</div>
+        <div class="nm">Risk Agent</div>
+        <div class="rl">Chief Risk Officer</div>
+      </div>
+      <div class="o-node node-compliance" onclick="showOrg('compliance')">
+        <div class="ico">⚖️</div>
+        <div class="nm">Compliance</div>
+        <div class="rl">Compliance Officer</div>
+      </div>
+    </div>
+    <div class="o-line"></div>
+
+    <!-- Analyst level -->
+    <div class="o-row" style="gap:10px">
+      <div class="o-node node-analyst" onclick="showOrg('analyst-tech')" style="min-width:85px;padding:10px 12px">
+        <div class="ico" style="width:32px;height:32px;font-size:15px">💻</div>
+        <div class="nm" style="font-size:10px">TMT Analyst</div>
+        <div class="rl" style="font-size:9px">Tech/Media/Telecom</div>
+      </div>
+      <div class="o-node node-analyst" onclick="showOrg('analyst-health')" style="min-width:85px;padding:10px 12px">
+        <div class="ico" style="width:32px;height:32px;font-size:15px">🏥</div>
+        <div class="nm" style="font-size:10px">Healthcare</div>
+        <div class="rl" style="font-size:9px">Pharma/Biotech</div>
+      </div>
+      <div class="o-node node-analyst" onclick="showOrg('analyst-energy')" style="min-width:85px;padding:10px 12px">
+        <div class="ico" style="width:32px;height:32px;font-size:15px">⚡</div>
+        <div class="nm" style="font-size:10px">Energy</div>
+        <div class="rl" style="font-size:9px">Oil/Gas/Renewables</div>
+      </div>
+      <div class="o-node node-quant" onclick="showOrg('quant')" style="min-width:85px;padding:10px 12px">
+        <div class="ico" style="width:32px;height:32px;font-size:15px">📐</div>
+        <div class="nm" style="font-size:10px">Quant Agent</div>
+        <div class="rl" style="font-size:9px">Models/Signals</div>
+      </div>
+      <div class="o-node node-macro" onclick="showOrg('macro')" style="min-width:85px;padding:10px 12px">
+        <div class="ico" style="width:32px;height:32px;font-size:15px">🌍</div>
+        <div class="nm" style="font-size:10px">Macro Agent</div>
+        <div class="rl" style="font-size:9px">Rates/FX/Macro</div>
+      </div>
+    </div>
+
+    <!-- Tooltip -->
+    <div id="orgTooltip">
+      <div class="o-tooltip-inner" id="orgTooltipContent"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     AGENT ROLES
+═══════════════════════════════════════ -->
+<section id="agents" class="reveal">
+  <span class="tag tag-blue">The Team</span>
+  <h2>What Each Agent Does</h2>
+  <p>Each agent has a defined <strong>role</strong>, <strong>data access</strong>, <strong>tools</strong>, and <strong>reporting line</strong>. They never operate outside their mandate.</p>
+
+  <div class="tabs" style="margin-top:20px">
+    <button class="tab-btn active" onclick="switchTab('cio')">👑 CIO</button>
+    <button class="tab-btn" onclick="switchTab('pm')">📊 PM</button>
+    <button class="tab-btn" onclick="switchTab('analysts')">🔍 Analysts</button>
+    <button class="tab-btn" onclick="switchTab('quant')">📐 Quant</button>
+    <button class="tab-btn" onclick="switchTab('macro')">🌍 Macro</button>
+    <button class="tab-btn" onclick="switchTab('risk')">🛡️ Risk</button>
+    <button class="tab-btn" onclick="switchTab('compliance')">⚖️ Compliance</button>
+  </div>
+
+  <!-- CIO -->
+  <div class="tab-panel active" id="tab-cio">
+    <div class="grid-2">
+      <div class="card">
+        <h3>👑 Chief Investment Officer</h3>
+        <p><strong>Purpose:</strong> Sets the investment mandate, final arbiter of the portfolio strategy. Reviews CRO and PM outputs. Reports to you.</p>
+        <ul style="font-size:13px">
+          <li><strong>Owns:</strong> Investment Policy Statement, sector allocations</li>
+          <li><strong>Reviews:</strong> Portfolio performance weekly</li>
+          <li><strong>Escalates to you:</strong> Anything over position limit threshold</li>
+          <li><strong>Heartbeat:</strong> Monday 7am — weekly strategy review</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>📋 CIO Agent Config</h3>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2;color:var(--muted)">
+          <span style="color:var(--gold)">name:</span> "CIO"<br/>
+          <span style="color:var(--gold)">model:</span> "claude-opus-4-7"<br/>
+          <span style="color:var(--gold)">role:</span> "You are the Chief Investment Officer..."<br/>
+          <span style="color:var(--gold)">budgetMonthlyCents:</span> 15000<br/>
+          <span style="color:var(--gold)">reportsTo:</span> null  <span style="color:var(--border)">// reports to human</span><br/>
+          <span style="color:var(--gold)">tools:</span> [portfolio_overview, perf_attribution,<br/>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;macro_summary, sector_alloc]
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PM -->
+  <div class="tab-panel" id="tab-pm">
+    <div class="grid-2">
+      <div class="card">
+        <h3>📊 Portfolio Manager</h3>
+        <p><strong>Purpose:</strong> Translates research into portfolio decisions. Reads analyst reports, quant signals, and risk flags to decide what to buy, hold, or sell.</p>
+        <ul style="font-size:13px">
+          <li><strong>Owns:</strong> The portfolio — position sizes, entries/exits</li>
+          <li><strong>Reads:</strong> All analyst research tasks (issues)</li>
+          <li><strong>Decides:</strong> BUY / HOLD / SELL + position sizing</li>
+          <li><strong>Blocked by:</strong> Risk veto, Compliance flag</li>
+        </ul>
+        <div class="callout green" style="margin-top:12px">
+          <p>The PM is the <em>only</em> agent that can issue a final trade recommendation. All other agents feed into it.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>🔄 PM Decision Flow</h3>
+        <div style="display:flex;flex-direction:column;gap:7px;margin-top:8px;font-size:12px">
+          <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:flex;gap:8px;align-items:center">
+            <span>1️⃣</span> Read sector analyst research report
+          </div>
+          <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:flex;gap:8px;align-items:center">
+            <span>2️⃣</span> Review quant signal strength + factor exposure
+          </div>
+          <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:flex;gap:8px;align-items:center">
+            <span>3️⃣</span> Check macro regime (are conditions favourable?)
+          </div>
+          <div style="padding:9px 13px;border-radius:8px;background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.2);display:flex;gap:8px;align-items:center">
+            <span>4️⃣</span> Risk veto check — does it breach position limits?
+          </div>
+          <div style="padding:9px 13px;border-radius:8px;background:rgba(251,146,60,.06);border:1px solid rgba(251,146,60,.2);display:flex;gap:8px;align-items:center">
+            <span>5️⃣</span> Compliance clearance — approved securities, mandates
+          </div>
+          <div style="padding:9px 13px;border-radius:8px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);display:flex;gap:8px;align-items:center">
+            <span>6️⃣</span> Issue trade recommendation + size to CIO
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ANALYSTS -->
+  <div class="tab-panel" id="tab-analysts">
+    <div class="grid-3">
+      <div class="card">
+        <div style="font-size:28px;margin-bottom:10px">💻</div>
+        <h3>TMT Analyst</h3>
+        <p>Covers technology, media, and telecom. Does DCF valuations, earnings analysis, and competitive positioning for companies like AAPL, MSFT, NVDA, META.</p>
+        <div class="tag tag-blue" style="margin-top:4px">claude-sonnet-4-6</div>
+      </div>
+      <div class="card">
+        <div style="font-size:28px;margin-bottom:10px">🏥</div>
+        <h3>Healthcare Analyst</h3>
+        <p>Covers pharma, biotech, medtech. Analyses clinical trial data, FDA approvals, patent cliffs. Sector-specific knowledge baked into role prompt.</p>
+        <div class="tag tag-blue" style="margin-top:4px">claude-sonnet-4-6</div>
+      </div>
+      <div class="card">
+        <div style="font-size:28px;margin-bottom:10px">⚡</div>
+        <h3>Energy Analyst</h3>
+        <p>Oil, gas, renewables, utilities. Tracks commodity prices, reserve reports, energy transition themes and ESG scoring for energy names.</p>
+        <div class="tag tag-blue" style="margin-top:4px">claude-sonnet-4-6</div>
+      </div>
+      <div class="card">
+        <div style="font-size:28px;margin-bottom:10px">🏦</div>
+        <h3>Financials Analyst</h3>
+        <p>Banks, insurers, asset managers. Analyses NIM trends, credit quality, regulatory capital — completely different framework from tech.</p>
+        <div class="tag tag-blue" style="margin-top:4px">claude-sonnet-4-6</div>
+      </div>
+      <div class="card">
+        <div style="font-size:28px;margin-bottom:10px">🛒</div>
+        <h3>Consumer Analyst</h3>
+        <p>Retail, consumer staples, restaurants. Tracks same-store sales, brand health, consumer sentiment, and pricing power.</p>
+        <div class="tag tag-blue" style="margin-top:4px">claude-sonnet-4-6</div>
+      </div>
+    </div>
+    <div class="callout" style="margin-top:14px">
+      <p>💡 Each sector analyst has a <strong>custom role prompt</strong> that encodes sector-specific valuation frameworks. TMT gets DCF + multiples. Healthcare gets pipeline risk-adjusted NPV. Banks get P/TBV + ROE analysis.</p>
+    </div>
+  </div>
+
+  <!-- QUANT -->
+  <div class="tab-panel" id="tab-quant">
+    <div class="grid-2">
+      <div class="card">
+        <h3>📐 Quant Analyst</h3>
+        <p><strong>Purpose:</strong> Runs quantitative models, factor screens, and statistical signals. Validates (or challenges) fundamental analyst theses with data.</p>
+        <ul style="font-size:13px">
+          <li><strong>Factor screens:</strong> Value, quality, momentum, low-vol</li>
+          <li><strong>Signal generation:</strong> Relative strength, mean reversion, earnings momentum</li>
+          <li><strong>Risk models:</strong> Beta, correlation matrices, sector exposure</li>
+          <li><strong>Backtests:</strong> Historical simulation of thesis-driven trades</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>📊 Example Quant Output</h3>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.9;color:var(--muted);background:var(--surface2);border-radius:10px;padding:14px;border:1px solid var(--border)">
+          <span style="color:var(--cyan)">Ticker:</span> NVDA<br/>
+          <span style="color:var(--cyan)">Factor Score:</span> 8.4/10<br/>
+          <span style="color:var(--green)">Momentum (12m):</span> +187%<br/>
+          <span style="color:var(--green)">Earnings Revision:</span> +34%<br/>
+          <span style="color:var(--gold)">Valuation (P/E fwd):</span> 35x<br/>
+          <span style="color:var(--gold)">vs Sector median:</span> 28x (+25% premium)<br/>
+          <span style="color:var(--green)">Quant Signal:</span> STRONG BUY<br/>
+          <span style="color:var(--muted)">Confidence: 78%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MACRO -->
+  <div class="tab-panel" id="tab-macro">
+    <div class="grid-2">
+      <div class="card">
+        <h3>🌍 Macro Strategist</h3>
+        <p><strong>Purpose:</strong> Monitors the macro environment — interest rates, inflation, FX, geopolitics. Determines the market "regime" and whether conditions favour risk-on or risk-off.</p>
+        <ul style="font-size:13px">
+          <li><strong>Tracks:</strong> Fed decisions, CPI, jobs, GDP, yield curve</li>
+          <li><strong>Publishes:</strong> Weekly macro brief for all agents</li>
+          <li><strong>Regime flags:</strong> Risk-on / Risk-off / Transition</li>
+          <li><strong>Input to:</strong> PM (sector rotation), Risk (VaR adjustments)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>🎯 Regime Classification</h3>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+          <div style="padding:10px 14px;border-radius:8px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25)">
+            <div style="font-size:13px;font-weight:700;color:var(--green)">RISK-ON 🟢</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">Low rates, strong growth, tight spreads → overweight equities, cyclicals</div>
+          </div>
+          <div style="padding:10px 14px;border-radius:8px;background:rgba(240,180,41,.07);border:1px solid rgba(240,180,41,.25)">
+            <div style="font-size:13px;font-weight:700;color:var(--gold)">TRANSITION ⚡</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">Mixed signals → maintain diversification, reduce concentration</div>
+          </div>
+          <div style="padding:10px 14px;border-radius:8px;background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.25)">
+            <div style="font-size:13px;font-weight:700;color:var(--red)">RISK-OFF 🔴</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">High rates, recession risk, widening spreads → rotate to defensives, cash</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RISK -->
+  <div class="tab-panel" id="tab-risk">
+    <div class="grid-2">
+      <div class="card">
+        <h3>🛡️ Risk Officer</h3>
+        <p><strong>Purpose:</strong> The portfolio's guardian. Has <em>veto power</em> on any trade that breaches risk limits. Runs before the PM issues any recommendation.</p>
+        <ul style="font-size:13px">
+          <li><strong>Monitors:</strong> Portfolio VaR, drawdown, concentration</li>
+          <li><strong>Enforces:</strong> Max position size (5%), max sector (25%), max beta (1.3)</li>
+          <li><strong>Flags:</strong> Correlation creep, liquidity risk, tail events</li>
+          <li><strong>Hard veto:</strong> Can block any trade that breaches mandate</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>📉 Risk Dashboard (Live)</h3>
+        <div id="riskDash" style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2">
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;background:rgba(16,185,129,.06)">
+            <span style="color:var(--muted)">Portfolio VaR (1d, 95%)</span><span style="color:var(--green)">-1.8% ✓</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;background:rgba(16,185,129,.06)">
+            <span style="color:var(--muted)">Max Single Position</span><span style="color:var(--green)">4.2% ✓</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;background:rgba(240,180,41,.06)">
+            <span style="color:var(--muted)">TMT Sector Exposure</span><span style="color:var(--gold)">23.4% ⚠</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;background:rgba(16,185,129,.06)">
+            <span style="color:var(--muted)">Portfolio Beta</span><span style="color:var(--green)">1.12 ✓</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;background:rgba(248,113,113,.06)">
+            <span style="color:var(--muted)">Max Drawdown (YTD)</span><span style="color:var(--red)">-11.2% ⛔</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMPLIANCE -->
+  <div class="tab-panel" id="tab-compliance">
+    <div class="grid-2">
+      <div class="card">
+        <h3>⚖️ Compliance Officer</h3>
+        <p><strong>Purpose:</strong> A <strong>non-negotiable hard gate</strong>. Every trade recommendation must be cleared by compliance before it reaches the PM. No exceptions.</p>
+        <ul style="font-size:13px">
+          <li><strong>Checks:</strong> Approved securities list, insider trading blackouts</li>
+          <li><strong>Validates:</strong> Investment mandate constraints</li>
+          <li><strong>Blocks:</strong> Any trade on a restricted name</li>
+          <li><strong>Logs:</strong> Immutable audit trail for every decision</li>
+        </ul>
+        <div class="callout red" style="margin-top:12px">
+          <p>⛔ Unlike other agents, Compliance cannot be overridden by the PM or CIO. Only you (the Managing Partner) can override a compliance block, and it gets logged permanently.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>✅ Compliance Checklist</h3>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px;font-size:12px">
+          <div style="display:flex;gap:8px;align-items:center;padding:8px;border-radius:7px;background:var(--surface2)">
+            <span style="color:var(--green)">✓</span> Security is on approved list
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:8px;border-radius:7px;background:var(--surface2)">
+            <span style="color:var(--green)">✓</span> No active blackout period
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:8px;border-radius:7px;background:var(--surface2)">
+            <span style="color:var(--green)">✓</span> Position size within mandate limits
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:8px;border-radius:7px;background:var(--surface2)">
+            <span style="color:var(--green)">✓</span> No ESG exclusions violated
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:8px;border-radius:7px;background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.2)">
+            <span style="color:var(--red)">✗</span> Material non-public info check
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     RESEARCH TASKS (ISSUES)
+═══════════════════════════════════════ -->
+<section id="issues" class="reveal">
+  <span class="tag tag-purple">Work Items</span>
+  <h2>Research Tasks — The "Issues" of a Finance Firm</h2>
+  <p>In Paperclip, work is tracked as "issues." In a finance firm, these are <strong>research tasks, investment ideas, and analysis jobs</strong>.</p>
+
+  <div class="grid-2" style="margin-top:20px">
+    <div>
+      <h3 style="margin-bottom:12px">Task Types</h3>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="padding:12px 16px;border-radius:10px;background:var(--surface);border:1px solid rgba(59,130,246,.3);border-left:3px solid var(--blue)">
+          <div style="font-size:13px;font-weight:600;color:var(--blue)">📋 Initiate Coverage</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">First-time full research report on a new name. Takes 3-5 agent runs.</div>
+          <div style="display:flex;gap:6px;margin-top:6px"><span class="tag tag-blue" style="font-size:10px;margin:0">fundamental</span><span class="tag tag-purple" style="font-size:10px;margin:0">quant</span></div>
+        </div>
+        <div style="padding:12px 16px;border-radius:10px;background:var(--surface);border:1px solid rgba(240,180,41,.3);border-left:3px solid var(--gold)">
+          <div style="font-size:13px;font-weight:600;color:var(--gold)">💰 Earnings Analysis</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">Post-earnings deep dive. Triggered automatically when a watchlist company reports.</div>
+          <div style="display:flex;gap:6px;margin-top:6px"><span class="tag tag-gold" style="font-size:10px;margin:0">earnings</span><span class="tag tag-blue" style="font-size:10px;margin:0">fundamental</span></div>
+        </div>
+        <div style="padding:12px 16px;border-radius:10px;background:var(--surface);border:1px solid rgba(16,185,129,.3);border-left:3px solid var(--green)">
+          <div style="font-size:13px;font-weight:600;color:var(--green)">📈 Thesis Update</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">Revise existing investment thesis on a position. Triggered by price moves or news.</div>
+          <div style="display:flex;gap:6px;margin-top:6px"><span class="tag tag-green" style="font-size:10px;margin:0">update</span></div>
+        </div>
+        <div style="padding:12px 16px;border-radius:10px;background:var(--surface);border:1px solid rgba(129,140,248,.3);border-left:3px solid var(--purple)">
+          <div style="font-size:13px;font-weight:600;color:var(--purple)">🔍 Sector Screen</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">Quant-driven screen across a sector to find new ideas. Run monthly.</div>
+          <div style="display:flex;gap:6px;margin-top:6px"><span class="tag tag-purple" style="font-size:10px;margin:0">quant</span><span class="tag tag-cyan" style="font-size:10px;margin:0">macro</span></div>
+        </div>
+        <div style="padding:12px 16px;border-radius:10px;background:var(--surface);border:1px solid rgba(248,113,113,.3);border-left:3px solid var(--red)">
+          <div style="font-size:13px;font-weight:600;color:var(--red)">⚠️ Risk Review</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">Triggered by large drawdown or breach of risk limit. Mandatory before next trade.</div>
+          <div style="display:flex;gap:6px;margin-top:6px"><span class="tag tag-red" style="font-size:10px;margin:0">risk</span><span class="tag tag-orange" style="font-size:10px;margin:0">compliance</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="margin-bottom:12px">Task Hierarchy (like a tree)</h3>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:2.3;color:var(--muted)">
+          📋 <span style="color:var(--text);font-weight:600">Initiate Coverage: NVDA</span><br/>
+          &nbsp;&nbsp;├── 📊 <span style="color:var(--blue)">Business overview + market position</span><br/>
+          &nbsp;&nbsp;├── 📉 <span style="color:var(--blue)">Historical financials + trends</span><br/>
+          &nbsp;&nbsp;├── 🏭 <span style="color:var(--blue)">Industry + competitive analysis</span><br/>
+          &nbsp;&nbsp;├── 🔢 <span style="color:var(--purple)">Quant factor screen + signals</span><br/>
+          &nbsp;&nbsp;├── 💵 <span style="color:var(--cyan)">DCF + scenario modelling</span><br/>
+          &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── 🐂 <span style="color:var(--green)">Bull case ($1,400 PT)</span><br/>
+          &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── ➡️ Base case ($1,100 PT)<br/>
+          &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;└── 🐻 <span style="color:var(--red)">Bear case ($700 PT)</span><br/>
+          &nbsp;&nbsp;├── ⚖️ <span style="color:var(--orange)">Compliance clearance</span><br/>
+          &nbsp;&nbsp;└── 📄 <span style="color:var(--gold)">Final research report</span>
+        </div>
+      </div>
+      <div class="callout cyan" style="margin-top:14px">
+        <p>Each sub-task is assigned to the right agent: financial analysis → TMT Analyst, quant screen → Quant Agent, clearance → Compliance. They all run and report back to the parent task.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     DECISION PIPELINE (STEPPER)
+═══════════════════════════════════════ -->
+<section id="pipeline" class="reveal">
+  <span class="tag tag-green">The Process</span>
+  <h2>Investment Decision Pipeline</h2>
+  <p>From a market signal to a final trade recommendation — click through each step.</p>
+
+  <div class="stepper" style="margin-top:24px">
+    <div id="pipeSteps">
+
+      <div class="step active" onclick="setPipe(0)">
+        <div class="step-line"></div>
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>Signal / Trigger</h4>
+          <p>Something prompts research: news, earnings, price move, or a scheduled routine.</p>
+          <div class="step-detail">
+            <p>Triggers that kick off the pipeline:</p>
+            <ul style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li><strong>Earnings trigger</strong> — Company on watchlist reports results</li>
+              <li><strong>Price alert</strong> — A position moves ±5% in a day</li>
+              <li><strong>Macro event</strong> — Fed decision, CPI print, jobs report</li>
+              <li><strong>Scheduled screen</strong> — Monthly quant factor screen fires</li>
+              <li><strong>News trigger</strong> — Material news on a covered name detected</li>
+            </ul>
+            <pre>// Routine fires at market open if earnings released overnight
+{
+  name: "Earnings Overnight Check",
+  cron: "0 6 * * 1-5",
+  task: "Check watchlist for overnight earnings releases",
+  assignTo: "sector_analyst",
+  createIssue: "Earnings Analysis: {ticker} Q{quarter}"
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(1)">
+        <div class="step-line"></div>
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>Sector Analyst — Deep Research</h4>
+          <p>The right sector analyst takes the task and does full fundamental analysis.</p>
+          <div class="step-detail">
+            <p>The analyst agent wakes up, reads the issue, and runs its research workflow:</p>
+            <ul style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li>Pulls SEC filings (10-K, 10-Q, 8-K) for context</li>
+              <li>Fetches financial data (revenue, margins, FCF, balance sheet)</li>
+              <li>Reads earnings call transcript — extracts management commentary</li>
+              <li>Searches web for analyst consensus, recent news</li>
+              <li>Runs DCF with Bull / Base / Bear scenarios</li>
+              <li>Writes research report as issue comment</li>
+            </ul>
+            <pre>// Tools available to the sector analyst
+tools: [
+  get_financial_data,    // revenue, EPS, margins
+  get_sec_filings,       // 10-K, 10-Q, 8-K
+  get_earnings_transcript, // management commentary
+  perform_dcf_analysis,  // Bull/Base/Bear scenarios
+  search_web,            // news, analyst consensus
+  write_research_report  // posts result to issue
+]</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(2)">
+        <div class="step-line"></div>
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4>Quant Analyst — Signal Validation</h4>
+          <p>Quant runs models to validate (or challenge) the fundamental thesis with data.</p>
+          <div class="step-detail">
+            <p>Quant reads the analyst's report and adds quantitative perspective:</p>
+            <ul style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li>Factor scores: value, quality, momentum, low-volatility</li>
+              <li>Relative strength vs sector and benchmark</li>
+              <li>Earnings revision momentum (are estimates going up?)</li>
+              <li>Technical levels: support, resistance, trend</li>
+              <li>Returns: <em>"Historically, names with this profile return X% over 12m"</em></li>
+            </ul>
+            <pre>quant_signal = {
+  ticker: "NVDA",
+  factor_score: 8.4,
+  momentum_12m: "+187%",
+  earnings_revision: "+34%",
+  signal: "STRONG_BUY",
+  confidence: 0.78
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(3)">
+        <div class="step-line"></div>
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h4>Macro Strategist — Regime Check</h4>
+          <p>Is the macro environment suitable for this type of trade right now?</p>
+          <div class="step-detail">
+            <p>Macro agent reads both reports and adds top-down context:</p>
+            <ul style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li>Current regime: RISK-ON / RISK-OFF / TRANSITION?</li>
+              <li>Does sector allocation fit the macro backdrop?</li>
+              <li>Any upcoming macro events that could impact timing?</li>
+              <li>Fed policy direction and its impact on growth/value tilt</li>
+            </ul>
+            <pre>macro_context = {
+  regime: "RISK_ON",
+  fed_stance: "dovish_tilt",
+  growth_outlook: "above_trend",
+  sector_fit: "TECH_FAVOURED",
+  timing_flag: "no_blockers"
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(4)">
+        <div class="step-line"></div>
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h4>Risk Officer — Portfolio Impact Check</h4>
+          <p>Does adding this position breach any portfolio risk limits?</p>
+          <div class="step-detail">
+            <p>Risk agent checks if the proposed trade is safe for the portfolio:</p>
+            <ul style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li>Would position exceed 5% max single name limit?</li>
+              <li>Does it push TMT sector exposure above 25%?</li>
+              <li>Does portfolio beta stay under 1.3 after adding?</li>
+              <li>Liquidity check: can we exit within 3 days at current volume?</li>
+              <li>Correlation check: is this too similar to existing positions?</li>
+            </ul>
+            <pre>risk_check = {
+  verdict: "APPROVED",         // or "VETOED"
+  position_size_ok: true,
+  sector_limit_ok: true,
+  beta_post_trade: 1.18,
+  liquidity_ok: true,
+  max_suggested_size: "3.5%"
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(5)">
+        <div class="step-line"></div>
+        <div class="step-num">6</div>
+        <div class="step-body">
+          <h4>Compliance — Hard Gate</h4>
+          <p>Non-negotiable legal/regulatory clearance. Cannot be skipped.</p>
+          <div class="step-detail">
+            <p>Compliance agent runs its fixed checklist regardless of urgency:</p>
+            <ul style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li>Security on approved trading list?</li>
+              <li>Active blackout period for this name?</li>
+              <li>Mandate-allowed instrument type?</li>
+              <li>ESG exclusion screen (if applicable)</li>
+              <li>Logs decision with timestamp to immutable audit trail</li>
+            </ul>
+            <pre>compliance_result = {
+  verdict: "CLEARED",    // or "BLOCKED"
+  blackout: false,
+  approved_list: true,
+  esg_ok: true,
+  audit_id: "comp_20260427_nvda_001",
+  logged_at: "2026-04-27T09:14:22Z"
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(6)">
+        <div class="step-line"></div>
+        <div class="step-num">7</div>
+        <div class="step-body">
+          <h4>Portfolio Manager — Decision</h4>
+          <p>PM reads all five inputs and makes the final call: BUY / HOLD / SELL + size.</p>
+          <div class="step-detail">
+            <p>The PM synthesises all agent inputs into one decision:</p>
+            <pre>// PM reads all prior agent outputs from issue comments
+pm_decision = {
+  ticker: "NVDA",
+  action: "BUY",
+  size: "3.0%",              // of portfolio NAV
+  price_target: "$1,100",
+  entry_range: "$860-$890",
+  time_horizon: "12 months",
+  conviction: "HIGH",
+  rationale: "Strong AI capex cycle, quant confirms
+              momentum, macro regime favourable,
+              risk within limits, compliance cleared."
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setPipe(7)">
+        <div class="step-num">8</div>
+        <div class="step-body">
+          <h4>CIO Review + Your Approval</h4>
+          <p>For large positions or high-conviction calls, CIO reviews and you approve.</p>
+          <div class="step-detail">
+            <p>For positions above a threshold (e.g. >3% of NAV), the approval gate triggers:</p>
+            <ol style="color:var(--muted);font-size:12px;padding-left:18px;line-height:2;margin-top:8px">
+              <li>CIO agent reviews the full research package</li>
+              <li>Approval record created, status: <code>pending</code></li>
+              <li>You receive a notification (mobile / email)</li>
+              <li>You review and approve / reject / request revision</li>
+              <li>On approval: PM proceeds, audit trail updated</li>
+            </ol>
+            <pre>// You see this in the dashboard on your phone:
+approval = {
+  action: "BUY NVDA 3.0% of NAV",
+  requested_by: "Portfolio Manager",
+  analysts: ["TMT", "Quant", "Macro"],
+  risk: "APPROVED",
+  compliance: "CLEARED",
+  cio_recommendation: "PROCEED",
+  awaiting: "Managing Partner approval"
+}</pre>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="step-controls">
+      <button class="btn btn-out" onclick="prevPipe()">← Previous</button>
+      <button class="btn btn-gold" onclick="nextPipe()">Next →</button>
+      <span id="pipeIndicator" style="color:var(--muted);font-size:12px;margin-left:10px">Step 1 of 8</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     ROUTINES (SCHEDULES)
+═══════════════════════════════════════ -->
+<section id="routines" class="reveal">
+  <span class="tag tag-cyan">Schedules</span>
+  <h2>Routines — The Firm Never Sleeps</h2>
+  <p>Agents don't wait to be told what to do. Routines fire automatically on a schedule — just like a real trading desk.</p>
+
+  <div style="display:flex;flex-direction:column;gap:10px;margin-top:20px">
+
+    <div class="routine">
+      <div class="routine-icon">🌅</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Pre-Market Brief</span>
+          <span class="routine-cron">0 6 * * 1-5</span>
+          <span class="tag tag-cyan" style="margin:0;font-size:10px">DAILY</span>
+        </div>
+        <p style="font-size:12px;margin:0">Macro Agent scans overnight events: Asia/EU market moves, Fed speak, economic data releases. Publishes morning brief to all agents. <strong>Sets the tone for the day.</strong></p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">📰</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Earnings Radar</span>
+          <span class="routine-cron">30 6 * * 1-5</span>
+          <span class="tag tag-gold" style="margin:0;font-size:10px">DAILY</span>
+        </div>
+        <p style="font-size:12px;margin:0">Checks if any watchlist companies reported earnings overnight or have earnings today. Automatically creates an "Earnings Analysis" task and assigns to the right sector analyst.</p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">📊</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Portfolio Risk Snapshot</span>
+          <span class="routine-cron">0 9,16 * * 1-5</span>
+          <span class="tag tag-red" style="margin:0;font-size:10px">2× DAILY</span>
+        </div>
+        <p style="font-size:12px;margin:0">Risk Agent calculates current VaR, drawdown, sector exposure, and beta at market open and close. Flags any limit breaches immediately.</p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">🔍</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Sector Factor Screen</span>
+          <span class="routine-cron">0 8 * * 1</span>
+          <span class="tag tag-purple" style="margin:0;font-size:10px">WEEKLY</span>
+        </div>
+        <p style="font-size:12px;margin:0">Quant Agent runs a full factor screen across all covered sectors every Monday morning. Ranks names by combined factor score and flags new opportunities for analyst attention.</p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">📋</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Weekly Investment Committee</span>
+          <span class="routine-cron">0 9 * * 5</span>
+          <span class="tag tag-gold" style="margin:0;font-size:10px">WEEKLY</span>
+        </div>
+        <p style="font-size:12px;margin:0">CIO Agent prepares a weekly IC summary: portfolio performance vs benchmark, active positions review, new ideas pipeline, upcoming catalysts, and any open approvals waiting for your review.</p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">📈</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Monthly Portfolio Attribution</span>
+          <span class="routine-cron">0 8 1 * *</span>
+          <span class="tag tag-blue" style="margin:0;font-size:10px">MONTHLY</span>
+        </div>
+        <p style="font-size:12px;margin:0">PM Agent runs full Brinson attribution — what drove returns? Allocation vs selection effects. Which sectors contributed / detracted? Sent to CIO and you.</p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">🧮</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Quarterly Research Refresh</span>
+          <span class="routine-cron">0 8 1 1,4,7,10 *</span>
+          <span class="tag tag-orange" style="margin:0;font-size:10px">QUARTERLY</span>
+        </div>
+        <p style="font-size:12px;margin:0">Each sector analyst revisits all active coverage and updates DCF models with latest financials, revises price targets, and re-rates any names where the thesis has changed.</p>
+      </div>
+    </div>
+
+    <div class="routine">
+      <div class="routine-icon">⚠️</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="font-size:13px;font-weight:600">Drawdown Alert</span>
+          <span class="routine-cron">*/15 9-16 * * 1-5</span>
+          <span class="tag tag-red" style="margin:0;font-size:10px">INTRADAY</span>
+        </div>
+        <p style="font-size:12px;margin:0">Every 15 minutes during market hours. If any position drops >3% or portfolio VaR breaches, Risk Agent wakes immediately, assesses, and escalates to PM. No waiting for end-of-day.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     COMPLIANCE / APPROVALS
+═══════════════════════════════════════ -->
+<section id="approvals" class="reveal">
+  <span class="tag tag-orange">Governance</span>
+  <h2>Compliance &amp; Approval Gates</h2>
+  <p>A finance firm has stricter governance requirements than a software company. Three hard gates ensure no trade slips through without proper oversight.</p>
+
+  <div class="grid-3" style="margin-top:20px">
+    <div class="card" style="border-color:rgba(248,113,113,.25)">
+      <div style="font-size:28px;margin-bottom:10px">🛡️</div>
+      <h3 style="color:var(--red)">Gate 1: Risk Veto</h3>
+      <p>Automatic — no human needed. Risk Agent checks all portfolio limits. Hard stop if any limit breached. PM cannot proceed without APPROVED status.</p>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">
+        Enforced by: <code>risk_agent</code><br/>
+        Trigger: every trade recommendation<br/>
+        Override: CIO only, logged permanently
+      </div>
+    </div>
+    <div class="card" style="border-color:rgba(251,146,60,.25)">
+      <div style="font-size:28px;margin-bottom:10px">⚖️</div>
+      <h3 style="color:var(--orange)">Gate 2: Compliance Clearance</h3>
+      <p>Automatic — runs in parallel with Risk. Checks approved securities list, blackouts, mandate constraints. Blocks immediately on any violation.</p>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">
+        Enforced by: <code>compliance_agent</code><br/>
+        Trigger: every trade recommendation<br/>
+        Override: Managing Partner only, creates audit event
+      </div>
+    </div>
+    <div class="card" style="border-color:rgba(240,180,41,.25)">
+      <div style="font-size:28px;margin-bottom:10px">🧑‍💼</div>
+      <h3 style="color:var(--gold)">Gate 3: Human Approval</h3>
+      <p>You, the Managing Partner. Required for positions above threshold (e.g. >3% NAV) or new names not previously owned. You get a mobile notification.</p>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">
+        Enforced by: approval workflow<br/>
+        Trigger: size threshold or new name flag<br/>
+        SLA: agents pause until approved
+      </div>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:20px">
+    <p>📱 You manage the firm from your phone. Every morning you wake up to a briefing from the CIO, any pending approvals, and the day's scheduled catalysts. You approve or reject with one tap — and the agents proceed accordingly.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     DATA SOURCES
+═══════════════════════════════════════ -->
+<section id="data" class="reveal">
+  <span class="tag tag-cyan">Data Layer</span>
+  <h2>Data Sources — What the Agents Read</h2>
+  <p>Agents are only as good as the data they have access to. Here's the full data stack.</p>
+
+  <div style="display:flex;flex-direction:column;gap:10px;margin-top:20px">
+    <div class="ds-card">
+      <div class="icon">📊</div>
+      <div>
+        <h4>Financial Data API (Financial Datasets AI)</h4>
+        <p>Historical income statements, balance sheets, cash flows, earnings, and key metrics for any publicly traded company. Used by: sector analysts, quant agent, DCF engine.</p>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <span class="tag tag-blue" style="margin:0;font-size:10px">fundamentals</span>
+          <span class="tag tag-blue" style="margin:0;font-size:10px">earnings history</span>
+          <span class="tag tag-blue" style="margin:0;font-size:10px">market cap</span>
+        </div>
+      </div>
+    </div>
+    <div class="ds-card">
+      <div class="icon">📜</div>
+      <div>
+        <h4>SEC EDGAR</h4>
+        <p>Full text of 10-K annual reports, 10-Q quarterly filings, 8-K material events, proxy statements, and insider filings. No API key required. Used by: all analyst agents for primary source research.</p>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <span class="tag tag-purple" style="margin:0;font-size:10px">10-K / 10-Q</span>
+          <span class="tag tag-purple" style="margin:0;font-size:10px">8-K</span>
+          <span class="tag tag-purple" style="margin:0;font-size:10px">insider trades</span>
+        </div>
+      </div>
+    </div>
+    <div class="ds-card">
+      <div class="icon">🎙️</div>
+      <div>
+        <h4>Earnings Call Transcripts (Alpha Vantage / FMP)</h4>
+        <p>Full verbatim transcripts of earnings calls with speaker attribution. Agents extract management guidance, tone, and key themes. 15+ years of history. Used by: sector analysts on every earnings task.</p>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <span class="tag tag-gold" style="margin:0;font-size:10px">management quotes</span>
+          <span class="tag tag-gold" style="margin:0;font-size:10px">guidance</span>
+          <span class="tag tag-gold" style="margin:0;font-size:10px">Q&A themes</span>
+        </div>
+      </div>
+    </div>
+    <div class="ds-card">
+      <div class="icon">🌐</div>
+      <div>
+        <h4>Perplexity Sonar (Web Intelligence)</h4>
+        <p>Real-time web search for current news, analyst price targets, recent commentary, macro events. The agents' connection to what's happening right now. Used by: all agents for current context.</p>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <span class="tag tag-cyan" style="margin:0;font-size:10px">news</span>
+          <span class="tag tag-cyan" style="margin:0;font-size:10px">analyst consensus</span>
+          <span class="tag tag-cyan" style="margin:0;font-size:10px">macro events</span>
+        </div>
+      </div>
+    </div>
+    <div class="ds-card">
+      <div class="icon">📡</div>
+      <div>
+        <h4>Real-Time Market Data (Massive.com / Bloomberg)</h4>
+        <p>Live prices, volume, options flow, intraday charts. Used by: Risk Agent (live VaR), Drawdown Alert routine, Quant Agent for technical analysis.</p>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <span class="tag tag-green" style="margin:0;font-size:10px">live prices</span>
+          <span class="tag tag-green" style="margin:0;font-size:10px">volume</span>
+          <span class="tag tag-green" style="margin:0;font-size:10px">options flow</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     BUDGET SYSTEM (FINANCE-SPECIFIC)
+═══════════════════════════════════════ -->
+<section id="budget" class="reveal">
+  <span class="tag tag-gold">Budgets</span>
+  <h2>Two Types of Budgets</h2>
+  <p>A finance firm OS has a unique budget concept — not just <em>API costs</em>, but <em>position limits</em> too.</p>
+
+  <div class="grid-2" style="margin-top:20px">
+    <div class="card">
+      <h3>💻 Agent API Budget</h3>
+      <p>Exactly like Paperclip — each agent has a monthly spend cap on LLM API calls. The CIO (using the most powerful model) gets the biggest budget. Leaf analysts use smaller, cheaper models.</p>
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="width:120px;font-size:12px">👑 CIO (Opus)</span>
+          <div style="flex:1;height:8px;background:var(--surface2);border-radius:99px;overflow:hidden"><div style="width:35%;height:100%;background:linear-gradient(90deg,var(--green),#34d399);border-radius:99px"></div></div>
+          <span style="font-size:11px;color:var(--green);width:60px;text-align:right">$45/mo</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="width:120px;font-size:12px">📊 PM (Sonnet)</span>
+          <div style="flex:1;height:8px;background:var(--surface2);border-radius:99px;overflow:hidden"><div style="width:55%;height:100%;background:linear-gradient(90deg,var(--green),#34d399);border-radius:99px"></div></div>
+          <span style="font-size:11px;color:var(--green);width:60px;text-align:right">$30/mo</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="width:120px;font-size:12px">🔍 Analysts (Sonnet)</span>
+          <div style="flex:1;height:8px;background:var(--surface2);border-radius:99px;overflow:hidden"><div style="width:70%;height:100%;background:linear-gradient(90deg,var(--gold),#fbbf24);border-radius:99px"></div></div>
+          <span style="font-size:11px;color:var(--gold);width:60px;text-align:right">$20/mo each</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="width:120px;font-size:12px">📐 Quant (Haiku)</span>
+          <div style="flex:1;height:8px;background:var(--surface2);border-radius:99px;overflow:hidden"><div style="width:30%;height:100%;background:linear-gradient(90deg,var(--green),#34d399);border-radius:99px"></div></div>
+          <span style="font-size:11px;color:var(--green);width:60px;text-align:right">$8/mo</span>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="border-color:rgba(240,180,41,.3)">
+      <h3>💰 Position Budgets (Finance-Specific)</h3>
+      <p>This is unique to a finance OS. Each "position" has its own investment mandate constraints enforced at the system level — not just cost limits.</p>
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;font-size:12px">
+        <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Max single position</span><span style="color:var(--text);font-weight:600">5.0% NAV</span>
+        </div>
+        <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Max sector allocation</span><span style="color:var(--text);font-weight:600">25.0% NAV</span>
+        </div>
+        <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Max portfolio beta</span><span style="color:var(--text);font-weight:600">1.30×</span>
+        </div>
+        <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Max drawdown (stop-loss)</span><span style="color:var(--red);font-weight:600">-15.0%</span>
+        </div>
+        <div style="padding:9px 13px;border-radius:8px;background:var(--surface2);display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Daily VaR limit (95%)</span><span style="color:var(--text);font-weight:600">-2.5%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     LIVE FEED
+═══════════════════════════════════════ -->
+<section id="realtime" class="reveal">
+  <span class="tag tag-green">Live</span>
+  <h2>The Live Investment Feed</h2>
+  <p>Every action by every agent is streamed to a real-time dashboard — just like Paperclip's WebSocket events, but showing financial activity.</p>
+
+  <div class="grid-2" style="margin-top:20px">
+    <div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <span style="font-size:13px;font-weight:600">Activity Feed</span>
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 1.5s infinite"></div>
+            <span style="font-size:11px;color:var(--green)">LIVE</span>
+          </div>
+        </div>
+        <div class="elog" id="finEventLog"></div>
+        <button class="btn btn-gold" style="margin-top:12px;width:100%;font-size:12px" onclick="runFinEvents()">▶ Simulate Morning Open</button>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="margin-bottom:12px">Latest Research Signals</h3>
+      <div style="display:flex;flex-direction:column;gap:8px" id="signalList">
+        <div class="signal">
+          <div class="signal-dot signal-buy"></div>
+          <div class="signal-body">
+            <div class="ticker">NVDA</div>
+            <div class="meta">TMT Analyst · DCF PT $1,100 · Confidence 82%</div>
+          </div>
+          <div class="signal-right"><span class="signal-rating rating-buy">BUY</span></div>
+        </div>
+        <div class="signal">
+          <div class="signal-dot signal-buy"></div>
+          <div class="signal-body">
+            <div class="ticker">MSFT</div>
+            <div class="meta">TMT Analyst · DCF PT $500 · Confidence 76%</div>
+          </div>
+          <div class="signal-right"><span class="signal-rating rating-buy">BUY</span></div>
+        </div>
+        <div class="signal">
+          <div class="signal-dot signal-hold"></div>
+          <div class="signal-body">
+            <div class="ticker">TSLA</div>
+            <div class="meta">TMT Analyst · DCF PT $180 · Confidence 55%</div>
+          </div>
+          <div class="signal-right"><span class="signal-rating rating-hold">HOLD</span></div>
+        </div>
+        <div class="signal">
+          <div class="signal-dot signal-sell"></div>
+          <div class="signal-body">
+            <div class="ticker">INTC</div>
+            <div class="meta">TMT Analyst · DCF PT $22 · Confidence 71%</div>
+          </div>
+          <div class="signal-right"><span class="signal-rating rating-sell">SELL</span></div>
+        </div>
+        <div class="signal">
+          <div class="signal-dot signal-buy"></div>
+          <div class="signal-body">
+            <div class="ticker">LLY</div>
+            <div class="meta">Healthcare Analyst · DCF PT $1,050 · Confidence 80%</div>
+          </div>
+          <div class="signal-right"><span class="signal-rating rating-buy">BUY</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     ARCHITECTURE SUMMARY
+═══════════════════════════════════════ -->
+<section id="arch" class="reveal">
+  <span class="tag tag-gold">Architecture</span>
+  <h2>The Full System at a Glance</h2>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 24px;margin-top:20px">
+
+    <div style="display:flex;justify-content:center;margin-bottom:24px">
+      <div style="padding:12px 24px;border-radius:12px;border:2px solid var(--gold);background:rgba(240,180,41,.08);font-weight:700;font-size:14px;color:var(--gold)">
+        🧑‍💼 You — Managing Partner
+        <div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px">Set mandate · Approve trades · Review performance</div>
+      </div>
+    </div>
+
+    <div style="text-align:center;color:var(--muted);font-size:11px;margin-bottom:10px">↕ Approvals, Veto, Pause, Budget</div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+      <div style="text-align:center;padding:12px;border-radius:10px;background:var(--surface2);border:1px solid rgba(240,180,41,.2)">
+        <div style="font-size:16px;margin-bottom:4px">👑</div><div style="font-size:11px;font-weight:600">CIO Agent</div><div style="font-size:10px;color:var(--muted)">Strategy · IC · Weekly brief</div>
+      </div>
+      <div style="text-align:center;padding:12px;border-radius:10px;background:var(--surface2);border:1px solid rgba(248,113,113,.2)">
+        <div style="font-size:16px;margin-bottom:4px">🛡️</div><div style="font-size:11px;font-weight:600">Risk Officer</div><div style="font-size:10px;color:var(--muted)">VaR · Limits · Veto</div>
+      </div>
+      <div style="text-align:center;padding:12px;border-radius:10px;background:var(--surface2);border:1px solid rgba(251,146,60,.2)">
+        <div style="font-size:16px;margin-bottom:4px">⚖️</div><div style="font-size:11px;font-weight:600">Compliance</div><div style="font-size:10px;color:var(--muted)">Clearance · Audit trail</div>
+      </div>
+    </div>
+
+    <div style="text-align:center;color:var(--muted);font-size:11px;margin-bottom:10px">↓ Reads all inputs</div>
+
+    <div style="display:flex;justify-content:center;margin-bottom:16px">
+      <div style="padding:12px 24px;border-radius:12px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);text-align:center;min-width:160px">
+        <div style="font-size:16px;margin-bottom:4px">📊</div><div style="font-size:12px;font-weight:600;color:var(--green)">Portfolio Manager</div>
+        <div style="font-size:10px;color:var(--muted)">BUY / HOLD / SELL · Sizing</div>
+      </div>
+    </div>
+
+    <div style="text-align:center;color:var(--muted);font-size:11px;margin-bottom:10px">↑ Research · Signals · Macro</div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:20px">
+      <div style="text-align:center;padding:10px;border-radius:9px;background:var(--surface2);border:1px solid rgba(59,130,246,.2)">
+        <div style="font-size:14px;margin-bottom:3px">💻</div><div style="font-size:10px;font-weight:600">TMT Analyst</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:9px;background:var(--surface2);border:1px solid rgba(59,130,246,.2)">
+        <div style="font-size:14px;margin-bottom:3px">🏥</div><div style="font-size:10px;font-weight:600">Health Analyst</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:9px;background:var(--surface2);border:1px solid rgba(59,130,246,.2)">
+        <div style="font-size:14px;margin-bottom:3px">⚡</div><div style="font-size:10px;font-weight:600">Energy Analyst</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:9px;background:var(--surface2);border:1px solid rgba(129,140,248,.2)">
+        <div style="font-size:14px;margin-bottom:3px">📐</div><div style="font-size:10px;font-weight:600">Quant Agent</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:9px;background:var(--surface2);border:1px solid rgba(34,211,238,.2)">
+        <div style="font-size:14px;margin-bottom:3px">🌍</div><div style="font-size:10px;font-weight:600">Macro Agent</div>
+      </div>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin-bottom:20px"></div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">
+      <div style="padding:10px 12px;border-radius:9px;background:var(--surface2);border:1px solid var(--border);font-size:11px">
+        <div style="font-weight:600;margin-bottom:3px">⏰ Routines Engine</div>
+        <div style="color:var(--muted)">Cron scheduler, 8+ daily jobs</div>
+      </div>
+      <div style="padding:10px 12px;border-radius:9px;background:var(--surface2);border:1px solid var(--border);font-size:11px">
+        <div style="font-weight:600;margin-bottom:3px">📡 Live Event Bus</div>
+        <div style="color:var(--muted)">WebSocket → mobile dashboard</div>
+      </div>
+      <div style="padding:10px 12px;border-radius:9px;background:var(--surface2);border:1px solid var(--border);font-size:11px">
+        <div style="font-weight:600;margin-bottom:3px">💾 Data Sources</div>
+        <div style="color:var(--muted)">SEC, Earnings, Market, News</div>
+      </div>
+      <div style="padding:10px 12px;border-radius:9px;background:var(--surface2);border:1px solid var(--border);font-size:11px">
+        <div style="font-weight:600;margin-bottom:3px">📝 Audit Trail</div>
+        <div style="color:var(--muted)">Every decision logged, immutable</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:24px">
+    <p>🏗️ The core difference from generic Paperclip: <strong>compliance is a non-optional hard gate</strong>, <strong>position limits are enforced at the system level</strong> (not just API budgets), and <strong>every research task traces back to the investment mandate</strong> — not just a general "goal."</p>
+  </div>
+
+  <div style="margin-top:32px;padding:28px;background:linear-gradient(135deg,rgba(240,180,41,.07),rgba(16,185,129,.04));border:1px solid rgba(240,180,41,.2);border-radius:18px;text-align:center">
+    <div style="font-size:20px;font-weight:700;margin-bottom:10px">What makes this more than Paperclip + finance prompts</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:16px;text-align:left">
+      <div style="padding:12px;background:rgba(0,0,0,.2);border-radius:10px;font-size:12px;color:var(--muted)">
+        <strong style="color:var(--gold)">Investment mandate</strong><br/>replaces the generic "company goal" with a formal IPS: return target, benchmark, risk budget, constraints
+      </div>
+      <div style="padding:12px;background:rgba(0,0,0,.2);border-radius:10px;font-size:12px;color:var(--muted)">
+        <strong style="color:var(--gold)">Position budgets</strong><br/>a second budget dimension: not just API spend, but portfolio weight limits enforced as hard constraints
+      </div>
+      <div style="padding:12px;background:rgba(0,0,0,.2);border-radius:10px;font-size:12px;color:var(--muted)">
+        <strong style="color:var(--gold)">Time-sensitive heartbeats</strong><br/>market-aware triggers: earnings releases, price alerts, Fed decisions — not just cron jobs
+      </div>
+      <div style="padding:12px;background:rgba(0,0,0,.2);border-radius:10px;font-size:12px;color:var(--muted)">
+        <strong style="color:var(--gold)">3-gate compliance flow</strong><br/>risk veto → compliance clearance → human approval — all sequential, all blocking
+      </div>
+    </div>
+  </div>
+</section>
+
+</div><!-- end .page -->
+<footer>Finance Firm OS — concept design inspired by the Paperclip open-source architecture</footer>
+
+<script>
+// ── ORG TOOLTIPS ──
+const orgData = {
+  you: { title:"🧑‍💼 You — Managing Partner", body:"You're the highest authority. You set the investment mandate, approve large trades, and can pause or override anything. You review the CIO's weekly brief and handle escalations. Think of yourself as the board — you govern, not operate." },
+  cio: { title:"👑 CIO Agent — Chief Investment Officer", body:"Sets strategic direction: sector allocations, macro tilts, benchmark choice. Prepares the weekly Investment Committee summary. Uses the most powerful (and expensive) model — Opus — because strategy decisions require nuanced reasoning." },
+  pm:  { title:"📊 Portfolio Manager Agent", body:"The one who actually decides what goes in the portfolio. Reads all analyst reports, quant signals, macro context, then issues a BUY/HOLD/SELL with a position size. The only agent with trade-recommendation authority." },
+  risk:{ title:"🛡️ Risk Officer Agent", body:"Guardian of the portfolio's risk profile. Has <strong>veto power</strong> — if a trade breaches portfolio limits (VaR, beta, sector concentration, position size), Risk blocks it. Runs portfolio risk calculations at market open and close every day." },
+  compliance:{ title:"⚖️ Compliance Officer Agent", body:"A non-negotiable hard gate. Checks every trade recommendation against the approved securities list, blackout periods, mandate constraints, and ESG exclusions. Cannot be bypassed by any other agent — only you (Managing Partner) can override, and it's permanently logged." },
+  'analyst-tech':{ title:"💻 TMT Analyst Agent", body:"Covers technology, media, and telecom. Runs DCF valuations, earnings analysis, competitive positioning, and moat assessments for names like AAPL, NVDA, MSFT, META, GOOGL. Uses a sector-specific valuation framework baked into its role prompt." },
+  'analyst-health':{ title:"🏥 Healthcare Analyst Agent", body:"Covers pharmaceutical, biotech, and medtech. Understands pipeline risk, FDA approval probability, patent cliffs, and drug pricing dynamics — completely different from tech valuation. Uses risk-adjusted NPV for pipeline assets." },
+  'analyst-energy':{ title:"⚡ Energy Analyst Agent", body:"Covers oil, gas, renewables, and utilities. Tracks commodity price decks, reserve reports, energy transition themes, and capex cycles. Also handles ESG scoring for energy names." },
+  quant:{ title:"📐 Quant Analyst Agent", body:"Runs quantitative models: factor screens (value/quality/momentum/low-vol), backtests, relative strength, earnings revision momentum. Validates — or challenges — the fundamental analyst's thesis with data." },
+  macro:{ title:"🌍 Macro Strategist Agent", body:"Monitors the macro environment: Fed policy, rates, inflation, FX, geopolitics. Classifies the current market regime (RISK-ON / RISK-OFF / TRANSITION) which guides the PM's sector rotation and the Risk Agent's VaR settings." }
+};
+function showOrg(key) {
+  const d = orgData[key];
+  if (!d) return;
+  const tip = document.getElementById('orgTooltip');
+  const content = document.getElementById('orgTooltipContent');
+  content.innerHTML = `<div style="font-size:14px;font-weight:700;margin-bottom:6px">${d.title}</div><p style="font-size:13px;color:var(--muted);margin:0;line-height:1.7">${d.body}</p>`;
+  tip.style.display = 'block';
+}
+
+// ── TABS ──
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ── PIPELINE STEPPER ──
+let pipeStep = 0;
+const PIPE_TOTAL = 8;
+function setPipe(n) {
+  const steps = document.querySelectorAll('#pipeSteps .step');
+  steps.forEach((s, i) => {
+    s.classList.remove('active','done');
+    if (i < n) s.classList.add('done');
+    if (i === n) s.classList.add('active');
+  });
+  pipeStep = n;
+  document.getElementById('pipeIndicator').textContent = `Step ${n+1} of ${PIPE_TOTAL}`;
+}
+function nextPipe() { if (pipeStep < PIPE_TOTAL-1) setPipe(pipeStep+1); }
+function prevPipe() { if (pipeStep > 0) setPipe(pipeStep-1); }
+
+// ── LIVE FINANCE EVENTS ──
+const finEvents = [
+  { tag:'MACRO', col:'#22d3ee', bg:'rgba(34,211,238,.12)', msg:'Pre-market brief ready — Asia +0.8%, Oil -1.2%, USD strengthening' },
+  { tag:'MACRO', col:'#22d3ee', bg:'rgba(34,211,238,.12)', msg:'Regime: RISK-ON | Fed: dovish | Growth: above-trend' },
+  { tag:'EARNINGS', col:'#f0b429', bg:'rgba(240,180,41,.12)', msg:'NVDA Q1 results: EPS $6.12 vs est $5.89 (+3.9% beat)' },
+  { tag:'TASK', col:'#3b82f6', bg:'rgba(59,130,246,.12)', msg:'New issue: Earnings Analysis — NVDA Q1 → assigned to TMT Analyst' },
+  { tag:'RUN', col:'#818cf8', bg:'rgba(129,140,248,.12)', msg:'TMT Analyst: starting heartbeat run on NVDA earnings task' },
+  { tag:'DATA', col:'#10b981', bg:'rgba(16,185,129,.12)', msg:'Fetched: NVDA financials, SEC 10-Q, Q1 transcript (Alpha Vantage)' },
+  { tag:'DCF', col:'#f0b429', bg:'rgba(240,180,41,.12)', msg:'DCF complete — Base PT $1,100 | Bull $1,400 | Bear $700' },
+  { tag:'QUANT', col:'#818cf8', bg:'rgba(129,140,248,.12)', msg:'Quant signal: Factor score 8.4/10 | STRONG BUY | Confidence 78%' },
+  { tag:'RISK', col:'#f87171', bg:'rgba(248,113,113,.12)', msg:'Risk check: all limits OK | TMT at 23.4% (near 25% cap, flagged ⚠)' },
+  { tag:'COMPLY', col:'#fb923c', bg:'rgba(251,146,60,.12)', msg:'Compliance: CLEARED | No blackout | Approved list ✓ | Audit logged' },
+  { tag:'SIGNAL', col:'#10b981', bg:'rgba(16,185,129,.12)', msg:'PM Decision: BUY NVDA 3.0% NAV @ $860-890 | PT $1,100 | HIGH conviction' },
+  { tag:'APPROVAL', col:'#f0b429', bg:'rgba(240,180,41,.12)', msg:'Approval pending: BUY NVDA >3% NAV — awaiting Managing Partner ⏳' },
+];
+let finRunning = false;
+function runFinEvents() {
+  if (finRunning) return;
+  finRunning = true;
+  const log = document.getElementById('finEventLog');
+  log.innerHTML = '';
+  let d = 0;
+  finEvents.forEach(ev => {
+    d += 500 + Math.random() * 400;
+    setTimeout(() => {
+      const row = document.createElement('div');
+      row.className = 'erow';
+      row.innerHTML = `<div class="edot" style="background:${ev.col}"></div><span class="etag" style="background:${ev.bg};color:${ev.col}">${ev.tag}</span><span class="emsg">${ev.msg}</span>`;
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+    }, d);
+  });
+  setTimeout(() => { finRunning = false; }, d + 600);
+}
+
+// ── SCROLL REVEAL ──
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.08 });
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+</script>
+</body>
+</html>

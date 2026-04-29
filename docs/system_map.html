@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Agent Platform — System Map</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --teal:    #10B981;
+  --teal-d:  #065F46;
+  --teal-l:  #D1FAE5;
+  --blue:    #3B82F6;
+  --blue-l:  #DBEAFE;
+  --purple:  #8B5CF6;
+  --purple-l:#EDE9FE;
+  --amber:   #F59E0B;
+  --amber-l: #FEF3C7;
+  --red:     #EF4444;
+  --red-l:   #FEE2E2;
+  --ink:     #111827;
+  --soft:    #374151;
+  --muted:   #6B7280;
+  --border:  #E5E7EB;
+  --bg:      #F9FAFB;
+  --white:   #FFFFFF;
+}
+
+body {
+  font-family: 'IBM Plex Sans', sans-serif;
+  background: #0F172A;
+  color: var(--ink);
+  min-height: 100vh;
+  padding: 32px 24px 60px;
+}
+
+/* ── page wrapper ── */
+.page { max-width: 1180px; margin: 0 auto; }
+
+/* ── header ── */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 36px;
+}
+.header-left { display: flex; align-items: center; gap: 14px; }
+.logo {
+  width: 40px; height: 40px; border-radius: 10px;
+  background: var(--teal); display: flex; align-items: center;
+  justify-content: center; font-weight: 700; font-size: 18px; color: white;
+}
+.header h1 { font-size: 20px; font-weight: 700; color: #F1F5F9; }
+.header p  { font-size: 13px; color: #64748B; }
+.legend { display: flex; gap: 16px; }
+.leg { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94A3B8; }
+.leg-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+/* ── layer wrapper ── */
+.layer { margin-bottom: 0; }
+
+/* ── layer label ── */
+.layer-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: #475569;
+  margin-bottom: 10px; padding-left: 4px;
+}
+
+/* ── connector ── */
+.connector {
+  display: flex; justify-content: center; align-items: center;
+  height: 40px; color: #334155; font-size: 11px;
+  gap: 8px; position: relative;
+}
+.connector::before {
+  content: '';
+  position: absolute;
+  left: 50%; top: 0; bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, #1E293B, #334155, #1E293B);
+}
+.connector-label {
+  background: #1E293B; border: 1px solid #334155;
+  padding: 3px 10px; border-radius: 10px;
+  font-size: 10px; color: #64748B;
+  position: relative; z-index: 1;
+}
+
+/* fork connector */
+.fork {
+  display: flex; justify-content: center;
+  height: 50px; position: relative;
+  margin: 0;
+}
+.fork::before {
+  content: '';
+  position: absolute; left: 50%; top: 0;
+  width: 1px; height: 20px;
+  background: #334155;
+}
+.fork::after {
+  content: '';
+  position: absolute; left: 25%; right: 25%;
+  top: 20px; height: 1px;
+  background: #334155;
+}
+.fork-down-left, .fork-down-right {
+  position: absolute; bottom: 0;
+  width: 1px; height: 28px; background: #334155;
+}
+.fork-down-left  { left: 25%; }
+.fork-down-right { right: 25%; }
+
+/* merge connector */
+.merge {
+  display: flex; justify-content: center;
+  height: 50px; position: relative;
+}
+.merge::after {
+  content: '';
+  position: absolute; left: 25%; right: 25%;
+  top: 0; height: 1px;
+  background: #334155;
+}
+.merge::before {
+  content: '';
+  position: absolute; left: 50%; top: 0;
+  width: 1px; height: 100%;
+  background: #334155;
+}
+.merge-up-left, .merge-up-right {
+  position: absolute; top: 0;
+  width: 1px; height: 30px; background: #334155;
+}
+.merge-up-left  { left: 25%; }
+.merge-up-right { right: 25%; }
+
+/* ── row (horizontal flex of cards) ── */
+.row {
+  display: flex; gap: 12px;
+  background: #1E293B;
+  border: 1px solid #334155;
+  border-radius: 16px;
+  padding: 18px 20px;
+}
+.row.split { align-items: flex-start; }
+
+/* ── zone inside a row ── */
+.zone {
+  flex: 1; border-radius: 12px; padding: 16px;
+}
+
+/* zone colour variants */
+.zone-teal   { background: #042F2E; border: 1px solid #065F46; }
+.zone-blue   { background: #0C1A3A; border: 1px solid #1D4ED8; }
+.zone-purple { background: #170D2E; border: 1px solid #5B21B6; }
+.zone-amber  { background: #1C1100; border: 1px solid #92400E; }
+.zone-red    { background: #1C0A0A; border: 1px solid #991B1B; }
+.zone-gray   { background: #0F172A; border: 1px solid #334155; }
+
+.zone-title {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; margin-bottom: 12px;
+}
+.zone-teal   .zone-title { color: var(--teal); }
+.zone-blue   .zone-title { color: #60A5FA; }
+.zone-purple .zone-title { color: #A78BFA; }
+.zone-amber  .zone-title { color: var(--amber); }
+.zone-red    .zone-title { color: #F87171; }
+.zone-gray   .zone-title { color: #94A3B8; }
+
+/* ── card ── */
+.card {
+  background: #0F172A; border: 1px solid #334155;
+  border-radius: 8px; padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.card:last-child { margin-bottom: 0; }
+.card-title { font-size: 12px; font-weight: 600; color: #E2E8F0; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+.card-body  { font-size: 11px; color: #64748B; line-height: 1.5; }
+
+/* ── chip strip ── */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  padding: 4px 10px; border-radius: 6px;
+  font-size: 11px; font-weight: 500;
+  border: 1px solid;
+}
+.chip-teal   { background: #042F2E; border-color: #065F46; color: #6EE7B7; }
+.chip-blue   { background: #0C1A3A; border-color: #1D4ED8; color: #93C5FD; }
+.chip-purple { background: #170D2E; border-color: #5B21B6; color: #C4B5FD; }
+.chip-amber  { background: #1C1100; border-color: #92400E; color: #FCD34D; }
+.chip-red    { background: #1C0A0A; border-color: #991B1B; color: #FCA5A5; }
+.chip-gray   { background: #1E293B; border-color: #475569; color: #94A3B8; }
+.chip-mono   { font-family: 'IBM Plex Mono', monospace; }
+
+/* ── agent node ── */
+.agent-node {
+  display: flex; flex-direction: column;
+  background: #0F172A; border: 1px solid #334155;
+  border-radius: 8px; padding: 10px 12px; flex: 1;
+}
+.agent-node-icon { font-size: 18px; margin-bottom: 4px; }
+.agent-node-name { font-size: 11px; font-weight: 600; color: #E2E8F0; margin-bottom: 2px; }
+.agent-node-desc { font-size: 10px; color: #64748B; line-height: 1.4; }
+.agent-row { display: flex; gap: 8px; }
+
+/* ── pipeline strip ── */
+.pipeline {
+  display: flex; align-items: center; gap: 0;
+}
+.pipe-node { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.pipe-box {
+  padding: 8px 12px; border-radius: 8px;
+  background: #0F172A; border: 1px solid #334155;
+  font-size: 11px; font-weight: 500; color: #94A3B8;
+  text-align: center; white-space: nowrap;
+}
+.pipe-box.hl-teal   { border-color: #065F46; color: #6EE7B7; background: #042F2E; }
+.pipe-box.hl-purple { border-color: #5B21B6; color: #C4B5FD; background: #170D2E; }
+.pipe-arrow { color: #334155; font-size: 14px; padding: 0 4px; flex-shrink: 0; }
+
+/* ── api card ── */
+.api-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+.api-card {
+  background: #0F172A; border: 1px solid #334155; border-radius: 8px;
+  padding: 10px 12px;
+}
+.api-name { font-size: 11px; font-weight: 600; color: #E2E8F0; margin-bottom: 2px; }
+.api-use  { font-size: 10px; color: #64748B; line-height: 1.4; }
+.api-tag  { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 4px; margin-top: 4px; font-weight: 500; }
+
+/* ── db table ── */
+.db-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.db-chip {
+  padding: 3px 8px; border-radius: 5px;
+  font-size: 10px; font-family: 'IBM Plex Mono', monospace;
+  background: #1E293B; border: 1px solid #475569; color: #94A3B8;
+}
+
+/* ── divider in zone ── */
+.zone-div { border: none; border-top: 1px solid #1E293B; margin: 10px 0; }
+
+/* ── infra row ── */
+.infra-row { display: flex; gap: 8px; margin-top: 8px; }
+.infra-pill {
+  padding: 4px 12px; border-radius: 20px;
+  font-size: 11px; font-weight: 500;
+  background: #1E293B; border: 1px solid #475569; color: #94A3B8;
+}
+
+/* tooltip */
+[data-tip] { cursor: default; position: relative; }
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%);
+  background: #1E293B; border: 1px solid #475569; color: #CBD5E1;
+  font-size: 10px; padding: 4px 10px; border-radius: 6px;
+  white-space: nowrap; pointer-events: none; z-index: 10;
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── HEADER ── -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">F</div>
+      <div>
+        <h1>Finance Agent Platform — System Map</h1>
+        <p>Full architecture at a glance</p>
+      </div>
+    </div>
+    <div class="legend">
+      <div class="leg"><div class="leg-dot" style="background:#10B981"></div>Agents / Arena</div>
+      <div class="leg"><div class="leg-dot" style="background:#3B82F6"></div>Frontend</div>
+      <div class="leg"><div class="leg-dot" style="background:#8B5CF6"></div>Backend services</div>
+      <div class="leg"><div class="leg-dot" style="background:#F59E0B"></div>Data / APIs</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════
+       ROW 1 — BROWSER
+  ══════════════════════════════ -->
+  <div class="layer-label">Entry point</div>
+  <div class="row">
+    <div class="zone zone-gray" style="flex:none; width:100%;">
+      <div class="zone-title">User / Browser</div>
+      <div style="display:flex; align-items:center; gap:16px;">
+        <span style="font-size:28px;">🧑‍💻</span>
+        <div>
+          <div style="font-size:12px; color:#CBD5E1; font-weight:500;">Types a ticker or question → gets a streaming analysis back</div>
+          <div style="font-size:11px; color:#64748B; margin-top:3px;">Connects over HTTP + SSE (Server-Sent Events for live streaming of agent thoughts)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><span class="connector-label">HTTP + SSE</span></div>
+
+  <!-- ══════════════════════════════
+       ROW 2 — FRONTEND
+  ══════════════════════════════ -->
+  <div class="layer-label">Frontend — React 18 · TypeScript · Vite · TailwindCSS</div>
+  <div class="row">
+    <div class="zone zone-blue" style="flex:none; width:100%;">
+      <div class="zone-title">14 Pages</div>
+      <div style="display:flex; gap:24px; flex-wrap:wrap;">
+
+        <div>
+          <div style="font-size:10px; color:#60A5FA; margin-bottom:6px; font-weight:500;">Core analysis</div>
+          <div class="chips">
+            <span class="chip chip-blue" data-tip="Main agent chat — SSE streaming">Chat</span>
+            <span class="chip chip-blue" data-tip="Shareable investment memo view">/memo/:slug</span>
+            <span class="chip chip-blue" data-tip="Public share link">/m/:slug</span>
+            <span class="chip chip-blue" data-tip="Earnings call transcript analysis">Earnings</span>
+            <span class="chip chip-blue" data-tip="Live multi-agent debate">Arena</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:10px; color:#60A5FA; margin-bottom:6px; font-weight:500;">Persistent agents</div>
+          <div class="chips">
+            <span class="chip chip-purple" data-tip="Talk to the CIO orchestrator">CIO</span>
+            <span class="chip chip-purple" data-tip="Manage all scheduled agents">Agents Dashboard</span>
+            <span class="chip chip-purple" data-tip="Configure + hire a new agent">Agent Setup</span>
+            <span class="chip chip-purple" data-tip="Run history + findings">Agent Detail</span>
+            <span class="chip chip-purple" data-tip="Agent run email digests">Inbox</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:10px; color:#60A5FA; margin-bottom:6px; font-weight:500;">Data & workspace</div>
+          <div class="chips">
+            <span class="chip chip-gray" data-tip="Saved analyses + sessions">Library</span>
+            <span class="chip chip-gray" data-tip="Investment thesis workspaces">Projects</span>
+            <span class="chip chip-gray" data-tip="Document upload + project agent chat">Project Workspace</span>
+            <span class="chip chip-gray" data-tip="Portfolio performance view">Portfolio</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><span class="connector-label">REST endpoints + SSE streams</span></div>
+
+  <!-- ══════════════════════════════
+       ROW 3 — BACKEND
+  ══════════════════════════════ -->
+  <div class="layer-label">Backend — FastAPI · Python · Railway (production)</div>
+  <div class="row split">
+
+    <!-- API Server -->
+    <div class="zone zone-purple" style="flex:2;">
+      <div class="zone-title">API Server · api_server.py · 2,244 lines</div>
+      <div class="card">
+        <div class="card-title">🔀 Main routing</div>
+        <div class="card-body">POST /analyze · /memo/stream · /arena/stream · /earnings/stream — all SSE. Rate-limited daily cap on /memo/stream.</div>
+      </div>
+      <div class="card">
+        <div class="card-title">📡 SSE Streaming</div>
+        <div class="card-body">StreamingCallbackHandler captures agent thinking token-by-token and emits events: thinking → thought → content → done.</div>
+      </div>
+      <div class="card">
+        <div class="card-title">🗂️ Session sync</div>
+        <div class="card-body">Auto-saves DCF/analyst/earnings results to DB. Session UUID synced to browser URL (?session=…) for bookmark/restore.</div>
+      </div>
+    </div>
+
+    <!-- Scheduler + CIO -->
+    <div style="flex:1.4; display:flex; flex-direction:column; gap:12px;">
+      <div class="zone zone-amber">
+        <div class="zone-title">⏰ Scheduler</div>
+        <div class="card">
+          <div class="card-title">APScheduler</div>
+          <div class="card-body">5 templates on cron: earnings_watcher · market_pulse · thesis_guardian · portfolio_heartbeat · arena_analyst. Fires on: daily 7am · pre-market 6:30am · weekly Mon/Fri · monthly.</div>
+        </div>
+      </div>
+      <div class="zone zone-purple">
+        <div class="zone-title">🎯 CIO — Chief Investment Officer</div>
+        <div class="card">
+          <div class="card-title">Orchestrator agent</div>
+          <div class="card-body">Persistent agent the user always talks to. Reads all active scheduled agents + last run summaries on each message. Can: answer · delegate · propose hiring a new agent · surface findings.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DB + Email -->
+    <div style="flex:1.2; display:flex; flex-direction:column; gap:12px;">
+      <div class="zone zone-gray">
+        <div class="zone-title">🗄️ Database</div>
+        <div class="card">
+          <div class="card-title">SQLite → Postgres</div>
+          <div class="card-body">10 ORM tables:</div>
+        </div>
+        <div class="db-chips" style="margin-top:8px;">
+          <span class="db-chip">sessions</span>
+          <span class="db-chip">messages</span>
+          <span class="db-chip">analyses</span>
+          <span class="db-chip">watchlists</span>
+          <span class="db-chip">watchlist_tickers</span>
+          <span class="db-chip">projects</span>
+          <span class="db-chip">project_sessions</span>
+          <span class="db-chip">project_documents</span>
+          <span class="db-chip">scheduled_agents</span>
+          <span class="db-chip">agent_runs</span>
+        </div>
+      </div>
+      <div class="zone zone-gray">
+        <div class="zone-title">📧 Email Service</div>
+        <div class="card">
+          <div class="card-title">SMTP digest</div>
+          <div class="card-body">HTML digest email per agent run. Alert levels: HIGH · NEW FINDINGS · ROUTINE · NO CHANGES. Configured via SMTP env vars.</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /row 3 -->
+
+  <!-- FORK -->
+  <div class="fork">
+    <div class="fork-down-left"></div>
+    <div class="fork-down-right"></div>
+  </div>
+
+  <!-- ══════════════════════════════
+       ROW 4 — AGENTS (split)
+  ══════════════════════════════ -->
+  <div class="layer-label">Agent systems</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+
+    <!-- Left: Single-stock -->
+    <div class="zone zone-teal" style="border-radius:16px; padding:18px 20px;">
+      <div class="zone-title">Single-Stock Agents — talk to one at a time</div>
+
+      <div class="agent-row" style="margin-bottom:8px;">
+        <div class="agent-node">
+          <div class="agent-node-icon">⚡</div>
+          <div class="agent-node-name">DCF Agent</div>
+          <div class="agent-node-desc">Intrinsic value. Bull/base/bear. 30–60 sec.</div>
+          <div style="margin-top:6px;"><span class="chip chip-gray chip-mono" style="font-size:9px;">ReAct · 4 tools</span></div>
+        </div>
+        <div class="agent-node">
+          <div class="agent-node-icon">📋</div>
+          <div class="agent-node-name">Equity Analyst</div>
+          <div class="agent-node-desc">Full report: industry, moat, DCF. 2–5 min.</div>
+          <div style="margin-top:6px;"><span class="chip chip-teal chip-mono" style="font-size:9px;">LangGraph · 10 steps</span></div>
+        </div>
+        <div class="agent-node">
+          <div class="agent-node-icon">💬</div>
+          <div class="agent-node-name">Research Asst.</div>
+          <div class="agent-node-desc">Conversational. Remembers context. Open-ended.</div>
+          <div style="margin-top:6px;"><span class="chip chip-gray chip-mono" style="font-size:9px;">ReAct · memory</span></div>
+        </div>
+      </div>
+
+      <div class="agent-row">
+        <div class="agent-node">
+          <div class="agent-node-icon">🌍</div>
+          <div class="agent-node-name">Market Agent</div>
+          <div class="agent-node-desc">Macro, sectors, VIX, regime. No ticker needed.</div>
+          <div style="margin-top:6px;"><span class="chip chip-gray chip-mono" style="font-size:9px;">ReAct · 4 tools</span></div>
+        </div>
+        <div class="agent-node">
+          <div class="agent-node-icon">💼</div>
+          <div class="agent-node-name">Portfolio Agent</div>
+          <div class="agent-node-desc">Your holdings: P&L, diversification, tax loss.</div>
+          <div style="margin-top:6px;"><span class="chip chip-gray chip-mono" style="font-size:9px;">ReAct · 3 tools</span></div>
+        </div>
+        <div class="agent-node">
+          <div class="agent-node-icon">🏗️</div>
+          <div class="agent-node-name">Earnings Agent</div>
+          <div class="agent-node-desc">Transcript + estimates. Parallel fetch, 2 LLM calls.</div>
+          <div style="margin-top:6px;"><span class="chip chip-teal chip-mono" style="font-size:9px;">LangGraph · 8 nodes</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Arena -->
+    <div class="zone zone-red" style="border-radius:16px; padding:18px 20px;">
+      <div class="zone-title">Finance Agent Arena — 5-agent investment committee</div>
+
+      <!-- Stage 1 -->
+      <div style="font-size:10px; color:#F87171; font-weight:600; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.08em;">Stage 1 — Data fetch (parallel, ~2 sec)</div>
+      <div class="card" style="margin-bottom:12px;">
+        <div class="card-title">🗄️ data_fetch_node — ThreadPoolExecutor (16 workers)</div>
+        <div style="display:flex; flex-wrap:wrap; gap:5px; margin-top:6px;">
+          <span class="chip chip-gray" style="font-size:9px;">stock_info</span>
+          <span class="chip chip-gray" style="font-size:9px;">financials</span>
+          <span class="chip chip-gray" style="font-size:9px;">key_metrics</span>
+          <span class="chip chip-gray" style="font-size:9px;">price_history (ticker + SPY)</span>
+          <span class="chip chip-amber" style="font-size:9px;">7 Tavily searches</span>
+          <span class="chip chip-amber" style="font-size:9px;">4 macro searches</span>
+          <span class="chip chip-red" style="font-size:9px;">SEC Form 4 filings</span>
+        </div>
+        <div style="font-size:10px; color:#64748B; margin-top:6px;">All agents read this same snapshot → consistent numbers across the debate</div>
+      </div>
+
+      <!-- Stage 2 -->
+      <div style="font-size:10px; color:#F87171; font-weight:600; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.08em;">Stage 2 — Sequential debate (no network calls)</div>
+
+      <div class="pipeline" style="margin-bottom:8px; overflow-x:auto;">
+        <div class="pipe-node">
+          <div class="pipe-box hl-purple">🎯 PM</div>
+          <div style="font-size:9px; color:#64748B;">sets order</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="pipe-box">📊 Fundamental</div>
+          <div style="font-size:9px; color:#64748B;">multiples·growth</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="pipe-box">🛡️ Risk</div>
+          <div style="font-size:9px; color:#64748B;">leverage·stress</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="pipe-box">📈 Quant</div>
+          <div style="font-size:9px; color:#64748B;">momentum·beta</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="pipe-box">🌍 Macro</div>
+          <div style="font-size:9px; color:#64748B;">rates·cycle</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="pipe-box">💬 Sentiment</div>
+          <div style="font-size:9px; color:#64748B;">news·insider</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-title">🎯 PM scores consensus after each round</div>
+        <div class="card-body">alignment_ratio × avg_confidence. ≥ 70% → finalise memo. &lt; 70% → debate round 2. Hard cap at 2 rounds. Each agent: Data-CoT → Concept-CoT → Q&A if confidence &lt;70%.</div>
+      </div>
+
+    </div>
+
+  </div><!-- /agent split -->
+
+  <!-- MERGE -->
+  <div class="merge">
+    <div class="merge-up-left"></div>
+    <div class="merge-up-right"></div>
+  </div>
+
+  <!-- ══════════════════════════════
+       ROW 5 — DATA TOOLS
+  ══════════════════════════════ -->
+  <div class="layer-label">Data layer — tools & fetchers</div>
+  <div class="row">
+    <div class="zone zone-amber" style="flex:none; width:100%;">
+      <div class="zone-title">Tools (LangChain BaseTool) + Data Fetchers</div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+
+        <div style="flex:1; min-width:180px;">
+          <div style="font-size:10px; color:var(--amber); margin-bottom:6px; font-weight:500;">Single-stock tools</div>
+          <div class="chips">
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">get_stock_info</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">get_financial_metrics</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">perform_dcf_analysis</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">analyze_industry</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">analyze_competitors</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">analyze_moat</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">get_earnings_call_insights</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">get_sec_filings</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">search_web</span>
+          </div>
+        </div>
+
+        <div style="flex:1; min-width:180px;">
+          <div style="font-size:10px; color:var(--amber); margin-bottom:6px; font-weight:500;">Data fetchers</div>
+          <div class="chips">
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">FinancialDataFetcher</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">SECEdgarClient</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">TavilyClient</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">AlphaVantageClient</span>
+            <span class="chip chip-amber chip-mono" style="font-size:9px;">ChromaClient (vectors)</span>
+          </div>
+        </div>
+
+        <div style="flex:1; min-width:180px;">
+          <div style="font-size:10px; color:var(--amber); margin-bottom:6px; font-weight:500;">Shared infrastructure</div>
+          <div class="chips">
+            <span class="chip chip-gray chip-mono" style="font-size:9px;">retry_utils (exp. backoff)</span>
+            <span class="chip chip-gray chip-mono" style="font-size:9px;">ticker_utils</span>
+            <span class="chip chip-gray chip-mono" style="font-size:9px;">shared/constants</span>
+            <span class="chip chip-gray chip-mono" style="font-size:9px;">DCFCalculator</span>
+          </div>
+          <div style="font-size:10px; color:#64748B; margin-top:8px;">All external calls retry with exponential backoff: 1s → 2s → 4s + ±25% jitter. Retries on 429, 5xx, timeout. Fails fast on 401, 403, 404.</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><span class="connector-label">API calls</span></div>
+
+  <!-- ══════════════════════════════
+       ROW 6 — EXTERNAL APIs
+  ══════════════════════════════ -->
+  <div class="layer-label">External APIs & infrastructure</div>
+  <div class="row">
+    <div class="zone zone-gray" style="flex:none; width:100%;">
+      <div class="zone-title">Data sources + LLM</div>
+      <div class="api-grid">
+
+        <div class="api-card">
+          <div class="api-name">Financial Datasets AI</div>
+          <div class="api-use">Historical income, balance, cash flow, key metrics, price history. Auth via X-API-KEY header.</div>
+          <span class="api-tag" style="background:#042F2E; color:#6EE7B7;">financials</span>
+        </div>
+
+        <div class="api-card">
+          <div class="api-name">Perplexity Sonar Pro</div>
+          <div class="api-use">Web search for current data (beta, yields, news). Also the LLM that analyses earnings transcripts. OpenAI-compatible client.</div>
+          <span class="api-tag" style="background:#0C1A3A; color:#93C5FD;">web search</span>
+        </div>
+
+        <div class="api-card">
+          <div class="api-name">Tavily</div>
+          <div class="api-use">11 targeted financial searches per Arena run (news, analysts, guidance, insider, macro). Used by data_fetch_node only.</div>
+          <span class="api-tag" style="background:#1C1100; color:#FCD34D;">search</span>
+        </div>
+
+        <div class="api-card">
+          <div class="api-name">Alpha Vantage</div>
+          <div class="api-use">Earnings call transcripts (free, 25 req/day). Primary source for Earnings Agent. 15+ years of transcripts back to 2010.</div>
+          <span class="api-tag" style="background:#042F2E; color:#6EE7B7;">transcripts · free</span>
+        </div>
+
+        <div class="api-card">
+          <div class="api-name">SEC EDGAR</div>
+          <div class="api-use">Form 4 insider filings. No API key needed — only User-Agent header required. CIK lookup via company_tickers.json.</div>
+          <span class="api-tag" style="background:#1C0A0A; color:#FCA5A5;">free · no key</span>
+        </div>
+
+        <div class="api-card">
+          <div class="api-name">Anthropic Claude</div>
+          <div class="api-use">All LLM calls. Arena uses Haiku 4.5 for speed. Single-stock agents default to Sonnet 4.5. Opus 4.6 available for deep reasoning.</div>
+          <span class="api-tag" style="background:#170D2E; color:#C4B5FD;">LLM · all agents</span>
+        </div>
+
+      </div>
+
+      <hr class="zone-div">
+
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span style="font-size:10px; color:#475569; font-weight:600; text-transform:uppercase; letter-spacing:0.1em;">Infrastructure</span>
+        <span class="chip chip-gray" style="font-size:10px;">Railway (production deploy)</span>
+        <span class="chip chip-gray" style="font-size:10px;">Dockerfile + Procfile</span>
+        <span class="chip chip-gray" style="font-size:10px;">SQLite (dev) → Postgres (prod)</span>
+        <span class="chip chip-gray" style="font-size:10px;">ChromaDB (vector store for projects)</span>
+        <span class="chip chip-gray" style="font-size:10px;">FastAPI serves frontend static files in prod</span>
+        <span class="chip chip-gray" style="font-size:10px;">ASGI middleware strips /api prefix</span>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /page -->
+</body>
+</html>

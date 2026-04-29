@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw Backend — Beginner's Guide 🦞</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --bg2: #161b22;
+      --bg3: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --purple: #bc8cff;
+      --orange: #f0883e;
+      --red: #ff7b72;
+      --yellow: #d29922;
+      --teal: #39d353;
+      --card-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      font-size: 15px;
+    }
+
+    /* NAV */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(13,17,23,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      display: flex; align-items: center; gap: 2rem;
+      height: 52px;
+    }
+    nav .logo { font-weight: 700; font-size: 1.1rem; color: var(--text); text-decoration: none; }
+    nav .logo span { color: var(--accent); }
+    nav a { color: var(--muted); text-decoration: none; font-size: 0.85rem; transition: color 0.2s; }
+    nav a:hover { color: var(--text); }
+
+    /* HERO */
+    .hero {
+      text-align: center;
+      padding: 80px 2rem 60px;
+      background: radial-gradient(ellipse at 50% 0%, rgba(88,166,255,0.12) 0%, transparent 70%);
+    }
+    .hero .lobster { font-size: 4rem; margin-bottom: 1rem; }
+    .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); font-weight: 800; margin-bottom: 1rem; }
+    .hero h1 span { color: var(--accent); }
+    .hero p { font-size: 1.15rem; color: var(--muted); max-width: 600px; margin: 0 auto 2rem; }
+    .hero-pills { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+    .pill {
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 100px; padding: 0.4rem 1rem; font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .pill.green { border-color: var(--green); color: var(--green); background: rgba(63,185,80,0.08); }
+    .pill.blue { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.08); }
+    .pill.purple { border-color: var(--purple); color: var(--purple); background: rgba(188,140,255,0.08); }
+
+    /* SECTIONS */
+    .section {
+      max-width: 1100px; margin: 0 auto;
+      padding: 60px 2rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-label {
+      text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.7rem;
+      color: var(--accent); font-weight: 600; margin-bottom: 0.5rem;
+    }
+    .section h2 { font-size: 1.9rem; font-weight: 700; margin-bottom: 0.75rem; }
+    .section > p { color: var(--muted); max-width: 700px; margin-bottom: 2rem; line-height: 1.8; }
+
+    /* ANALOGY BOX */
+    .analogy {
+      background: rgba(88,166,255,0.07);
+      border: 1px solid rgba(88,166,255,0.25);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 2rem;
+      display: flex; gap: 1rem; align-items: flex-start;
+    }
+    .analogy .icon { font-size: 1.6rem; flex-shrink: 0; }
+    .analogy strong { color: var(--accent); }
+
+    /* ARCHITECTURE DIAGRAM */
+    .arch-container {
+      position: relative;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      overflow: hidden;
+    }
+    .arch-svg-wrap { width: 100%; overflow-x: auto; }
+    #arch-svg { display: block; margin: 0 auto; }
+
+    /* NODE DETAILS PANEL */
+    .node-panel {
+      margin-top: 1.5rem;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      min-height: 80px;
+      transition: all 0.3s;
+    }
+    .node-panel h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+    .node-panel p { color: var(--muted); font-size: 0.9rem; line-height: 1.7; }
+    .node-panel .tags { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+    .tag {
+      font-size: 0.72rem; padding: 0.25rem 0.6rem;
+      border-radius: 6px; background: var(--bg2); border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .tag.blue { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
+    .tag.green { border-color: var(--green); color: var(--green); background: rgba(63,185,80,0.1); }
+    .tag.purple { border-color: var(--purple); color: var(--purple); background: rgba(188,140,255,0.1); }
+
+    /* MESSAGE JOURNEY */
+    .journey-container {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+    }
+    .journey-steps {
+      display: flex; flex-direction: column; gap: 0;
+    }
+    .journey-step {
+      display: flex; gap: 1.5rem; align-items: flex-start;
+      padding: 1.25rem 0;
+      position: relative;
+      opacity: 0.35;
+      transition: opacity 0.4s;
+    }
+    .journey-step.active { opacity: 1; }
+    .journey-step.done { opacity: 0.7; }
+    .journey-step::before {
+      content: "";
+      position: absolute;
+      left: 22px; top: 52px;
+      width: 2px; height: calc(100% - 26px);
+      background: var(--border);
+    }
+    .journey-step:last-child::before { display: none; }
+    .step-circle {
+      width: 46px; height: 46px; border-radius: 50%;
+      background: var(--bg3); border: 2px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem; flex-shrink: 0;
+      transition: border-color 0.4s, background 0.4s;
+    }
+    .journey-step.active .step-circle {
+      border-color: var(--accent);
+      background: rgba(88,166,255,0.15);
+      box-shadow: 0 0 12px rgba(88,166,255,0.3);
+    }
+    .journey-step.done .step-circle {
+      border-color: var(--green);
+      background: rgba(63,185,80,0.1);
+    }
+    .step-body { flex: 1; }
+    .step-body h4 { font-size: 1rem; margin-bottom: 0.3rem; }
+    .step-body p { color: var(--muted); font-size: 0.875rem; line-height: 1.6; }
+    .step-code {
+      margin-top: 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 0.8rem;
+      color: var(--green);
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .journey-controls {
+      display: flex; gap: 1rem; align-items: center;
+      margin-top: 1.5rem; padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+    }
+    .btn {
+      padding: 0.6rem 1.4rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .btn:hover { background: var(--bg2); border-color: var(--accent); color: var(--accent); }
+    .btn.primary {
+      background: var(--accent); border-color: var(--accent);
+      color: #0d1117;
+    }
+    .btn.primary:hover { opacity: 0.85; color: #0d1117; }
+    .journey-progress {
+      color: var(--muted); font-size: 0.85rem;
+      margin-left: auto;
+    }
+
+    /* COMPONENT CARDS */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .card.open { border-color: var(--accent); }
+    .card .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .card .card-icon { font-size: 1.6rem; }
+    .card .card-title { font-weight: 700; font-size: 1rem; }
+    .card .card-subtitle { color: var(--muted); font-size: 0.8rem; }
+    .card .card-body { color: var(--muted); font-size: 0.875rem; line-height: 1.7; display: none; }
+    .card.open .card-body { display: block; }
+    .card .card-expand {
+      position: absolute; top: 1rem; right: 1rem;
+      color: var(--muted); font-size: 1.1rem;
+      transition: transform 0.3s;
+    }
+    .card.open .card-expand { transform: rotate(45deg); color: var(--accent); }
+    .card .card-detail-list { margin-top: 0.75rem; }
+    .card .card-detail-list li {
+      list-style: none; padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.82rem;
+    }
+    .card .card-detail-list li:last-child { border-bottom: none; }
+    .card .card-detail-list li::before { content: "→ "; color: var(--accent); }
+
+    /* PLUGIN EXPLORER */
+    .plugin-categories { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+    .cat-btn {
+      padding: 0.4rem 1rem;
+      border-radius: 100px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: all 0.2s;
+    }
+    .cat-btn.active {
+      background: rgba(88,166,255,0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .plugin-grid {
+      display: flex; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .plugin-chip {
+      padding: 0.35rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      font-size: 0.8rem;
+      color: var(--muted);
+      cursor: default;
+      transition: all 0.2s;
+    }
+    .plugin-chip:hover { border-color: var(--accent); color: var(--text); }
+
+    /* FLOW DIAGRAM - how data flows */
+    .flow-diagram {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      display: flex; flex-direction: column; gap: 0;
+      align-items: center;
+    }
+    .flow-box {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.75rem 1.5rem;
+      text-align: center;
+      min-width: 200px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      position: relative;
+      cursor: default;
+      transition: border-color 0.2s;
+    }
+    .flow-box:hover { border-color: var(--accent); }
+    .flow-box small { display: block; color: var(--muted); font-weight: 400; font-size: 0.76rem; margin-top: 0.2rem; }
+    .flow-arrow {
+      color: var(--muted); font-size: 1.4rem;
+      margin: 0.3rem 0;
+      animation: pulse-arrow 2s infinite;
+    }
+    @keyframes pulse-arrow {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+    .flow-row { display: flex; gap: 1rem; align-items: center; }
+    .flow-horizontal-arrow { color: var(--muted); font-size: 1.2rem; }
+
+    /* SECURITY SECTION */
+    .security-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 600px) { .security-grid { grid-template-columns: 1fr; } }
+    .security-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+    .security-card .sec-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .security-card .sec-icon { font-size: 1.5rem; }
+    .security-card h4 { font-size: 0.95rem; font-weight: 700; }
+    .security-card p { color: var(--muted); font-size: 0.85rem; line-height: 1.7; }
+    .security-card.good { border-color: rgba(63,185,80,0.3); }
+    .security-card.warn { border-color: rgba(240,136,62,0.3); }
+
+    /* SUMMARY BOX */
+    .summary-box {
+      background: linear-gradient(135deg, rgba(88,166,255,0.08) 0%, rgba(188,140,255,0.08) 100%);
+      border: 1px solid rgba(88,166,255,0.2);
+      border-radius: 16px;
+      padding: 2rem;
+    }
+    .summary-box h3 { font-size: 1.3rem; margin-bottom: 1rem; }
+    .mental-model { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 600px) { .mental-model { grid-template-columns: 1fr; } }
+    .mental-item { display: flex; gap: 0.75rem; align-items: flex-start; }
+    .mental-item .mi-icon { font-size: 1.3rem; flex-shrink: 0; margin-top: 0.1rem; }
+    .mental-item h5 { font-size: 0.9rem; font-weight: 700; margin-bottom: 0.2rem; }
+    .mental-item p { color: var(--muted); font-size: 0.82rem; line-height: 1.6; }
+
+    /* SVG clickable nodes */
+    .arch-node { cursor: pointer; }
+    .arch-node:hover rect, .arch-node:hover ellipse { filter: brightness(1.3); }
+    .arch-node.selected rect, .arch-node.selected ellipse { filter: brightness(1.5); }
+
+    /* TOOLTIP */
+    #arch-tooltip {
+      position: absolute; pointer-events: none;
+      background: var(--bg3); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 0.5rem 0.9rem;
+      font-size: 0.8rem; color: var(--text);
+      white-space: nowrap; display: none; z-index: 50;
+    }
+
+    /* CODE HIGHLIGHT */
+    .code-block {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      font-family: "SF Mono", Monaco, Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      overflow-x: auto;
+      margin-top: 1rem;
+    }
+    .kw { color: var(--purple); }
+    .str { color: var(--green); }
+    .cmt { color: var(--muted); }
+    .num { color: var(--orange); }
+    .key { color: var(--accent); }
+
+    /* FOOTER */
+    footer {
+      text-align: center; padding: 3rem 2rem;
+      color: var(--muted); font-size: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    footer a { color: var(--accent); }
+
+    @media (max-width: 768px) {
+      nav { gap: 1rem; padding: 0 1rem; }
+      nav a { display: none; }
+      .section { padding: 40px 1rem; }
+      .cards-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="#top" class="logo">Open<span>Claw</span> 🦞</a>
+  <a href="#bigpicture">Big Picture</a>
+  <a href="#journey">Message Journey</a>
+  <a href="#components">Components</a>
+  <a href="#plugins">Plugins</a>
+  <a href="#security">Security</a>
+  <a href="#summary">Summary</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero" id="top">
+  <div class="lobster">🦞</div>
+  <h1>OpenClaw Backend<br /><span>Explained for Beginners</span></h1>
+  <p>A visual, interactive guide to how OpenClaw's backend actually works — from a WhatsApp message to an AI response and back.</p>
+  <div class="hero-pills">
+    <span class="pill green">365k GitHub Stars</span>
+    <span class="pill blue">TypeScript Monorepo</span>
+    <span class="pill purple">100+ Plugins</span>
+    <span class="pill">25+ Messaging Platforms</span>
+    <span class="pill">Self-Hosted</span>
+  </div>
+</section>
+
+<!-- SECTION 1: BIG PICTURE -->
+<div class="section" id="bigpicture">
+  <div class="section-label">Section 01</div>
+  <h2>The Big Picture</h2>
+  <p>OpenClaw is one program — called the <strong>Gateway</strong> — that runs on your computer 24/7. It connects to all your messaging apps, listens for messages, sends them to an AI, and replies on your behalf.</p>
+
+  <div class="analogy">
+    <div class="icon">🏠</div>
+    <div>
+      <strong>Think of it like a smart home hub.</strong> Just like a Philips Hue hub connects your phone to your lightbulbs, OpenClaw's Gateway connects your messaging apps (WhatsApp, Telegram, Discord…) to AI models (OpenAI, Claude, Gemini…). The hub is always on, always listening, and routes signals between devices.
+    </div>
+  </div>
+
+  <!-- Interactive Architecture SVG -->
+  <div class="arch-container">
+    <p style="color:var(--muted); font-size:0.82rem; margin-bottom:1rem;">👆 Click any box in the diagram to learn about it</p>
+    <div id="arch-tooltip"></div>
+    <div class="arch-svg-wrap">
+      <svg id="arch-svg" width="820" height="500" viewBox="0 0 820 500" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#30363d"/>
+          </marker>
+          <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+          </marker>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+            <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+
+        <!-- Background zones -->
+        <rect x="10" y="10" width="800" height="480" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+        <!-- Gateway zone -->
+        <rect x="230" y="60" width="360" height="380" rx="10" fill="#1a2332" stroke="#1f6feb" stroke-width="1.5" stroke-dasharray="6,3"/>
+        <text x="410" y="85" text-anchor="middle" fill="#58a6ff" font-size="11" font-family="monospace" font-weight="bold">GATEWAY DAEMON</text>
+
+        <!-- Arrows: users → channels -->
+        <line x1="60" y1="120" x2="115" y2="155" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="60" y1="200" x2="115" y2="195" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="60" y1="280" x2="115" y2="245" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+        <!-- Arrows: channels → gateway interior -->
+        <line x1="195" y1="200" x2="245" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+
+        <!-- Arrows: gateway → agent -->
+        <line x1="420" y1="230" x2="420" y2="300" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+        <!-- Arrows: agent → AI model -->
+        <line x1="580" y1="345" x2="660" y2="345" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="5,3"/>
+        <line x1="660" y1="360" x2="580" y2="360" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="5,3"/>
+
+        <!-- Arrows: gateway → companion apps -->
+        <line x1="590" y1="160" x2="650" y2="130" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="590" y1="200" x2="650" y2="200" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="590" y1="240" x2="650" y2="260" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+        <!-- SESSION STORE (inside gateway) -->
+        <g class="arch-node" id="node-sessions" data-name="Session Store" data-desc="Saves every conversation as a text file. Each message and reply is stored so the AI remembers what you talked about. Files are saved at ~/.openclaw/agents/.../sessions/*.jsonl">
+          <rect x="300" y="100" width="100" height="45" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="350" y="119" text-anchor="middle" fill="#8b949e" font-size="10" font-family="monospace">💾</text>
+          <text x="350" y="133" text-anchor="middle" fill="#8b949e" font-size="9" font-family="monospace">Sessions</text>
+        </g>
+
+        <!-- PLUGIN SYSTEM (inside gateway) -->
+        <g class="arch-node" id="node-plugins" data-name="Plugin System" data-desc="Like an app store built into the gateway. Each plugin adds a new capability — a new messaging app, a new AI model, a new tool. OpenClaw loads only the plugins it needs for your setup.">
+          <rect x="420" y="100" width="100" height="45" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="470" y="119" text-anchor="middle" fill="#8b949e" font-size="10" font-family="monospace">🔌</text>
+          <text x="470" y="133" text-anchor="middle" fill="#8b949e" font-size="9" font-family="monospace">Plugins</text>
+        </g>
+
+        <!-- CHANNEL MANAGER (inside gateway) -->
+        <g class="arch-node" id="node-channels-mgr" data-name="Channel Manager" data-desc="Manages the connection to every messaging platform. Applies security rules — like requiring a pairing code from unknown senders before the AI sees their message.">
+          <rect x="248" y="175" width="150" height="50" rx="8" fill="#21262d" stroke="#1f6feb" stroke-width="1.5"/>
+          <text x="323" y="197" text-anchor="middle" fill="#58a6ff" font-size="10" font-family="monospace">📡 Channel Manager</text>
+          <text x="323" y="211" text-anchor="middle" fill="#58a6ff" font-size="8.5" font-family="monospace">routes + security rules</text>
+        </g>
+
+        <!-- MCP (inside gateway) -->
+        <g class="arch-node" id="node-mcp" data-name="MCP (Tool Bridge)" data-desc="MCP stands for Model Context Protocol. It's a standard way for AI models to use external tools. OpenClaw acts as both an MCP server (exposing its tools to other AI apps) and an MCP client (connecting to external tool servers).">
+          <rect x="420" y="175" width="150" height="50" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="495" y="197" text-anchor="middle" fill="#f0883e" font-size="10" font-family="monospace">🔧 MCP Bridge</text>
+          <text x="495" y="211" text-anchor="middle" fill="#f0883e" font-size="8.5" font-family="monospace">standard tool protocol</text>
+        </g>
+
+        <!-- AGENT RUNTIME (inside gateway) -->
+        <g class="arch-node" id="node-agent" data-name="Agent Runtime" data-desc="This is the AI 'brain'. It receives your message, decides which tools to use, calls the AI model, and formulates a reply. Built on the Pi agent core library. Each conversation is a 'session' with its own memory.">
+          <rect x="300" y="300" width="240" height="60" rx="10" fill="#0d1b2a" stroke="#58a6ff" stroke-width="2"/>
+          <text x="420" y="326" text-anchor="middle" fill="#58a6ff" font-size="13" font-family="monospace" font-weight="bold">🤖 Agent Runtime</text>
+          <text x="420" y="343" text-anchor="middle" fill="#8b949e" font-size="9" font-family="monospace">pi-agent-core · tools · skills · memory</text>
+        </g>
+
+        <!-- CANVAS (inside gateway) -->
+        <g class="arch-node" id="node-canvas" data-name="Canvas" data-desc="A live visual workspace the AI can draw on. It's an HTML page served by the gateway at /__openclaw__/canvas/. The AI can write HTML/CSS/JS to create interactive dashboards, charts, or any UI — and you see it update in real time.">
+          <rect x="248" y="390" width="100" height="40" rx="8" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+          <text x="298" y="407" text-anchor="middle" fill="#d29922" font-size="10" font-family="monospace">🖼️ Canvas</text>
+          <text x="298" y="421" text-anchor="middle" fill="#d29922" font-size="8.5" font-family="monospace">live AI-drawn UI</text>
+        </g>
+
+        <!-- MEMORY (inside gateway) -->
+        <g class="arch-node" id="node-memory" data-name="Memory System" data-desc="Gives the AI long-term memory across conversations. Multiple backends: active-memory (simple file), LanceDB (vector embeddings for semantic search), memory-wiki. Only one memory plugin is active at a time.">
+          <rect x="370" y="390" width="100" height="40" rx="8" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="420" y="407" text-anchor="middle" fill="#bc8cff" font-size="10" font-family="monospace">🧠 Memory</text>
+          <text x="420" y="421" text-anchor="middle" fill="#bc8cff" font-size="8.5" font-family="monospace">cross-session recall</text>
+        </g>
+
+        <!-- CRON (inside gateway) -->
+        <g class="arch-node" id="node-cron" data-name="Cron Scheduler" data-desc="Lets the AI schedule recurring tasks. Like a calendar alarm that triggers the AI. Example: 'Every Monday morning, send me a news summary on WhatsApp.' The gateway keeps running these even when you're asleep.">
+          <rect x="492" y="390" width="80" height="40" rx="8" fill="#21262d" stroke="#39d353" stroke-width="1.5"/>
+          <text x="532" y="407" text-anchor="middle" fill="#39d353" font-size="10" font-family="monospace">⏰ Cron</text>
+          <text x="532" y="421" text-anchor="middle" fill="#39d353" font-size="8.5" font-family="monospace">scheduled tasks</text>
+        </g>
+
+        <!-- Users/apps on the left -->
+        <g class="arch-node" id="node-whatsapp" data-name="WhatsApp Channel" data-desc="OpenClaw connects to WhatsApp using the Baileys library — an open-source Node.js implementation of the WhatsApp Web protocol. It scans a QR code once, then keeps the session alive.">
+          <rect x="20" y="95" width="90" height="35" rx="8" fill="#1a4731" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="65" y="115" text-anchor="middle" fill="#3fb950" font-size="10" font-family="monospace">📱 WhatsApp</text>
+        </g>
+
+        <g class="arch-node" id="node-telegram" data-name="Telegram Channel" data-desc="Uses the grammY library to connect to Telegram's Bot API. You create a bot via @BotFather, give the token to OpenClaw, and it handles all incoming and outgoing messages.">
+          <rect x="20" y="175" width="90" height="35" rx="8" fill="#1a2d4a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="65" y="195" text-anchor="middle" fill="#58a6ff" font-size="10" font-family="monospace">✈️ Telegram</text>
+        </g>
+
+        <g class="arch-node" id="node-discord" data-name="Discord Channel" data-desc="Uses Discord's official bot API. OpenClaw reads messages from Discord channels and DMs, then replies through the same bot. DM pairing policy protects the bot from being used by strangers.">
+          <rect x="20" y="255" width="90" height="35" rx="8" fill="#2d1f5e" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="65" y="275" text-anchor="middle" fill="#bc8cff" font-size="10" font-family="monospace">🎮 Discord</text>
+        </g>
+
+        <!-- AI Model on the right -->
+        <g class="arch-node" id="node-aimodel" data-name="AI Model Provider" data-desc="The actual AI brain — could be OpenAI (GPT-4), Anthropic (Claude), Google (Gemini), Mistral, or 50+ others. OpenClaw sends the conversation history + tools to the model via API, gets a response back, and delivers it.">
+          <rect x="648" y="310" width="140" height="70" rx="10" fill="#1a1a2e" stroke="#bc8cff" stroke-width="2"/>
+          <text x="718" y="338" text-anchor="middle" fill="#bc8cff" font-size="12" font-family="monospace" font-weight="bold">✨ AI Model</text>
+          <text x="718" y="353" text-anchor="middle" fill="#8b949e" font-size="8.5" font-family="monospace">OpenAI · Claude · Gemini</text>
+          <text x="718" y="368" text-anchor="middle" fill="#8b949e" font-size="8.5" font-family="monospace">Mistral · Ollama · 50+ more</text>
+        </g>
+
+        <!-- Companion apps on the right -->
+        <g class="arch-node" id="node-macos" data-name="macOS App" data-desc="A native Swift menu bar app. Connects to the Gateway over WebSocket. Provides: a menu bar icon showing gateway health, voice wake word detection, push-to-talk overlay, and a WebChat UI. Fully optional.">
+          <rect x="648" y="95" width="140" height="40" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="718" y="112" text-anchor="middle" fill="#e6edf3" font-size="10" font-family="monospace">🍎 macOS App</text>
+          <text x="718" y="126" text-anchor="middle" fill="#8b949e" font-size="8" font-family="monospace">menu bar · voice · WebChat</text>
+        </g>
+
+        <g class="arch-node" id="node-ios" data-name="iOS Node" data-desc="An iPhone/iPad app that acts as a 'node' — a device that pairs with your Gateway over WebSocket. It provides: voice trigger forwarding and a Canvas surface to view AI-drawn UIs on your phone.">
+          <rect x="648" y="175" width="140" height="40" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="718" y="192" text-anchor="middle" fill="#e6edf3" font-size="10" font-family="monospace">📱 iOS Node</text>
+          <text x="718" y="206" text-anchor="middle" fill="#8b949e" font-size="8" font-family="monospace">voice · canvas surface</text>
+        </g>
+
+        <g class="arch-node" id="node-android" data-name="Android Node" data-desc="An Android app node. Supports continuous voice mode — always listening for your wake word. Uses ElevenLabs for high-quality text-to-speech or falls back to the system TTS. Pairs with gateway over WebSocket.">
+          <rect x="648" y="250" width="140" height="40" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="718" y="267" text-anchor="middle" fill="#e6edf3" font-size="10" font-family="monospace">🤖 Android Node</text>
+          <text x="718" y="281" text-anchor="middle" fill="#8b949e" font-size="8" font-family="monospace">continuous voice · TTS</text>
+        </g>
+
+        <!-- WebSocket label -->
+        <text x="618" y="155" text-anchor="middle" fill="#30363d" font-size="8" font-family="monospace">WebSocket</text>
+
+        <!-- AI label -->
+        <text x="618" y="340" text-anchor="middle" fill="#8b949e" font-size="8" font-family="monospace">API call</text>
+        <text x="618" y="370" text-anchor="middle" fill="#8b949e" font-size="8" font-family="monospace">response</text>
+
+        <!-- Message label -->
+        <text x="163" y="188" text-anchor="middle" fill="#58a6ff" font-size="8" font-family="monospace">msg in</text>
+      </svg>
+    </div>
+
+    <!-- Node details panel -->
+    <div class="node-panel" id="node-panel">
+      <p style="color:var(--muted); font-style:italic;">Click any component in the diagram above to see a detailed explanation here.</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 2: MESSAGE JOURNEY -->
+<div class="section" id="journey">
+  <div class="section-label">Section 02</div>
+  <h2>Follow a Message — Step by Step</h2>
+  <p>Let's trace exactly what happens when you send "What's the weather in Paris?" via WhatsApp and get an AI reply back. Click <strong>Next Step</strong> to walk through it.</p>
+
+  <div class="journey-container">
+    <div class="journey-steps" id="journey-steps">
+
+      <div class="journey-step active" data-step="0">
+        <div class="step-circle">📱</div>
+        <div class="step-body">
+          <h4>Step 1 — You send a WhatsApp message</h4>
+          <p>You type "What's the weather in Paris?" and hit send on your phone. WhatsApp delivers it to OpenClaw's WhatsApp connection (powered by the <strong>Baileys</strong> library running inside the gateway). This works because OpenClaw scanned a WhatsApp Web QR code when you set it up.</p>
+        </div>
+      </div>
+
+      <div class="journey-step" data-step="1">
+        <div class="step-circle">📡</div>
+        <div class="step-body">
+          <h4>Step 2 — Channel Manager receives the message</h4>
+          <p>The Channel Manager gets the raw message. First it checks: <em>Is this sender allowed?</em> If you're already paired (you've previously approved this contact), the message passes through. If not, the sender gets a pairing code instead of an AI reply.</p>
+          <div class="step-code">incoming message from +33612345678
+→ check allowlist ... PASS
+→ dmPolicy = "pairing" → sender approved ✓
+→ route to agent session</div>
+        </div>
+      </div>
+
+      <div class="journey-step" data-step="2">
+        <div class="step-circle">🔌</div>
+        <div class="step-body">
+          <h4>Step 3 — Plugin System activates the right tools</h4>
+          <p>The Plugin System looks at your config and figures out which plugins are needed for this request. For a weather query it might activate a <strong>web search plugin</strong> (like Brave Search or Tavily). Each plugin declares what it can do via a manifest file.</p>
+          <div class="step-code">trigger: { kind: "capability", capability: "web-search" }
+→ activating plugin: brave-search
+→ activating plugin: anthropic (claude-3-5-sonnet)
+→ ready</div>
+        </div>
+      </div>
+
+      <div class="journey-step" data-step="3">
+        <div class="step-circle">🤖</div>
+        <div class="step-body">
+          <h4>Step 4 — Agent Runtime processes the request</h4>
+          <p>The Agent Runtime (built on <strong>Pi agent core</strong>) takes over. It loads your workspace files (AGENTS.md, SOUL.md etc) to understand how you want the AI to behave. Then it sends the message + conversation history + available tools to the AI model.</p>
+          <div class="step-code">session: abc123.jsonl (loading 14 prior messages)
+injecting workspace: AGENTS.md, SOUL.md, TOOLS.md
+calling model: claude-3-5-sonnet-20241022
+tools available: [brave_search, read, write, bash...]</div>
+        </div>
+      </div>
+
+      <div class="journey-step" data-step="4">
+        <div class="step-circle">✨</div>
+        <div class="step-body">
+          <h4>Step 5 — AI model reasons and uses tools</h4>
+          <p>The AI model (Claude, GPT-4, Gemini, etc.) sees your message and decides to use the <code>brave_search</code> tool to look up current weather. The result comes back, the model reads it, and formulates a natural-language reply. All tool calls stream back to the agent in real time.</p>
+          <div class="step-code">model → tool_use: brave_search("Paris weather today")
+tool → result: "Paris: 18°C, partly cloudy, wind 12km/h"
+model → text: "The weather in Paris right now is 18°C and
+partly cloudy with light winds of 12 km/h.
+Perfect weather for a walk! ☀️"</div>
+        </div>
+      </div>
+
+      <div class="journey-step" data-step="5">
+        <div class="step-circle">📨</div>
+        <div class="step-body">
+          <h4>Step 6 — Reply delivered back via WhatsApp</h4>
+          <p>The Agent Runtime sends the final reply back through the Channel Manager. The WhatsApp channel plugin formats it for WhatsApp (markdown → WhatsApp format) and sends it. The full exchange is saved to your session file. Total time: ~2–4 seconds.</p>
+          <div class="step-code">saving to: sessions/abc123.jsonl
+→ formatting for whatsapp channel
+→ sending: "The weather in Paris right now is 18°C..."
+→ delivered ✓ (2.3s total)</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="journey-controls">
+      <button class="btn" id="btn-prev" onclick="journeyPrev()" disabled>← Prev</button>
+      <button class="btn primary" id="btn-next" onclick="journeyNext()">Next Step →</button>
+      <button class="btn" onclick="journeyReset()">↺ Reset</button>
+      <span class="journey-progress" id="journey-progress">Step 1 of 6</span>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 3: COMPONENTS -->
+<div class="section" id="components">
+  <div class="section-label">Section 03</div>
+  <h2>Every Component Explained</h2>
+  <p>Click any card to expand it and get a full explanation of what that part of the system does and why it exists.</p>
+
+  <div class="cards-grid">
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🏗️</span>
+        <div>
+          <div class="card-title">The Gateway</div>
+          <div class="card-subtitle">The core daemon process</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">The single program that runs everything.</p>
+      <div class="card-body">
+        <p>The Gateway is the <strong>always-on server process</strong> that runs on your machine. You start it with <code>openclaw gateway</code> and it stays alive in the background (installed as a system service via launchd on macOS or systemd on Linux).</p>
+        <p style="margin-top:0.75rem;">It listens on port <code>18789</code> and handles:</p>
+        <ul class="card-detail-list">
+          <li>Maintaining connections to all messaging platforms</li>
+          <li>Running the AI agent for each conversation</li>
+          <li>Serving the WebChat UI and Canvas</li>
+          <li>Authenticating connected devices (macOS app, iOS, Android)</li>
+          <li>Running scheduled (cron) tasks</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">One Gateway per machine. All apps connect to it over WebSocket.</p>
+        <div class="tags">
+          <span class="tag blue">TypeScript</span>
+          <span class="tag blue">Node.js</span>
+          <span class="tag">port 18789</span>
+          <span class="tag">WebSocket</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">📡</span>
+        <div>
+          <div class="card-title">Channels</div>
+          <div class="card-subtitle">Messaging platform connectors</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">How OpenClaw talks to WhatsApp, Telegram, Discord, etc.</p>
+      <div class="card-body">
+        <p>Each messaging platform is a <strong>channel extension</strong> — a plugin that knows how to connect to that specific platform's API. There are 25+ supported channels.</p>
+        <ul class="card-detail-list">
+          <li>WhatsApp → Baileys library (WhatsApp Web protocol)</li>
+          <li>Telegram → grammY library (Bot API)</li>
+          <li>Discord → Official Discord bot API</li>
+          <li>Signal → signal-cli / native integration</li>
+          <li>iMessage → BlueBubbles or native bridge</li>
+          <li>Slack, Teams, Matrix, IRC, LINE, WeChat…</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">Each channel plugin registers itself with the Gateway at startup. The Gateway then routes inbound messages to the agent and outbound replies back through the right channel.</p>
+        <div class="tags">
+          <span class="tag green">25+ channels</span>
+          <span class="tag">extensions/</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🤖</span>
+        <div>
+          <div class="card-title">Agent Runtime</div>
+          <div class="card-subtitle">The AI thinking engine</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">Where the actual AI reasoning happens.</p>
+      <div class="card-body">
+        <p>Built on <strong>Pi agent core</strong> (<code>@mariozachner/pi-agent-core</code>) — a third-party agent harness library. OpenClaw wraps this with session management, tool wiring, and channel delivery.</p>
+        <p style="margin-top:0.75rem;">On the first turn of a new conversation, it loads your <strong>workspace files</strong>:</p>
+        <ul class="card-detail-list">
+          <li>AGENTS.md — how you want the AI to behave</li>
+          <li>SOUL.md — the AI's personality and tone</li>
+          <li>TOOLS.md — your notes on tool usage</li>
+          <li>IDENTITY.md — the AI's name and emoji</li>
+          <li>USER.md — facts about you</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">These files are just plain text you can edit. They act as the AI's "personality" and "memory" for every new conversation.</p>
+        <div class="tags">
+          <span class="tag blue">pi-agent-core</span>
+          <span class="tag purple">src/agents/</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🔌</span>
+        <div>
+          <div class="card-title">Plugin System</div>
+          <div class="card-subtitle">Manifest-driven extension loader</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">How OpenClaw loads only what it needs.</p>
+      <div class="card-body">
+        <p>Each plugin has a <strong>manifest</strong> — a JSON file declaring what it provides: a channel, a model provider, a tool, or a command. The <code>PluginActivationPlanner</code> decides which plugins to load based on a <em>trigger</em> (what the current request needs).</p>
+        <p style="margin-top:0.75rem;">Two plugin styles:</p>
+        <ul class="card-detail-list">
+          <li><strong>Code plugins</strong> — full TypeScript runtime hooks, providers, tools</li>
+          <li><strong>Bundle-style plugins</strong> — packages of skills, MCP servers, config files</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">Community plugins are published to <a href="https://clawhub.ai" style="color:var(--accent);">ClawHub</a> — the plugin registry. You install them like npm packages.</p>
+        <div class="tags">
+          <span class="tag">100+ plugins</span>
+          <span class="tag">extensions/</span>
+          <span class="tag blue">src/plugins/</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">💾</span>
+        <div>
+          <div class="card-title">Sessions</div>
+          <div class="card-subtitle">Conversation memory</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">How the AI remembers what you said.</p>
+      <div class="card-body">
+        <p>Every conversation is a <strong>session</strong>. Sessions are stored as JSONL files (one JSON object per line) at:</p>
+        <div class="step-code" style="margin:0.75rem 0;">~/.openclaw/agents/&lt;agentId&gt;/sessions/&lt;SessionId&gt;.jsonl</div>
+        <p>Each line in the file is one message or AI reply. This is how the AI "remembers" the conversation — it reads the file at the start of each turn.</p>
+        <ul class="card-detail-list">
+          <li>Different channels can map to isolated agent sessions</li>
+          <li>Sessions have configurable pruning (auto-delete old ones)</li>
+          <li>You can inspect, export, or share session files manually</li>
+          <li>The <code>/new</code> chat command starts a fresh session</li>
+        </ul>
+        <div class="tags">
+          <span class="tag green">JSONL format</span>
+          <span class="tag">src/sessions/</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🧠</span>
+        <div>
+          <div class="card-title">Memory System</div>
+          <div class="card-subtitle">Long-term knowledge store</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">How the AI remembers things across conversations.</p>
+      <div class="card-body">
+        <p>Sessions store a single conversation. Memory stores facts <strong>across all conversations</strong>. When you tell the AI "my daughter's name is Sophie", memory saves that and recalls it next week.</p>
+        <p style="margin-top:0.75rem;">Three memory backends (pick one):</p>
+        <ul class="card-detail-list">
+          <li><strong>active-memory</strong> — simple append-to-file, fast, no setup</li>
+          <li><strong>memory-lancedb</strong> — vector embeddings, semantic search ("find stuff I said about cooking")</li>
+          <li><strong>memory-wiki</strong> — wiki-style structured notes</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">Only one memory plugin can be active at a time (configured in your gateway config).</p>
+        <div class="tags">
+          <span class="tag purple">extensions/active-memory</span>
+          <span class="tag purple">LanceDB vectors</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🔧</span>
+        <div>
+          <div class="card-title">MCP (Tool Bridge)</div>
+          <div class="card-subtitle">Model Context Protocol</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">The standard protocol for AI tools.</p>
+      <div class="card-body">
+        <p>MCP (Model Context Protocol) is an open standard by Anthropic for connecting AI models to external tools. OpenClaw plays <strong>both roles</strong>:</p>
+        <ul class="card-detail-list">
+          <li><strong>MCP Server</strong> — exposes OpenClaw's tools (bash, read, write, browser…) to other AI apps via stdio</li>
+          <li><strong>MCP Client</strong> — connects to external MCP servers (e.g. a database tool server, a GitHub tool server)</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">This means OpenClaw is compatible with the growing ecosystem of MCP tools. Any MCP tool server can be plugged into OpenClaw without writing custom code.</p>
+        <div class="tags">
+          <span class="tag orange">open standard</span>
+          <span class="tag">src/mcp/</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🖼️</span>
+        <div>
+          <div class="card-title">Canvas</div>
+          <div class="card-subtitle">AI-driven live visual workspace</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">The AI can draw UIs in real time.</p>
+      <div class="card-body">
+        <p>Canvas is an HTML page served by the Gateway at <code>/__openclaw__/canvas/</code>. The AI can write HTML, CSS, and JavaScript to this page and you see it update live.</p>
+        <p style="margin-top:0.75rem;">Use cases:</p>
+        <ul class="card-detail-list">
+          <li>Interactive dashboards the AI builds on demand</li>
+          <li>Charts and visualizations from your data</li>
+          <li>Custom forms and calculators</li>
+          <li>Live document editors</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">A2UI (Agent-to-UI) is the protocol for the AI to interact with Canvas elements — it can read button clicks and form values back from the page.</p>
+        <div class="tags">
+          <span class="tag yellow">live HTML/CSS/JS</span>
+          <span class="tag">A2UI protocol</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">⏰</span>
+        <div>
+          <div class="card-title">Cron Scheduler</div>
+          <div class="card-subtitle">Automated recurring tasks</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">Schedule AI tasks like a calendar.</p>
+      <div class="card-body">
+        <p>The Gateway has a built-in cron scheduler using the <strong>croner</strong> library. You can tell the AI to run tasks on a schedule — and it will keep running them even when you're not around.</p>
+        <ul class="card-detail-list">
+          <li>"Every Monday at 8am, send me a news digest on WhatsApp"</li>
+          <li>"Daily at 6pm, check my calendar and send a reminder"</li>
+          <li>"Every hour, check if my website is down"</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">Cron jobs are stored in your gateway config and survive restarts. You can view active cron jobs with <code>openclaw cron list</code>.</p>
+        <div class="tags">
+          <span class="tag green">croner library</span>
+          <span class="tag">src/cron/</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🎤</span>
+        <div>
+          <div class="card-title">Voice System</div>
+          <div class="card-subtitle">Wake words, speech, and TTS</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">Talk to your AI out loud.</p>
+      <div class="card-body">
+        <p>Voice is handled by a set of extensions that work together:</p>
+        <ul class="card-detail-list">
+          <li><strong>Wake word detection</strong> — always-on listening on macOS/iOS</li>
+          <li><strong>Speech-to-text</strong> — Deepgram (cloud) or local Whisper</li>
+          <li><strong>Text-to-speech</strong> — ElevenLabs (natural), Azure TTS, or system TTS</li>
+          <li><strong>Android</strong> — continuous voice mode, always listening</li>
+          <li><strong>macOS MLX TTS</strong> — fully on-device TTS using Apple Silicon</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">On macOS, the Push-to-Talk overlay activates when you hold a hotkey. On Android, you can speak freely and it listens continuously.</p>
+        <div class="tags">
+          <span class="tag">ElevenLabs</span>
+          <span class="tag">Deepgram</span>
+          <span class="tag purple">on-device TTS</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">📦</span>
+        <div>
+          <div class="card-title">Skills</div>
+          <div class="card-subtitle">Pre-packaged AI workflows</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">Like apps for your AI assistant.</p>
+      <div class="card-body">
+        <p>Skills are pre-written instruction files that teach the AI how to do specific things. They're loaded from your workspace <code>skills/</code> folder or from bundled defaults.</p>
+        <ul class="card-detail-list">
+          <li>coding-agent — full software engineering workflow</li>
+          <li>github — manage GitHub issues and PRs</li>
+          <li>apple-notes — read and write Apple Notes</li>
+          <li>canvas — use the Canvas visual workspace</li>
+          <li>gh-issues — triage and respond to GitHub issues</li>
+          <li>1password — securely retrieve credentials</li>
+        </ul>
+        <p style="margin-top:0.75rem; color:var(--muted);">Find community skills on <a href="https://clawhub.ai" style="color:var(--accent);">ClawHub</a>. You can also write your own skill as a markdown file.</p>
+        <div class="tags">
+          <span class="tag green">skills/</span>
+          <span class="tag">ClawHub registry</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="toggleCard(this)">
+      <div class="card-expand">+</div>
+      <div class="card-header">
+        <span class="card-icon">🌐</span>
+        <div>
+          <div class="card-title">WebSocket Protocol</div>
+          <div class="card-subtitle">How everything communicates</div>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;">The wire format for the control plane.</p>
+      <div class="card-body">
+        <p>All clients (macOS app, iOS, Android, CLI, WebChat) connect to the Gateway over a <strong>WebSocket</strong> on port 18789. The wire protocol uses JSON frames.</p>
+        <div class="step-code" style="margin:0.75rem 0;">// Request frame
+{ "type": "req", "id": "abc", "method": "agent",
+  "params": { "message": "What's the weather?" } }
+
+// Response frame
+{ "type": "res", "id": "abc", "ok": true,
+  "payload": { "runId": "xyz", "status": "accepted" } }
+
+// Streaming event frame
+{ "type": "event", "event": "agent",
+  "payload": { "text": "The weather in Paris is..." } }</div>
+        <p style="color:var(--muted); font-size:0.85rem;">The first frame must always be <code>connect</code> with a signed challenge to prove device identity. After that, you send requests and receive responses and events.</p>
+        <div class="tags">
+          <span class="tag blue">JSON over WebSocket</span>
+          <span class="tag">signed device auth</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- SECTION 4: PLUGINS -->
+<div class="section" id="plugins">
+  <div class="section-label">Section 04</div>
+  <h2>The Plugin Ecosystem</h2>
+  <p>OpenClaw has 100+ extensions organized into categories. Every messaging platform, AI model provider, and tool is a separate plugin. This keeps the core small and lets you only install what you actually use.</p>
+
+  <div class="plugin-categories" id="plugin-categories">
+    <button class="cat-btn active" onclick="filterPlugins('all', this)">All (100+)</button>
+    <button class="cat-btn" onclick="filterPlugins('channel', this)">📡 Messaging</button>
+    <button class="cat-btn" onclick="filterPlugins('model', this)">✨ AI Models</button>
+    <button class="cat-btn" onclick="filterPlugins('tool', this)">🔧 Tools</button>
+    <button class="cat-btn" onclick="filterPlugins('voice', this)">🎤 Voice</button>
+    <button class="cat-btn" onclick="filterPlugins('memory', this)">🧠 Memory</button>
+    <button class="cat-btn" onclick="filterPlugins('infra', this)">⚙️ Infrastructure</button>
+  </div>
+
+  <div class="plugin-grid" id="plugin-grid"></div>
+</div>
+
+<!-- SECTION 5: SECURITY -->
+<div class="section" id="security">
+  <div class="section-label">Section 05</div>
+  <h2>Security Model</h2>
+  <p>OpenClaw is powerful — the AI can run bash commands, read/write files, browse the web. So security defaults matter a lot. Here's how it's designed to be safe.</p>
+
+  <div class="security-grid">
+    <div class="security-card good">
+      <div class="sec-header">
+        <span class="sec-icon">🔐</span>
+        <h4>Device Pairing (Zero Trust)</h4>
+      </div>
+      <p>Every device that connects to the Gateway must prove its identity with a <strong>signed challenge</strong>. New devices get a pairing code. The Gateway keeps a paired-device store. Even local connections on the same machine must pair (unless loopback auto-approve is on).</p>
+    </div>
+
+    <div class="security-card good">
+      <div class="sec-header">
+        <span class="sec-icon">🚪</span>
+        <h4>DM Pairing Policy</h4>
+      </div>
+      <p>By default, unknown senders via WhatsApp, Telegram, Discord etc. receive a <strong>short pairing code</strong> instead of AI access. You approve them with <code>openclaw pairing approve</code>. This prevents strangers from talking to your AI. You can set <code>dmPolicy="open"</code> to allow anyone.</p>
+    </div>
+
+    <div class="security-card good">
+      <div class="sec-header">
+        <span class="sec-icon">📦</span>
+        <h4>Sandboxing Non-Main Sessions</h4>
+      </div>
+      <p>Your personal "main" session runs with full tool access. Sessions from group chats or untrusted channels can be sandboxed in <strong>Docker containers</strong> — so the AI can still run code but can't touch your personal files. Set <code>agents.defaults.sandbox.mode: "non-main"</code>.</p>
+    </div>
+
+    <div class="security-card good">
+      <div class="sec-header">
+        <span class="sec-icon">🏠</span>
+        <h4>Local-First by Default</h4>
+      </div>
+      <p>The Gateway binds to <code>127.0.0.1</code> (localhost only) by default. It is <strong>not reachable from the internet</strong> unless you explicitly set it up (via Tailscale, ngrok, SSH tunnel, etc.). This means your AI is private by default — no cloud server holds your conversations.</p>
+    </div>
+
+    <div class="security-card warn">
+      <div class="sec-header">
+        <span class="sec-icon">⚠️</span>
+        <h4>Main Session Has Full Access</h4>
+      </div>
+      <p>When it's just you talking to your AI, the agent runs with <strong>full host access</strong> — it can read files, run commands, browse the web. This is intentional for a personal assistant. If you expose the gateway to others, use sandboxing or restrict tool policies.</p>
+    </div>
+
+    <div class="security-card warn">
+      <div class="sec-header">
+        <span class="sec-icon">🔑</span>
+        <h4>Run <code>openclaw doctor</code></h4>
+      </div>
+      <p>Before exposing your gateway remotely, run <code>openclaw doctor</code>. It scans your config and warns about risky settings — like <code>dmPolicy="open"</code> on a public-facing gateway, or gateway auth mode set to "none" without a firewall.</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 6: SUMMARY -->
+<div class="section" id="summary">
+  <div class="section-label">Section 06</div>
+  <h2>The Mental Model</h2>
+  <p>Here's the simplest way to think about all the moving parts.</p>
+
+  <div class="summary-box">
+    <h3>OpenClaw = Smart Home Hub for AI</h3>
+    <div class="mental-model">
+      <div class="mental-item">
+        <div class="mi-icon">🏗️</div>
+        <div>
+          <h5>Gateway = The Hub</h5>
+          <p>One always-on process on your machine. Everything connects to it.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">📡</div>
+        <div>
+          <h5>Channels = The Doors</h5>
+          <p>25+ messaging platforms. Messages come in, replies go out.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">🤖</div>
+        <div>
+          <h5>Agent Runtime = The Brain</h5>
+          <p>Reads your workspace files, talks to the AI model, uses tools.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">✨</div>
+        <div>
+          <h5>AI Model = The Thinker</h5>
+          <p>The actual LLM — Claude, GPT-4, Gemini. Pluggable, 50+ options.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">🔌</div>
+        <div>
+          <h5>Plugins = The App Store</h5>
+          <p>100+ extensions. Install only what you need. Build your own.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">💾</div>
+        <div>
+          <h5>Sessions + Memory = Memory</h5>
+          <p>Short-term (JSONL files) + long-term (vector DB) recall.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">🔧</div>
+        <div>
+          <h5>Skills = Instruction Manuals</h5>
+          <p>Markdown files that teach the AI how to do specific tasks.</p>
+        </div>
+      </div>
+      <div class="mental-item">
+        <div class="mi-icon">🔐</div>
+        <div>
+          <h5>Security = Local-First + Pairing</h5>
+          <p>Localhost by default. Strangers need pairing codes. Sandboxing available.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:2rem;">
+    <h3 style="margin-bottom:1rem;">What a minimal config looks like</h3>
+    <div class="code-block"><span class="cmt">// ~/.openclaw/openclaw.json — simplest working setup</span>
+{
+  <span class="key">"gateway"</span>: {
+    <span class="key">"port"</span>: <span class="num">18789</span>,
+    <span class="key">"bind"</span>: <span class="str">"127.0.0.1"</span>  <span class="cmt">// localhost only (safe default)</span>
+  },
+  <span class="key">"agents"</span>: {
+    <span class="key">"defaults"</span>: {
+      <span class="key">"workspace"</span>: <span class="str">"~/.openclaw/workspace"</span>
+    }
+  },
+  <span class="key">"channels"</span>: {
+    <span class="key">"telegram"</span>: {
+      <span class="key">"token"</span>: <span class="str">"YOUR_BOT_TOKEN"</span>,
+      <span class="key">"dmPolicy"</span>: <span class="str">"pairing"</span>  <span class="cmt">// strangers get pairing code</span>
+    }
+  },
+  <span class="key">"plugins"</span>: {
+    <span class="key">"anthropic"</span>: { <span class="key">"apiKey"</span>: <span class="str">"sk-ant-..."</span> }
+  }
+}</div>
+  </div>
+
+  <div style="margin-top:2rem; padding:1.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:12px;">
+    <h3 style="margin-bottom:0.75rem;">Quick Start (3 commands)</h3>
+    <div class="code-block"><span class="cmt"># 1. Install OpenClaw</span>
+npm install -g openclaw@latest
+
+<span class="cmt"># 2. Run the interactive setup wizard</span>
+openclaw onboard --install-daemon
+
+<span class="cmt"># 3. Start the gateway</span>
+openclaw gateway --port 18789 --verbose
+
+<span class="cmt"># Then send yourself a test message via Telegram/WhatsApp/Discord!</span></div>
+  </div>
+</div>
+
+<footer>
+  <p>Built as an interactive explainer for <a href="https://github.com/openclaw/openclaw">github.com/openclaw/openclaw</a></p>
+  <p style="margin-top:0.5rem;">OpenClaw is MIT licensed · <a href="https://docs.openclaw.ai">docs.openclaw.ai</a> · <a href="https://discord.gg/clawd">Discord</a></p>
+</footer>
+
+<script>
+  // ─── ARCHITECTURE DIAGRAM ───
+  const nodeData = {
+    "node-gateway": {
+      name: "🏗️ The Gateway",
+      desc: "The core daemon. One process running 24/7 on your machine. All messaging connections, AI sessions, tools, and schedules live here. Starts with 'openclaw gateway' and installs as a system service.",
+      tags: [["TypeScript", "blue"], ["Node.js", "blue"], ["port 18789", ""], ["launchd/systemd", ""]]
+    },
+    "node-sessions": {
+      name: "💾 Session Store",
+      desc: "Every conversation is saved as a JSONL file (one JSON object per line) at ~/.openclaw/agents/<agentId>/sessions/<SessionId>.jsonl. The agent reads this file at the start of each turn so it remembers your conversation history.",
+      tags: [["JSONL files", "green"], ["per-channel sessions", ""], ["src/sessions/", ""]]
+    },
+    "node-plugins": {
+      name: "🔌 Plugin System",
+      desc: "A manifest-driven loader that figures out which plugins to activate for each request. Each plugin declares what it provides: a channel, a model provider, a tool command. Only the needed plugins are loaded — keeping the core lean.",
+      tags: [["100+ plugins", ""], ["manifest-driven", "blue"], ["extensions/", ""]]
+    },
+    "node-channels-mgr": {
+      name: "📡 Channel Manager",
+      desc: "Manages all incoming and outgoing messages. Applies security rules: checks if the sender is on the allowlist, enforces dmPolicy (pairing/open), routes the message to the correct agent session, and sends replies back through the right channel.",
+      tags: [["25+ channels", "green"], ["dmPolicy", ""], ["allowlist", ""]]
+    },
+    "node-mcp": {
+      name: "🔧 MCP Bridge",
+      desc: "Model Context Protocol — an open standard for AI tool use. OpenClaw is BOTH an MCP server (exposes bash, read, write etc. to other AI apps via stdio) AND an MCP client (connects to external MCP tool servers like GitHub tools, database tools).",
+      tags: [["open standard", "orange"], ["stdio transport", ""], ["src/mcp/", ""]]
+    },
+    "node-agent": {
+      name: "🤖 Agent Runtime",
+      desc: "The AI thinking engine, built on Pi agent core (@mariozachner/pi-agent-core). It loads your workspace files (AGENTS.md, SOUL.md etc.), maintains the conversation context, decides which tools to call, and sends the final reply back.",
+      tags: [["pi-agent-core", "blue"], ["tools + skills", "purple"], ["src/agents/", ""]]
+    },
+    "node-canvas": {
+      name: "🖼️ Canvas",
+      desc: "A live HTML page served at /__openclaw__/canvas/. The AI can write HTML/CSS/JS to it in real time. You see it update instantly. Great for AI-generated dashboards, charts, forms, and interactive UIs. A2UI protocol lets the AI read user interactions back.",
+      tags: [["live HTML/CSS/JS", "yellow"], ["A2UI protocol", ""], ["/__openclaw__/canvas/", ""]]
+    },
+    "node-memory": {
+      name: "🧠 Memory System",
+      desc: "Long-term memory across all conversations. Three backends: active-memory (simple file, no setup), memory-lancedb (vector embeddings for semantic search), memory-wiki (structured wiki-style notes). Only one can be active at a time.",
+      tags: [["cross-session", "purple"], ["LanceDB vectors", "purple"], ["extensions/", ""]]
+    },
+    "node-cron": {
+      name: "⏰ Cron Scheduler",
+      desc: "Built-in scheduler using the croner library. The AI can create recurring tasks: 'every Monday, send me a news digest'. Jobs survive gateway restarts. Manage with 'openclaw cron list' / 'cron delete'. Events fire as agent turns.",
+      tags: [["croner library", "green"], ["survives restarts", ""], ["src/cron/", ""]]
+    },
+    "node-whatsapp": {
+      name: "📱 WhatsApp Channel",
+      desc: "Connects via the Baileys library — an open-source Node.js implementation of WhatsApp Web. You scan a QR code once during setup and Baileys maintains the session. Supports sending/receiving text, images, voice notes, and documents.",
+      tags: [["Baileys library", "green"], ["WhatsApp Web protocol", ""], ["extensions/whatsapp/", ""]]
+    },
+    "node-telegram": {
+      name: "✈️ Telegram Channel",
+      desc: "Uses the grammY library to talk to Telegram's Bot API. You create a bot via @BotFather, paste the token in your config, and OpenClaw handles all the message routing. Supports text, images, inline keyboards, and voice.",
+      tags: [["grammY library", "blue"], ["Bot API", ""], ["extensions/telegram/", ""]]
+    },
+    "node-discord": {
+      name: "🎮 Discord Channel",
+      desc: "Connects to Discord's official bot API. Reads messages from DMs and servers, sends replies. dmPolicy='pairing' protects the bot — strangers can't access your AI without your approval. Supports Discord-specific formatting.",
+      tags: [["Discord Bot API", "purple"], ["dmPolicy", ""], ["extensions/discord/", ""]]
+    },
+    "node-aimodel": {
+      name: "✨ AI Model Provider",
+      desc: "The actual LLM doing the reasoning. Each provider is a plugin: anthropic (Claude), openai (GPT-4), google (Gemini), mistral, groq, deepseek, ollama (local!), amazon-bedrock, and 50+ more. You configure which one to use in openclaw.json. Model failover lets you set fallbacks.",
+      tags: [["50+ providers", "purple"], ["model failover", ""], ["extensions/anthropic/", "blue"]]
+    },
+    "node-macos": {
+      name: "🍎 macOS Companion App",
+      desc: "A native Swift app that lives in your menu bar. Connects to the Gateway over WebSocket. Features: gateway health indicator, Voice Wake detection, push-to-talk overlay (hold hotkey to speak), WebChat UI, and remote gateway control over SSH.",
+      tags: [["Swift", ""], ["menu bar", ""], ["Voice Wake", "orange"], ["apps/macos/", ""]]
+    },
+    "node-ios": {
+      name: "📱 iOS Node",
+      desc: "An iPhone/iPad app that pairs with your Gateway as a 'node' (a connected device). It provides: voice trigger forwarding (tap to speak on your phone, AI replies), and a Canvas viewer to display AI-drawn UIs on your mobile screen.",
+      tags: [["Swift", ""], ["WebSocket node", "blue"], ["voice + canvas", ""], ["apps/ios/", ""]]
+    },
+    "node-android": {
+      name: "🤖 Android Node",
+      desc: "Android app with continuous voice mode — always listening for a wake word. Converts your speech using Deepgram or Whisper, sends to AI, plays the response using ElevenLabs TTS (natural voice) or system TTS. Written in Kotlin.",
+      tags: [["Kotlin", "green"], ["always-listening", ""], ["ElevenLabs TTS", ""], ["apps/android/", ""]]
+    }
+  };
+
+  document.querySelectorAll('.arch-node').forEach(node => {
+    node.addEventListener('click', function() {
+      const id = this.id;
+      const data = nodeData[id];
+      if (!data) return;
+
+      document.querySelectorAll('.arch-node').forEach(n => n.classList.remove('selected'));
+      this.classList.add('selected');
+
+      const panel = document.getElementById('node-panel');
+      const tagsHtml = data.tags.map(([t, c]) => `<span class="tag ${c}">${t}</span>`).join('');
+      panel.innerHTML = `
+        <h3>${data.name}</h3>
+        <p>${data.desc}</p>
+        <div class="tags">${tagsHtml}</div>
+      `;
+    });
+  });
+
+  // ─── JOURNEY STEPS ───
+  let currentStep = 0;
+  const totalSteps = 6;
+
+  function updateJourney() {
+    const steps = document.querySelectorAll('.journey-step');
+    steps.forEach((step, i) => {
+      step.classList.remove('active', 'done');
+      if (i === currentStep) step.classList.add('active');
+      else if (i < currentStep) step.classList.add('done');
+    });
+    document.getElementById('btn-prev').disabled = currentStep === 0;
+    document.getElementById('btn-next').disabled = currentStep === totalSteps - 1;
+    document.getElementById('btn-next').textContent = currentStep === totalSteps - 1 ? 'Done ✓' : 'Next Step →';
+    document.getElementById('journey-progress').textContent = `Step ${currentStep + 1} of ${totalSteps}`;
+  }
+
+  function journeyNext() {
+    if (currentStep < totalSteps - 1) { currentStep++; updateJourney(); }
+  }
+  function journeyPrev() {
+    if (currentStep > 0) { currentStep--; updateJourney(); }
+  }
+  function journeyReset() {
+    currentStep = 0; updateJourney();
+  }
+
+  // ─── CARD TOGGLE ───
+  function toggleCard(card) {
+    const wasOpen = card.classList.contains('open');
+    document.querySelectorAll('.card.open').forEach(c => c.classList.remove('open'));
+    if (!wasOpen) card.classList.add('open');
+  }
+
+  // ─── PLUGIN GRID ───
+  const plugins = [
+    { name: "WhatsApp", cat: "channel", emoji: "📱" },
+    { name: "Telegram", cat: "channel", emoji: "✈️" },
+    { name: "Discord", cat: "channel", emoji: "🎮" },
+    { name: "Slack", cat: "channel", emoji: "💬" },
+    { name: "Signal", cat: "channel", emoji: "🔒" },
+    { name: "iMessage", cat: "channel", emoji: "💬" },
+    { name: "BlueBubbles", cat: "channel", emoji: "🫧" },
+    { name: "Microsoft Teams", cat: "channel", emoji: "🔷" },
+    { name: "Matrix", cat: "channel", emoji: "🌐" },
+    { name: "IRC", cat: "channel", emoji: "📟" },
+    { name: "LINE", cat: "channel", emoji: "🟢" },
+    { name: "Mattermost", cat: "channel", emoji: "💼" },
+    { name: "Nostr", cat: "channel", emoji: "⚡" },
+    { name: "Twitch", cat: "channel", emoji: "🟣" },
+    { name: "Feishu", cat: "channel", emoji: "🦅" },
+    { name: "Zalo", cat: "channel", emoji: "🔵" },
+    { name: "WeChat", cat: "channel", emoji: "💚" },
+    { name: "QQ", cat: "channel", emoji: "🐧" },
+    { name: "Tlon", cat: "channel", emoji: "🌌" },
+    { name: "Nextcloud Talk", cat: "channel", emoji: "☁️" },
+    { name: "Synology Chat", cat: "channel", emoji: "🗄️" },
+    { name: "Google Chat", cat: "channel", emoji: "🔵" },
+    { name: "WebChat", cat: "channel", emoji: "🌍" },
+    { name: "Anthropic (Claude)", cat: "model", emoji: "✨" },
+    { name: "OpenAI (GPT)", cat: "model", emoji: "🤖" },
+    { name: "Google (Gemini)", cat: "model", emoji: "🌟" },
+    { name: "Mistral", cat: "model", emoji: "💨" },
+    { name: "Groq", cat: "model", emoji: "⚡" },
+    { name: "DeepSeek", cat: "model", emoji: "🌊" },
+    { name: "Ollama (local)", cat: "model", emoji: "🏠" },
+    { name: "Amazon Bedrock", cat: "model", emoji: "☁️" },
+    { name: "Azure OpenAI", cat: "model", emoji: "🔷" },
+    { name: "Anthropic Vertex", cat: "model", emoji: "🔺" },
+    { name: "OpenRouter", cat: "model", emoji: "🔀" },
+    { name: "Together AI", cat: "model", emoji: "🤝" },
+    { name: "Fireworks AI", cat: "model", emoji: "🎆" },
+    { name: "Cerebras", cat: "model", emoji: "🧠" },
+    { name: "Qwen", cat: "model", emoji: "🐉" },
+    { name: "xAI (Grok)", cat: "model", emoji: "❌" },
+    { name: "Moonshot", cat: "model", emoji: "🌙" },
+    { name: "LM Studio", cat: "model", emoji: "🖥️" },
+    { name: "HuggingFace", cat: "model", emoji: "🤗" },
+    { name: "Perplexity", cat: "model", emoji: "🔍" },
+    { name: "Copilot Proxy", cat: "model", emoji: "🦾" },
+    { name: "Browser", cat: "tool", emoji: "🌐" },
+    { name: "Brave Search", cat: "tool", emoji: "🦁" },
+    { name: "Tavily Search", cat: "tool", emoji: "🔎" },
+    { name: "Exa Search", cat: "tool", emoji: "🔬" },
+    { name: "DuckDuckGo", cat: "tool", emoji: "🦆" },
+    { name: "Firecrawl", cat: "tool", emoji: "🔥" },
+    { name: "GitHub", cat: "tool", emoji: "🐙" },
+    { name: "Diffs", cat: "tool", emoji: "📝" },
+    { name: "Image Generation (DALL-E etc)", cat: "tool", emoji: "🎨" },
+    { name: "Video Generation", cat: "tool", emoji: "🎬" },
+    { name: "Music Generation", cat: "tool", emoji: "🎵" },
+    { name: "Comfy (image workflows)", cat: "tool", emoji: "🖼️" },
+    { name: "Fal.ai", cat: "tool", emoji: "⚡" },
+    { name: "Runway", cat: "tool", emoji: "🛣️" },
+    { name: "OpenShell", cat: "tool", emoji: "🐚" },
+    { name: "Phone Control", cat: "tool", emoji: "📞" },
+    { name: "Document Extract", cat: "tool", emoji: "📄" },
+    { name: "Web Readability", cat: "tool", emoji: "📖" },
+    { name: "ElevenLabs TTS", cat: "voice", emoji: "🔊" },
+    { name: "Azure Speech", cat: "voice", emoji: "🔵" },
+    { name: "Deepgram STT", cat: "voice", emoji: "🎤" },
+    { name: "macOS MLX TTS", cat: "voice", emoji: "🍎" },
+    { name: "Talk Voice", cat: "voice", emoji: "💬" },
+    { name: "Speech Core", cat: "voice", emoji: "🎙️" },
+    { name: "Realtime Voice", cat: "voice", emoji: "⚡" },
+    { name: "Voice Call", cat: "voice", emoji: "📞" },
+    { name: "Inworld AI", cat: "voice", emoji: "🌍" },
+    { name: "SenseAudio", cat: "voice", emoji: "👂" },
+    { name: "Active Memory", cat: "memory", emoji: "📝" },
+    { name: "LanceDB Memory", cat: "memory", emoji: "🗃️" },
+    { name: "Memory Wiki", cat: "memory", emoji: "📚" },
+    { name: "Memory Core", cat: "memory", emoji: "🧠" },
+    { name: "Honcho Memory", cat: "memory", emoji: "🎯" },
+    { name: "Diagnostics OTEL", cat: "infra", emoji: "📊" },
+    { name: "Diagnostics Prometheus", cat: "infra", emoji: "📈" },
+    { name: "Bonjour Discovery", cat: "infra", emoji: "👋" },
+    { name: "Device Pair", cat: "infra", emoji: "📱" },
+    { name: "Cloudflare AI Gateway", cat: "infra", emoji: "☁️" },
+    { name: "Vercel AI Gateway", cat: "infra", emoji: "▲" },
+    { name: "Voyage Embeddings", cat: "infra", emoji: "🚀" },
+    { name: "TokuJuice (token mgmt)", cat: "infra", emoji: "🎟️" },
+    { name: "Webhooks", cat: "infra", emoji: "🔗" },
+    { name: "Synthetic (testing)", cat: "infra", emoji: "🧪" },
+  ];
+
+  let currentFilter = 'all';
+
+  function filterPlugins(cat, btn) {
+    currentFilter = cat;
+    document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderPlugins();
+  }
+
+  function renderPlugins() {
+    const grid = document.getElementById('plugin-grid');
+    const filtered = currentFilter === 'all' ? plugins : plugins.filter(p => p.cat === currentFilter);
+    grid.innerHTML = filtered.map(p =>
+      `<div class="plugin-chip">${p.emoji} ${p.name}</div>`
+    ).join('');
+  }
+
+  renderPlugins();
+</script>
+</body>
+</html>

@@ -1,0 +1,1665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>How Paperclip Works — Beginner's Visual Guide</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #13131a;
+    --surface2: #1c1c28;
+    --border: #2a2a3a;
+    --text: #e8e8f0;
+    --muted: #8888aa;
+    --purple: #7c6cf8;
+    --cyan: #22d3ee;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #f87171;
+    --pink: #ec4899;
+    --blue: #3b82f6;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV ── */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(10,10,15,0.85);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 4px;
+    padding: 0 24px; height: 52px;
+    overflow-x: auto;
+  }
+  nav a {
+    color: var(--muted); text-decoration: none; font-size: 13px;
+    font-weight: 500; padding: 6px 12px; border-radius: 6px;
+    white-space: nowrap; transition: all .2s;
+  }
+  nav a:hover { color: var(--text); background: var(--surface2); }
+  nav .logo { color: var(--purple); font-weight: 700; font-size: 15px; margin-right: 12px; flex-shrink: 0; }
+
+  /* ── LAYOUT ── */
+  .page { max-width: 960px; margin: 0 auto; padding: 80px 24px 120px; }
+  section { margin-bottom: 100px; }
+
+  h1 { font-size: clamp(32px, 6vw, 56px); font-weight: 800; line-height: 1.1; }
+  h2 { font-size: clamp(22px, 4vw, 32px); font-weight: 700; margin-bottom: 12px; }
+  h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+  p  { color: var(--muted); margin-bottom: 16px; }
+  p strong { color: var(--text); }
+
+  .tag {
+    display: inline-block; padding: 3px 10px; border-radius: 20px;
+    font-size: 12px; font-weight: 600; letter-spacing: .03em;
+    margin-bottom: 12px;
+  }
+  .tag-purple { background: rgba(124,108,248,.15); color: var(--purple); border: 1px solid rgba(124,108,248,.3); }
+  .tag-cyan   { background: rgba(34,211,238,.12); color: var(--cyan);   border: 1px solid rgba(34,211,238,.25); }
+  .tag-green  { background: rgba(16,185,129,.12); color: var(--green);  border: 1px solid rgba(16,185,129,.25); }
+  .tag-amber  { background: rgba(245,158,11,.12); color: var(--amber);  border: 1px solid rgba(245,158,11,.25); }
+  .tag-red    { background: rgba(248,113,113,.12); color: var(--red);   border: 1px solid rgba(248,113,113,.25); }
+  .tag-pink   { background: rgba(236,72,153,.12); color: var(--pink);   border: 1px solid rgba(236,72,153,.25); }
+  .tag-blue   { background: rgba(59,130,246,.12); color: var(--blue);   border: 1px solid rgba(59,130,246,.25); }
+
+  .divider { height: 1px; background: var(--border); margin: 40px 0; }
+
+  code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px; background: var(--surface2);
+    padding: 2px 6px; border-radius: 4px; color: var(--cyan);
+  }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px;
+    transition: border-color .2s, transform .2s;
+  }
+  .card:hover { border-color: rgba(124,108,248,.4); }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+
+  /* ── HERO ── */
+  #hero { padding-top: 40px; text-align: center; }
+  #hero .subtitle { font-size: 18px; color: var(--muted); max-width: 580px; margin: 16px auto 32px; line-height: 1.7; }
+  .stats-row { display: flex; gap: 40px; justify-content: center; flex-wrap: wrap; margin-top: 40px; }
+  .stat { text-align: center; }
+  .stat .num { font-size: 28px; font-weight: 800; color: var(--purple); }
+  .stat .lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+
+  /* ── ANALOGY BOX ── */
+  .analogy {
+    background: linear-gradient(135deg, rgba(124,108,248,.08), rgba(34,211,238,.05));
+    border: 1px solid rgba(124,108,248,.25);
+    border-radius: 20px; padding: 32px 36px; margin: 32px 0;
+    position: relative; overflow: hidden;
+  }
+  .analogy::before {
+    content: '"'; position: absolute; top: -10px; left: 20px;
+    font-size: 120px; color: rgba(124,108,248,.08); font-family: Georgia, serif;
+    line-height: 1;
+  }
+  .analogy p { color: var(--text); font-size: 17px; line-height: 1.8; margin: 0; }
+  .analogy .author { color: var(--muted); font-size: 13px; margin-top: 12px; }
+
+  /* ── ORG CHART ── */
+  .org-chart {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 40px 24px; text-align: center;
+    position: relative; overflow: hidden;
+  }
+  .org-row { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; margin: 8px 0; }
+  .org-node {
+    display: flex; flex-direction: column; align-items: center;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px 18px; min-width: 110px;
+    transition: all .25s; cursor: pointer; position: relative;
+  }
+  .org-node:hover { transform: translateY(-3px); border-color: var(--purple); }
+  .org-node .avatar { width: 40px; height: 40px; border-radius: 50%; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .org-node .name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .org-node .role { font-size: 11px; color: var(--muted); }
+  .org-connector {
+    width: 2px; height: 24px; background: var(--border);
+    margin: 0 auto; position: relative;
+  }
+  .org-connector::after {
+    content: ''; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+    border-left: 5px solid transparent; border-right: 5px solid transparent;
+    border-top: 6px solid var(--border);
+  }
+  .org-h-line {
+    display: flex; align-items: center; justify-content: center; gap: 0;
+  }
+  .h-line { height: 2px; background: var(--border); flex: 1; max-width: 120px; }
+  .you-node .avatar { background: rgba(124,108,248,.2); border: 2px solid var(--purple); }
+  .agent-node .avatar { background: rgba(34,211,238,.12); border: 1px solid rgba(34,211,238,.3); }
+  .agent-node { border-color: rgba(34,211,238,.2); }
+
+  /* ── CONCEPT TABS ── */
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .tab-btn {
+    padding: 8px 18px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--muted); font-size: 13px;
+    font-weight: 500; cursor: pointer; transition: all .2s; font-family: inherit;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { background: var(--purple); border-color: var(--purple); color: #fff; }
+  .tab-panel { display: none; animation: fadeIn .25s ease; }
+  .tab-panel.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── HEARTBEAT STEPPER ── */
+  .stepper { position: relative; }
+  .step-list { display: flex; flex-direction: column; gap: 0; }
+  .step {
+    display: flex; gap: 20px; position: relative; cursor: pointer;
+    padding: 16px 20px; border-radius: 14px; transition: background .2s;
+    border: 1px solid transparent;
+  }
+  .step:hover { background: var(--surface); }
+  .step.active { background: var(--surface); border-color: var(--border); }
+  .step-num {
+    width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px;
+    background: var(--surface2); color: var(--muted); border: 2px solid var(--border);
+    transition: all .3s; position: relative; z-index: 1;
+  }
+  .step.active .step-num { background: var(--purple); border-color: var(--purple); color: #fff; }
+  .step.done .step-num { background: var(--green); border-color: var(--green); color: #fff; }
+  .step-line {
+    position: absolute; left: 38px; top: 52px; bottom: -16px;
+    width: 2px; background: var(--border);
+  }
+  .step:last-child .step-line { display: none; }
+  .step-body h4 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .step-body p { font-size: 13px; margin: 0; }
+  .step-detail {
+    background: var(--surface2); border-radius: 10px;
+    padding: 16px; margin-top: 12px; border: 1px solid var(--border);
+    display: none;
+  }
+  .step.active .step-detail { display: block; animation: fadeIn .2s ease; }
+  .step-detail pre {
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+    color: var(--cyan); line-height: 1.6; overflow-x: auto;
+    background: var(--bg); border-radius: 8px; padding: 12px;
+    margin-top: 8px; border: 1px solid var(--border);
+  }
+  .step-controls { display: flex; gap: 8px; margin-top: 20px; }
+  .btn {
+    padding: 9px 20px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; font-family: inherit; transition: all .2s;
+  }
+  .btn-primary { background: var(--purple); color: #fff; }
+  .btn-primary:hover { background: #9080ff; }
+  .btn-outline { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-outline:hover { color: var(--text); border-color: var(--text); }
+
+  /* ── ADAPTERS GRID ── */
+  .adapter-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 20px; transition: all .25s; cursor: pointer;
+  }
+  .adapter-card:hover { transform: translateY(-4px); }
+  .adapter-icon { font-size: 32px; margin-bottom: 12px; }
+  .adapter-card h4 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .adapter-card p { font-size: 12px; margin: 0; }
+  .adapter-card.claude  { border-color: rgba(245,158,11,.3); }
+  .adapter-card.codex   { border-color: rgba(16,185,129,.3); }
+  .adapter-card.cursor  { border-color: rgba(59,130,246,.3); }
+  .adapter-card.gemini  { border-color: rgba(34,211,238,.3); }
+  .adapter-card.openclaw{ border-color: rgba(124,108,248,.3); }
+  .adapter-card.opencode{ border-color: rgba(236,72,153,.3); }
+  .adapter-card.pi      { border-color: rgba(248,113,113,.3); }
+
+  /* ── DB SCHEMA ── */
+  .db-table {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden; margin-bottom: 12px;
+  }
+  .db-table-head {
+    background: var(--surface2); padding: 10px 16px;
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .db-table-head .tname { font-size: 13px; font-weight: 600; font-family: 'IBM Plex Mono', monospace; }
+  .db-table-head .desc  { font-size: 12px; color: var(--muted); }
+  .db-rows { padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .db-col {
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+    padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .db-col.pk  { color: var(--amber); border-color: rgba(245,158,11,.3); }
+  .db-col.fk  { color: var(--blue);  border-color: rgba(59,130,246,.3); }
+  .db-col.key { color: var(--green); border-color: rgba(16,185,129,.3); }
+
+  /* ── BUDGET METER ── */
+  .budget-demo {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px;
+  }
+  .agent-budget-row { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .agent-budget-row .label { width: 130px; font-size: 13px; flex-shrink: 0; }
+  .meter-track { flex: 1; height: 10px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
+  .meter-fill { height: 100%; border-radius: 99px; transition: width 1s ease; }
+  .meter-ok   { background: linear-gradient(90deg, var(--green), #34d399); }
+  .meter-warn { background: linear-gradient(90deg, var(--amber), #fbbf24); }
+  .meter-full { background: linear-gradient(90deg, var(--red), #fb923c); }
+  .meter-pct  { font-size: 12px; font-weight: 600; width: 38px; text-align: right; }
+
+  /* ── LIVE EVENT PULSE ── */
+  .event-demo {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px;
+  }
+  .event-log { font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+  .event-entry {
+    padding: 6px 10px; border-radius: 6px; margin-bottom: 4px;
+    display: flex; align-items: center; gap: 10px;
+    animation: slideIn .3s ease;
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+  .event-entry .etype { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+  .event-entry .ebody { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── PLUGIN FLOW ── */
+  .plugin-flow {
+    display: flex; align-items: center; gap: 0; flex-wrap: wrap;
+    justify-content: center; margin: 24px 0;
+  }
+  .pf-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 20px; text-align: center; font-size: 13px;
+    font-weight: 500;
+  }
+  .pf-arrow {
+    color: var(--muted); font-size: 20px; padding: 0 8px; flex-shrink: 0;
+  }
+
+  /* ── SERVICE PATTERN ── */
+  .service-card {
+    background: var(--surface2); border-radius: 12px; padding: 16px 20px;
+    border-left: 3px solid var(--purple); margin-bottom: 12px;
+  }
+  .service-card code { font-size: 11px; }
+
+  /* ── COLLAPSE / EXPAND ── */
+  .expandable { cursor: pointer; user-select: none; }
+  .expandable .expand-icon { transition: transform .2s; display: inline-block; }
+  .expandable.open .expand-icon { transform: rotate(90deg); }
+  .expand-body { display: none; margin-top: 12px; }
+  .expandable.open .expand-body { display: block; animation: fadeIn .2s ease; }
+
+  /* ── FOOTNOTE / CALLOUT ── */
+  .callout {
+    border-left: 3px solid var(--purple);
+    background: rgba(124,108,248,.06);
+    padding: 14px 18px; border-radius: 0 10px 10px 0;
+    margin: 20px 0;
+  }
+  .callout p { color: var(--text); margin: 0; font-size: 14px; }
+  .callout.green  { border-color: var(--green);  background: rgba(16,185,129,.06); }
+  .callout.amber  { border-color: var(--amber);  background: rgba(245,158,11,.06); }
+  .callout.cyan   { border-color: var(--cyan);   background: rgba(34,211,238,.06); }
+
+  /* ── FLOW DIAGRAM ── */
+  .flow-diagram {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 32px; position: relative;
+  }
+  .flow-row { display: flex; align-items: center; gap: 0; flex-wrap: wrap; justify-content: center; margin: 6px 0; }
+  .flow-node {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 16px; font-size: 13px; font-weight: 500;
+    text-align: center; white-space: nowrap;
+    transition: all .2s; cursor: default;
+  }
+  .flow-node:hover { border-color: var(--purple); color: var(--purple); }
+  .flow-node.highlight { border-color: var(--cyan); color: var(--cyan); background: rgba(34,211,238,.06); }
+  .flow-node.start { border-color: var(--green); color: var(--green); background: rgba(16,185,129,.08); }
+  .flow-node.end   { border-color: var(--red);   color: var(--red);   background: rgba(248,113,113,.08); }
+  .flow-arrow { color: var(--muted); padding: 0 6px; font-size: 16px; }
+  .flow-v { display: flex; flex-direction: column; align-items: center; }
+  .flow-v-arrow { color: var(--muted); font-size: 14px; margin: 2px 0; }
+
+  /* ── SCROLL ANIMATIONS ── */
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity .6s ease, transform .6s ease; }
+  .reveal.visible { opacity: 1; transform: translateY(0); }
+
+  /* ── FOOTER ── */
+  footer { text-align: center; color: var(--muted); font-size: 13px; padding: 40px 24px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <span class="logo">📎 Paperclip</span>
+  <a href="#hero">Intro</a>
+  <a href="#big-picture">Big Picture</a>
+  <a href="#concepts">Concepts</a>
+  <a href="#heartbeat">Heartbeat</a>
+  <a href="#adapters">Adapters</a>
+  <a href="#database">Database</a>
+  <a href="#plugins">Plugins</a>
+  <a href="#realtime">Real-time</a>
+  <a href="#governance">Governance</a>
+  <a href="#backend-code">Backend Code</a>
+</nav>
+
+<div class="page">
+
+<!-- ══════════════════════════════════════════════
+     SECTION 1 — HERO
+══════════════════════════════════════════════ -->
+<section id="hero">
+  <div style="margin-bottom:16px">
+    <span class="tag tag-purple">Open Source · TypeScript · 59K ⭐</span>
+  </div>
+  <h1>How <span style="color:var(--purple)">Paperclip</span><br/>Actually Works</h1>
+  <p class="subtitle">
+    A beginner-friendly, visual guide to the backend of an AI company orchestrator —
+    explained step by step, with interactive diagrams.
+  </p>
+  <div class="stats-row">
+    <div class="stat"><div class="num">59K</div><div class="lbl">Stars</div></div>
+    <div class="stat"><div class="num">10K</div><div class="lbl">Forks</div></div>
+    <div class="stat"><div class="num">70+</div><div class="lbl">DB Tables</div></div>
+    <div class="stat"><div class="num">7</div><div class="lbl">AI Adapters</div></div>
+    <div class="stat"><div class="num">~30K</div><div class="lbl">Lines of TS</div></div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 2 — BIG PICTURE
+══════════════════════════════════════════════ -->
+<section id="big-picture" class="reveal">
+  <span class="tag tag-cyan">The Big Picture</span>
+  <h2>What is Paperclip?</h2>
+  <p>Before diving into code, let's understand the <strong>mental model</strong>.</p>
+
+  <div class="analogy">
+    <p>
+      Imagine you want to build a software startup — but instead of hiring humans,
+      you hire <strong>AI agents</strong>. You'd still need a CEO, a CTO, engineers, and marketers.
+      They'd still need tasks, deadlines, budgets, and someone to approve big decisions.
+      <br/><br/>
+      <strong>Paperclip is the operating system for that company.</strong>
+      It handles org charts, task assignment, budgets, approvals, and 24/7 autonomous operation —
+      all for AI agents instead of humans.
+    </p>
+    <div class="author">— The core idea behind Paperclip</div>
+  </div>
+
+  <div class="callout cyan">
+    <p>💡 Think of it this way: <strong>OpenClaw / Claude Code is a single employee. Paperclip is the entire company that employs them.</strong></p>
+  </div>
+
+  <h3 style="margin-top:32px; margin-bottom:16px">Your AI Company Org Chart</h3>
+  <p>Click any node to learn more about that role.</p>
+
+  <div class="org-chart" id="orgChart">
+    <!-- You (Board) -->
+    <div class="org-row">
+      <div class="org-node you-node" onclick="showOrgInfo('board')">
+        <div class="avatar">🧑‍💼</div>
+        <div class="name">You</div>
+        <div class="role">The Board</div>
+      </div>
+    </div>
+    <div class="org-connector"></div>
+
+    <!-- CEO -->
+    <div class="org-row">
+      <div class="org-node agent-node" onclick="showOrgInfo('ceo')">
+        <div class="avatar" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.4)">🤖</div>
+        <div class="name">CEO Agent</div>
+        <div class="role">Strategy</div>
+      </div>
+    </div>
+    <div class="org-connector"></div>
+
+    <!-- CTO + CMO -->
+    <div style="display:flex;align-items:flex-start;justify-content:center;gap:60px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <div class="org-node agent-node" onclick="showOrgInfo('cto')">
+          <div class="avatar">🤖</div>
+          <div class="name">CTO Agent</div>
+          <div class="role">Engineering</div>
+        </div>
+        <div class="org-connector"></div>
+        <div class="org-row" style="gap:10px">
+          <div class="org-node agent-node" onclick="showOrgInfo('eng')" style="min-width:85px;padding:10px 12px">
+            <div class="avatar" style="width:30px;height:30px;font-size:15px">🤖</div>
+            <div class="name" style="font-size:11px">Eng 1</div>
+          </div>
+          <div class="org-node agent-node" onclick="showOrgInfo('eng')" style="min-width:85px;padding:10px 12px">
+            <div class="avatar" style="width:30px;height:30px;font-size:15px">🤖</div>
+            <div class="name" style="font-size:11px">Eng 2</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <div class="org-node agent-node" onclick="showOrgInfo('cmo')">
+          <div class="avatar" style="background:rgba(236,72,153,.12);border-color:rgba(236,72,153,.3)">🤖</div>
+          <div class="name">CMO Agent</div>
+          <div class="role">Marketing</div>
+        </div>
+        <div class="org-connector"></div>
+        <div class="org-row">
+          <div class="org-node agent-node" onclick="showOrgInfo('eng')" style="min-width:85px;padding:10px 12px">
+            <div class="avatar" style="width:30px;height:30px;font-size:15px;background:rgba(236,72,153,.1);border-color:rgba(236,72,153,.3)">🤖</div>
+            <div class="name" style="font-size:11px">Writer</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Info popup -->
+    <div id="orgInfo" style="margin-top:24px;display:none;animation:fadeIn .2s ease">
+      <div class="callout" id="orgInfoContent"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 3 — CORE CONCEPTS
+══════════════════════════════════════════════ -->
+<section id="concepts" class="reveal">
+  <span class="tag tag-purple">Core Concepts</span>
+  <h2>The 8 Building Blocks</h2>
+  <p>Everything in Paperclip is built from these 8 ideas. Click each tab to explore.</p>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('agents')">🤖 Agents</button>
+    <button class="tab-btn" onclick="switchTab('issues')">🎫 Issues</button>
+    <button class="tab-btn" onclick="switchTab('heartbeat-c')">💓 Heartbeats</button>
+    <button class="tab-btn" onclick="switchTab('envs')">🌐 Environments</button>
+    <button class="tab-btn" onclick="switchTab('budgets-c')">💰 Budgets</button>
+    <button class="tab-btn" onclick="switchTab('routines')">⏰ Routines</button>
+    <button class="tab-btn" onclick="switchTab('goals')">🎯 Goals</button>
+    <button class="tab-btn" onclick="switchTab('approvals-c')">🛡️ Approvals</button>
+  </div>
+
+  <!-- AGENTS -->
+  <div class="tab-panel active" id="tab-agents">
+    <div class="grid-2">
+      <div class="card">
+        <h3>🤖 What is an Agent?</h3>
+        <p>An agent is an AI worker in your company. Each one has:</p>
+        <ul style="color:var(--muted);font-size:14px;padding-left:20px;line-height:2">
+          <li><strong>Name & Title</strong> — e.g. "Alice, Senior Engineer"</li>
+          <li><strong>Role</strong> — A job description written in plain text</li>
+          <li><strong>Adapter type</strong> — Which AI tool it uses (Claude, Codex…)</li>
+          <li><strong>Monthly budget</strong> — Max it can spend in tokens/API costs</li>
+          <li><strong>Reports to</strong> — Its manager (another agent or you)</li>
+          <li><strong>Instructions</strong> — A markdown file it reads before each run</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>📋 Agent in the Database</h3>
+        <p>Each agent is one row in the <code>agents</code> table:</p>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.8;color:var(--muted)">
+          <span style="color:var(--amber)">id</span>: "agt_abc123"<br/>
+          <span style="color:var(--cyan)">name</span>: "Alice"<br/>
+          <span style="color:var(--cyan)">title</span>: "Senior Engineer"<br/>
+          <span style="color:var(--cyan)">role</span>: "You build features..."<br/>
+          <span style="color:var(--cyan)">adapterType</span>: "claude_local"<br/>
+          <span style="color:var(--green)">budgetMonthlyCents</span>: 5000<br/>
+          <span style="color:var(--cyan)">reportsTo</span>: "agt_cto456"<br/>
+          <span style="color:var(--cyan)">status</span>: "active"
+        </div>
+        <div class="callout amber" style="margin-top:12px">
+          <p>📌 Every time you change an agent's config (role, model, budget), a <code>agent_config_revisions</code> record is saved — full history.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ISSUES -->
+  <div class="tab-panel" id="tab-issues">
+    <div class="grid-2">
+      <div class="card">
+        <h3>🎫 What is an Issue?</h3>
+        <p>An issue is a <strong>task or ticket</strong> — exactly like GitHub Issues or Jira, but assigned to AI agents. Issues can:</p>
+        <ul style="color:var(--muted);font-size:14px;padding-left:20px;line-height:2">
+          <li>Be assigned to one or more agents</li>
+          <li>Have parent/child relationships (subtasks)</li>
+          <li>Include comments, attachments, documents</li>
+          <li>Have statuses: <code>backlog → todo → in_progress → in_review → done</code></li>
+          <li>Block or be blocked by other issues</li>
+          <li>Require approval before the agent can proceed</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>🌳 Issue Tree</h3>
+        <p>Issues nest into trees. An agent can create sub-issues and delegate work down the hierarchy.</p>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);line-height:2">
+          📋 <span style="color:var(--text)">Build note-taking app</span><br/>
+          &nbsp;&nbsp;├── 📋 <span style="color:var(--cyan)">Design database schema</span><br/>
+          &nbsp;&nbsp;├── 📋 <span style="color:var(--cyan)">Build REST API</span><br/>
+          &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── 📋 <span style="color:var(--green)">Auth endpoints</span><br/>
+          &nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;└── 📋 <span style="color:var(--green)">Notes CRUD</span><br/>
+          &nbsp;&nbsp;└── 📋 <span style="color:var(--cyan)">Build frontend</span>
+        </div>
+        <div class="callout green" style="margin-top:12px">
+          <p>An entire subtree can be <strong>paused</strong> with an "issue tree hold" — for example, while waiting for your approval on the strategy.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- HEARTBEAT -->
+  <div class="tab-panel" id="tab-heartbeat-c">
+    <div class="card">
+      <h3>💓 What is a Heartbeat?</h3>
+      <p>
+        Agents don't run continuously. Instead, they <strong>wake up</strong> periodically (on a schedule, or when triggered),
+        check if there's work to do, do it, and go back to sleep.
+        This wake/work/sleep cycle is called a <strong>heartbeat</strong>.
+      </p>
+      <p>Think of it like an employee checking their inbox every morning.</p>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px">
+        <div style="flex:1;min-width:180px;background:var(--surface2);border-radius:10px;padding:16px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:28px;margin-bottom:8px">😴</div>
+          <div style="font-size:13px;font-weight:600">Sleep</div>
+          <div style="font-size:12px;color:var(--muted)">Agent is idle</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--muted);font-size:20px">→</div>
+        <div style="flex:1;min-width:180px;background:var(--surface2);border-radius:10px;padding:16px;border:1px solid rgba(34,211,238,.3);text-align:center">
+          <div style="font-size:28px;margin-bottom:8px">🔔</div>
+          <div style="font-size:13px;font-weight:600">Wake</div>
+          <div style="font-size:12px;color:var(--muted)">Trigger fires</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--muted);font-size:20px">→</div>
+        <div style="flex:1;min-width:180px;background:var(--surface2);border-radius:10px;padding:16px;border:1px solid rgba(124,108,248,.3);text-align:center">
+          <div style="font-size:28px;margin-bottom:8px">⚡</div>
+          <div style="font-size:13px;font-weight:600">Work</div>
+          <div style="font-size:12px;color:var(--muted)">Agent runs</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--muted);font-size:20px">→</div>
+        <div style="flex:1;min-width:180px;background:var(--surface2);border-radius:10px;padding:16px;border:1px solid rgba(16,185,129,.3);text-align:center">
+          <div style="font-size:28px;margin-bottom:8px">✅</div>
+          <div style="font-size:13px;font-weight:600">Report</div>
+          <div style="font-size:12px;color:var(--muted)">Update issue</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ENVIRONMENTS -->
+  <div class="tab-panel" id="tab-envs">
+    <div class="grid-2">
+      <div class="card">
+        <h3>🌐 What is an Environment?</h3>
+        <p>An environment is <strong>where the agent actually runs</strong>. Options include:</p>
+        <ul style="color:var(--muted);font-size:14px;padding-left:20px;line-height:2">
+          <li><strong>Local</strong> — On your own machine</li>
+          <li><strong>Remote</strong> — On a cloud server</li>
+          <li><strong>Plugin-managed</strong> — Via a custom provider</li>
+        </ul>
+        <p style="margin-top:12px">When an agent needs to run, Paperclip <strong>acquires an environment lease</strong> — like reserving a desk for the agent to sit at while it works.</p>
+      </div>
+      <div class="card">
+        <h3>📁 Execution Workspaces</h3>
+        <p>Each run gets a <strong>workspace</strong> — a directory with the code. Two strategies:</p>
+        <div style="margin-top:12px">
+          <div style="background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:8px;border:1px solid var(--border)">
+            <div style="font-size:13px;font-weight:600;margin-bottom:4px">📂 project_primary</div>
+            <div style="font-size:12px;color:var(--muted)">Agent works in the main project directory. Simple, but agents can conflict.</div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:12px;border:1px solid rgba(124,108,248,.3)">
+            <div style="font-size:13px;font-weight:600;margin-bottom:4px;color:var(--purple)">🌿 git_worktree</div>
+            <div style="font-size:12px;color:var(--muted)">Each issue gets its own git branch + worktree. Multiple agents work in parallel safely.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BUDGETS -->
+  <div class="tab-panel" id="tab-budgets-c">
+    <div class="card">
+      <h3>💰 Budget System</h3>
+      <p>Every agent has a monthly token/cost budget. Paperclip tracks every API call and stops agents when they hit the limit.</p>
+      <div class="budget-demo" style="margin-top:16px;padding:20px">
+        <div class="agent-budget-row">
+          <div class="label">🤖 CEO Agent</div>
+          <div class="meter-track"><div class="meter-fill meter-ok" style="width:28%"></div></div>
+          <div class="meter-pct" style="color:var(--green)">28%</div>
+        </div>
+        <div class="agent-budget-row">
+          <div class="label">🤖 CTO Agent</div>
+          <div class="meter-track"><div class="meter-fill meter-warn" style="width:72%"></div></div>
+          <div class="meter-pct" style="color:var(--amber)">72%</div>
+        </div>
+        <div class="agent-budget-row">
+          <div class="label">🤖 Eng Agent 1</div>
+          <div class="meter-track"><div class="meter-fill meter-full" style="width:100%"></div></div>
+          <div class="meter-pct" style="color:var(--red)">100%</div>
+        </div>
+        <div class="agent-budget-row">
+          <div class="label">🤖 Eng Agent 2</div>
+          <div class="meter-track"><div class="meter-fill meter-ok" style="width:45%"></div></div>
+          <div class="meter-pct" style="color:var(--green)">45%</div>
+        </div>
+      </div>
+      <div class="callout amber" style="margin-top:16px">
+        <p>⚠️ When Eng Agent 1 hits 100%, Paperclip creates a <code>budget_incident</code>, pauses the agent, and logs the event. No runaway costs.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROUTINES -->
+  <div class="tab-panel" id="tab-routines">
+    <div class="card">
+      <h3>⏰ What are Routines?</h3>
+      <p>Routines are <strong>cron-style scheduled tasks</strong> that automatically trigger agent wakeups. Think of them as recurring alarms for your AI employees.</p>
+      <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="background:var(--surface2);border-radius:8px;padding:12px;border:1px solid var(--border);display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">🌅</span>
+          <div>
+            <div style="font-size:13px;font-weight:600">Daily Standup</div>
+            <div style="font-size:12px;color:var(--muted)">Every weekday at 9am — CEO agent reviews all open issues and reprioritises</div>
+          </div>
+          <code style="margin-left:auto">0 9 * * 1-5</code>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:12px;border:1px solid var(--border);display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">📊</span>
+          <div>
+            <div style="font-size:13px;font-weight:600">Weekly Report</div>
+            <div style="font-size:12px;color:var(--muted)">Every Friday at 5pm — CMO agent sends marketing performance summary</div>
+          </div>
+          <code style="margin-left:auto">0 17 * * 5</code>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:12px;border:1px solid rgba(16,185,129,.3);display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">🔍</span>
+          <div>
+            <div style="font-size:13px;font-weight:600">Bug Monitor</div>
+            <div style="font-size:12px;color:var(--muted)">Every hour — Engineer checks error logs and creates issues for new bugs</div>
+          </div>
+          <code style="margin-left:auto">0 * * * *</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GOALS -->
+  <div class="tab-panel" id="tab-goals">
+    <div class="card">
+      <h3>🎯 Goals — The North Star</h3>
+      <p>Every company in Paperclip has a <strong>goal</strong> — a plain-English mission statement. Every issue, every task, every agent run traces back to this goal.</p>
+      <div style="background:linear-gradient(135deg,rgba(124,108,248,.1),rgba(34,211,238,.05));border:1px solid rgba(124,108,248,.3);border-radius:12px;padding:20px;margin:16px 0;text-align:center">
+        <div style="font-size:14px;color:var(--muted);margin-bottom:8px">Company Goal</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text)">"Build the #1 AI note-taking app and reach $1M MRR"</div>
+      </div>
+      <p>When agents work on issues, they receive the goal in their context — so they always know <em>why</em> they're doing what they're doing, not just <em>what</em> to do. This prevents agents from going off-track.</p>
+    </div>
+  </div>
+
+  <!-- APPROVALS -->
+  <div class="tab-panel" id="tab-approvals-c">
+    <div class="grid-2">
+      <div class="card">
+        <h3>🛡️ Human in the Loop</h3>
+        <p>Approvals are Paperclip's <strong>governance system</strong>. Certain actions require a human (you) to approve before an agent can proceed.</p>
+        <ul style="color:var(--muted);font-size:14px;padding-left:20px;line-height:2">
+          <li>Hiring a new agent</li>
+          <li>Making a major strategy decision</li>
+          <li>Spending over a threshold</li>
+          <li>Any custom approval gate you define</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>📊 Approval States</h3>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--surface2)">
+            <span style="font-size:18px">⏳</span>
+            <div><div style="font-size:13px;font-weight:600">pending</div><div style="font-size:11px;color:var(--muted)">Waiting for your review</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2)">
+            <span style="font-size:18px">✅</span>
+            <div><div style="font-size:13px;font-weight:600;color:var(--green)">approved</div><div style="font-size:11px;color:var(--muted)">Agent can proceed</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.2)">
+            <span style="font-size:18px">❌</span>
+            <div><div style="font-size:13px;font-weight:600;color:var(--red)">rejected</div><div style="font-size:11px;color:var(--muted)">Agent is stopped</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2)">
+            <span style="font-size:18px">🔄</span>
+            <div><div style="font-size:13px;font-weight:600;color:var(--amber)">revision_requested</div><div style="font-size:11px;color:var(--muted)">Agent needs to redo something</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 4 — THE HEARTBEAT (ANIMATED STEPPER)
+══════════════════════════════════════════════ -->
+<section id="heartbeat" class="reveal">
+  <span class="tag tag-green">Deep Dive</span>
+  <h2>The Heartbeat — Step by Step</h2>
+  <p>
+    The heartbeat is the <strong>core execution loop</strong> of Paperclip — the ~1000-line service
+    that actually runs your agents. Click through each step to see what happens under the hood.
+  </p>
+
+  <div class="stepper">
+    <div class="step-list" id="stepList">
+
+      <div class="step active" onclick="setStep(0)">
+        <div class="step-line"></div>
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>Trigger — Something wakes the agent up</h4>
+          <p>A routine fires, a comment is posted, or you manually start a run.</p>
+          <div class="step-detail">
+            <p>Three types of wake triggers exist in <code>agent_wakeup_requests</code>:</p>
+            <ul style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li><strong>routine_trigger</strong> — A cron job fired (e.g. "every morning at 9am")</li>
+              <li><strong>issue_assignment</strong> — An issue was assigned to this agent</li>
+              <li><strong>comment_reply</strong> — Someone replied to the agent on an issue thread</li>
+            </ul>
+            <pre>// services/heartbeat.ts
+const wakeupRequest = await db.select()
+  .from(agentWakeupRequests)
+  .where(eq(agentWakeupRequests.agentId, agentId))
+  .orderBy(asc(agentWakeupRequests.createdAt))
+  .limit(1)</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(1)">
+        <div class="step-line"></div>
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>Acquire a Start Lock</h4>
+          <p>Prevents two simultaneous runs for the same agent.</p>
+          <div class="step-detail">
+            <p>Before anything else, Paperclip grabs a <strong>start lock</strong> for the agent. This ensures that if two wakeup requests arrive at the same time, only one run begins.</p>
+            <pre>// services/agent-start-lock.ts
+await withAgentStartLock(agentId, async () => {
+  // Only ONE heartbeat can be inside here at a time
+  await runHeartbeat(...)
+})</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(2)">
+        <div class="step-line"></div>
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4>Check Budgets &amp; Permissions</h4>
+          <p>Is this agent paused? Is it over budget? Does it have permission to run?</p>
+          <div class="step-detail">
+            <p>Paperclip checks multiple gates before spending any money:</p>
+            <ul style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li>Is the company active (not paused)?</li>
+              <li>Is the agent's monthly budget exhausted?</li>
+              <li>Is there a pending approval blocking this?</li>
+              <li>Is the issue tree paused (human hold)?</li>
+            </ul>
+            <pre>const budgetCheck = await budgets.checkEnforcement({
+  companyId,
+  scopeType: "agent",
+  scopeId: agentId
+})
+if (budgetCheck.status === "hard_stop") throw new BudgetError()</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(3)">
+        <div class="step-line"></div>
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h4>Resolve &amp; Acquire Environment</h4>
+          <p>Which machine will the agent run on? Grab a "lease" for it.</p>
+          <div class="step-detail">
+            <p>The <code>environment-run-orchestrator.ts</code> service handles this in 3 sub-steps:</p>
+            <ol style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li>Resolve the correct environment (issue config → project policy → agent default → company default)</li>
+              <li>Probe the environment (is it reachable?)</li>
+              <li>Acquire a lease — like reserving a timeslot on that machine</li>
+            </ol>
+            <pre>const { environment, lease } =
+  await orchestrator.acquireEnvironment({
+    companyId,
+    selectedEnvironmentId: issue.environmentId,
+    defaultEnvironmentId: agent.defaultEnvironmentId,
+  })</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(4)">
+        <div class="step-line"></div>
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h4>Realize the Workspace</h4>
+          <p>Set up the folder / git worktree where the agent will work.</p>
+          <div class="step-detail">
+            <p>If the project uses <strong>git_worktree</strong> strategy:</p>
+            <ol style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li>Clone the repo if not already present</li>
+              <li>Create a new branch like <code>issue/fix-login-bug-abc123</code></li>
+              <li>Create a git worktree at a fresh path</li>
+              <li>Inject env vars: <code>PAPERCLIP_WORKSPACE_DIR</code>, <code>PAPERCLIP_WORKSPACE_BRANCH</code></li>
+            </ol>
+            <pre>const workspace = await realizeExecutionWorkspace({
+  repoUrl: project.repoUrl,
+  branchTemplate: "issue/{identifier}-{slug}",
+  worktreeParentDir: "~/.paperclip/worktrees"
+})</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(5)">
+        <div class="step-line"></div>
+        <div class="step-num">6</div>
+        <div class="step-body">
+          <h4>Spawn the Agent Process</h4>
+          <p>Run the actual AI tool (e.g. <code>claude --print ...</code>) as a child process.</p>
+          <div class="step-detail">
+            <p>The adapter (e.g. <code>claude-local</code>) spawns the process with a carefully constructed prompt:</p>
+            <ul style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li>The issue title + description</li>
+              <li>The agent's role/instructions</li>
+              <li>Previous context (continuation summary)</li>
+              <li>Company goal</li>
+              <li>Wake comments (messages sent to the agent)</li>
+            </ul>
+            <pre>const process = spawn("claude", [
+  "--print",
+  "--model", "claude-sonnet-4-6",
+  "--dangerously-skip-permissions",
+  prompt
+], { cwd: workspace.cwd, env: { ...baseEnv, ...agentEnv } })</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(6)">
+        <div class="step-line"></div>
+        <div class="step-num">7</div>
+        <div class="step-body">
+          <h4>Stream Output &amp; Record Costs</h4>
+          <p>Capture everything the agent outputs and track token usage in real time.</p>
+          <div class="step-detail">
+            <p>As the agent runs, Paperclip:</p>
+            <ul style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li>Streams stdout chunks to <code>heartbeat_run_events</code> in the DB</li>
+              <li>Publishes live events via WebSocket so the UI updates instantly</li>
+              <li>Writes a <code>cost_event</code> for each LLM call with token counts</li>
+              <li>Enforces the byte cap on stored logs (64KB per chunk)</li>
+            </ul>
+            <pre>process.stdout.on("data", async (chunk) => {
+  await publishLiveEvent({ companyId, type: "run.output", payload: { chunk } })
+  await db.insert(heartbeatRunEvents).values({ runId, chunk })
+  await costService.createEvent(companyId, { agentId, inputTokens, outputTokens })
+})</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" onclick="setStep(7)">
+        <div class="step-num">8</div>
+        <div class="step-body">
+          <h4>Wrap Up — Release &amp; Update</h4>
+          <p>Agent finishes. Release the environment lease, update the issue status.</p>
+          <div class="step-detail">
+            <p>After the process exits:</p>
+            <ol style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+              <li>Classify run result: success / failure / timeout / crashed</li>
+              <li>Post a summary comment on the issue with what was accomplished</li>
+              <li>Update issue status (e.g. <code>in_progress → in_review</code>)</li>
+              <li>Release the environment lease</li>
+              <li>Check if the issue should continue (schedule next wake)</li>
+              <li>Log activity for audit trail</li>
+            </ol>
+            <pre>await orchestrator.releaseEnvironment({ leaseId: lease.id })
+await issueService.update(issueId, { status: "in_review" })
+await logActivity({ companyId, action: "heartbeat.completed", metadata: result })</pre>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="step-controls">
+      <button class="btn btn-outline" onclick="prevStep()">← Previous</button>
+      <button class="btn btn-primary" onclick="nextStep()">Next →</button>
+      <span id="stepIndicator" style="color:var(--muted);font-size:13px;align-self:center;margin-left:8px">Step 1 of 8</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 5 — ADAPTERS
+══════════════════════════════════════════════ -->
+<section id="adapters" class="reveal">
+  <span class="tag tag-amber">Bring Your Own Agent</span>
+  <h2>AI Adapters — 7 Supported Tools</h2>
+  <p>
+    Paperclip doesn't care <em>which</em> AI you use. It communicates with each through an <strong>adapter</strong> —
+    a standard interface for spawning, running, and managing any AI agent.
+  </p>
+
+  <div class="grid-3" style="margin-top:24px">
+    <div class="adapter-card claude">
+      <div class="adapter-icon">🎭</div>
+      <h4>Claude Code</h4>
+      <span class="tag tag-amber" style="margin-bottom:8px">Most popular</span>
+      <p>Runs <code>claude --print</code> locally. Defaults to skipping permission prompts for headless operation.</p>
+    </div>
+    <div class="adapter-card codex">
+      <div class="adapter-icon">🟢</div>
+      <h4>OpenAI Codex</h4>
+      <p>Spawns the Codex CLI locally. Supports all Codex-compatible models.</p>
+    </div>
+    <div class="adapter-card cursor">
+      <div class="adapter-icon">🔵</div>
+      <h4>Cursor</h4>
+      <p>Runs Cursor in headless mode. Lets Cursor's AI edit files autonomously.</p>
+    </div>
+    <div class="adapter-card gemini">
+      <div class="adapter-icon">✨</div>
+      <h4>Gemini</h4>
+      <p>Google's Gemini CLI. Connects to Google's model family.</p>
+    </div>
+    <div class="adapter-card openclaw">
+      <div class="adapter-icon">🦞</div>
+      <h4>OpenClaw Gateway</h4>
+      <p>Connects to a remote OpenClaw instance. For distributed agent teams.</p>
+    </div>
+    <div class="adapter-card opencode">
+      <div class="adapter-icon">💜</div>
+      <h4>OpenCode</h4>
+      <p>Open-source code editor AI. Another fully local option.</p>
+    </div>
+    <div class="adapter-card pi">
+      <div class="adapter-icon">🥧</div>
+      <h4>Pi (Inflection)</h4>
+      <p>Inflection AI's Pi model. Great for conversational reasoning tasks.</p>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:24px">
+    <p>🔌 The <strong>adapter interface</strong> is defined in <code>packages/adapter-utils/</code>. Any tool that can receive a heartbeat can be adapted — the core contract is: accept a prompt + workspace path, run, return usage stats + result.</p>
+  </div>
+
+  <h3 style="margin-top:32px;margin-bottom:16px">How the Claude Adapter Works</h3>
+  <div class="flow-diagram">
+    <div class="flow-row">
+      <div class="flow-node start">Heartbeat fires</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">Build prompt</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node highlight">spawn("claude", ["--print", ...])</div>
+    </div>
+    <div style="text-align:center;margin:8px 0;color:var(--muted)">↓</div>
+    <div class="flow-row">
+      <div class="flow-node">Stream stdout</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">Parse tool calls + usage</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">Record cost event</div>
+    </div>
+    <div style="text-align:center;margin:8px 0;color:var(--muted)">↓</div>
+    <div class="flow-row">
+      <div class="flow-node end">Process exits → return result</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 6 — DATABASE
+══════════════════════════════════════════════ -->
+<section id="database" class="reveal">
+  <span class="tag tag-blue">Data Layer</span>
+  <h2>The Database — 70+ Tables</h2>
+  <p>
+    Paperclip uses <strong>Drizzle ORM</strong> with SQLite (default) or Postgres.
+    Here are the most important tables, grouped by what they represent.
+  </p>
+
+  <div style="margin-top:24px">
+
+    <h3 style="margin-bottom:12px;color:var(--amber)">🤖 Agents</h3>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">📋</span><span class="tname">agents</span><span class="desc">— One row per AI worker in your company</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">companyId (FK)</span><span class="db-col">name</span><span class="db-col">title</span><span class="db-col">role</span><span class="db-col key">adapterType</span><span class="db-col">adapterConfig</span><span class="db-col key">budgetMonthlyCents</span><span class="db-col fk">reportsTo (FK)</span><span class="db-col">status</span>
+      </div>
+    </div>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">📜</span><span class="tname">agent_config_revisions</span><span class="desc">— Full history of every config change</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">agentId (FK)</span><span class="db-col">snapshot (JSON)</span><span class="db-col">createdAt</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <h3 style="margin-bottom:12px;color:var(--cyan)">🎫 Issues & Work</h3>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">🎫</span><span class="tname">issues</span><span class="desc">— Tasks/tickets assigned to agents</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">companyId (FK)</span><span class="db-col fk">projectId (FK)</span><span class="db-col">title</span><span class="db-col">description</span><span class="db-col key">status</span><span class="db-col fk">assigneeAgentId (FK)</span><span class="db-col fk">parentId (FK)</span><span class="db-col">startedAt</span><span class="db-col">completedAt</span>
+      </div>
+    </div>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">💬</span><span class="tname">issue_comments</span><span class="desc">— The conversation thread on each issue</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">issueId (FK)</span><span class="db-col fk">authorAgentId (FK)</span><span class="db-col">body</span><span class="db-col key">commentType</span><span class="db-col">createdAt</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <h3 style="margin-bottom:12px;color:var(--green)">💓 Runs & Execution</h3>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">💓</span><span class="tname">heartbeat_runs</span><span class="desc">— One row per agent execution run</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">agentId (FK)</span><span class="db-col fk">issueId (FK)</span><span class="db-col key">status</span><span class="db-col">startedAt</span><span class="db-col">completedAt</span><span class="db-col">resultSummary</span><span class="db-col fk">environmentId (FK)</span>
+      </div>
+    </div>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">📡</span><span class="tname">heartbeat_run_events</span><span class="desc">— Streamed stdout/output from each run</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">runId (FK)</span><span class="db-col key">eventType</span><span class="db-col">payload (JSON)</span><span class="db-col">createdAt</span>
+      </div>
+    </div>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">💲</span><span class="tname">cost_events</span><span class="desc">— Every API call with token counts and cost</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">agentId (FK)</span><span class="db-col fk">companyId (FK)</span><span class="db-col key">costCents</span><span class="db-col">inputTokens</span><span class="db-col">cachedInputTokens</span><span class="db-col">outputTokens</span><span class="db-col">provider</span><span class="db-col">billingType</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <h3 style="margin-bottom:12px;color:var(--purple)">🔌 Plugins</h3>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">🔌</span><span class="tname">plugins</span><span class="desc">— Installed plugin packages</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col">packagePath</span><span class="db-col key">status</span><span class="db-col">manifest (JSON)</span><span class="db-col">installedAt</span>
+      </div>
+    </div>
+    <div class="db-table">
+      <div class="db-table-head"><span style="font-size:16px">⏱️</span><span class="tname">plugin_jobs</span><span class="desc">— Scheduled jobs declared by plugins</span></div>
+      <div class="db-rows">
+        <span class="db-col pk">id (PK)</span><span class="db-col fk">pluginId (FK)</span><span class="db-col">jobName</span><span class="db-col key">cronExpr</span><span class="db-col">nextRunAt</span><span class="db-col">lastRunAt</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:24px">
+    <p>📌 Notice that <strong>every table has <code>companyId</code></strong> as a foreign key. This is how Paperclip runs multiple "companies" on one server with complete data isolation.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 7 — PLUGIN SYSTEM
+══════════════════════════════════════════════ -->
+<section id="plugins" class="reveal">
+  <span class="tag tag-pink">Extensibility</span>
+  <h2>The Plugin System</h2>
+  <p>
+    Plugins let you add new capabilities to Paperclip — custom tools agents can use,
+    scheduled jobs, custom UI, and more. Each plugin runs as its own <strong>separate process</strong>.
+  </p>
+
+  <div class="plugin-flow">
+    <div class="pf-box" style="border-color:rgba(124,108,248,.4);color:var(--purple)">📎 Paperclip Host</div>
+    <div class="pf-arrow">⟵ JSON-RPC over stdio ⟶</div>
+    <div class="pf-box" style="border-color:rgba(236,72,153,.4);color:var(--pink)">🔌 Plugin Worker Process</div>
+  </div>
+
+  <div class="grid-2" style="margin-top:8px">
+    <div class="card">
+      <h3>🔄 Plugin Lifecycle</h3>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+        <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--surface2)">
+          <span style="background:rgba(16,185,129,.15);color:var(--green);padding:3px 8px;border-radius:5px;font-size:11px;font-weight:700">loaded</span>
+          <div style="font-size:12px;color:var(--muted)">Plugin process started, manifest validated, tools registered</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--surface2)">
+          <span style="background:rgba(34,211,238,.12);color:var(--cyan);padding:3px 8px;border-radius:5px;font-size:11px;font-weight:700">running</span>
+          <div style="font-size:12px;color:var(--muted)">Accepting RPC calls, executing scheduled jobs</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--surface2)">
+          <span style="background:rgba(245,158,11,.12);color:var(--amber);padding:3px 8px;border-radius:5px;font-size:11px;font-weight:700">crashed</span>
+          <div style="font-size:12px;color:var(--muted)">Unexpected exit. Retried with exponential backoff: 1s → 2s → 4s → … → 5min</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--surface2)">
+          <span style="background:rgba(248,113,113,.12);color:var(--red);padding:3px 8px;border-radius:5px;font-size:11px;font-weight:700">disabled</span>
+          <div style="font-size:12px;color:var(--muted)">After 10 consecutive crashes, plugin gives up and stops restarting</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🛡️ Crash Isolation</h3>
+      <p>Since every plugin is a <strong>separate child process</strong>, a crashing plugin can never take down the Paperclip server. The host detects the crash and restarts with backoff.</p>
+      <div style="background:var(--surface2);border-radius:10px;padding:14px;margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.8;color:var(--muted)">
+        <span style="color:var(--amber)">Attempt 1:</span> wait 1s → restart<br/>
+        <span style="color:var(--amber)">Attempt 2:</span> wait 2s → restart<br/>
+        <span style="color:var(--amber)">Attempt 3:</span> wait 4s → restart<br/>
+        <span style="color:var(--muted)">...</span><br/>
+        <span style="color:var(--amber)">Attempt 10:</span> wait 5min → give up<br/>
+        <span style="color:var(--red)">Status: disabled</span>
+      </div>
+      <p style="margin-top:12px;font-size:13px">Shutdown sequence: <strong>10s drain → SIGTERM → 5s grace → SIGKILL</strong></p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>🔧 What Can a Plugin Do?</h3>
+    <div class="grid-3" style="margin-top:12px">
+      <div style="text-align:center;padding:16px;background:var(--surface2);border-radius:10px">
+        <div style="font-size:24px;margin-bottom:8px">🛠️</div>
+        <div style="font-size:13px;font-weight:600">Custom Tools</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Register tools that agents can call during their runs</div>
+      </div>
+      <div style="text-align:center;padding:16px;background:var(--surface2);border-radius:10px">
+        <div style="font-size:24px;margin-bottom:8px">⏰</div>
+        <div style="font-size:13px;font-weight:600">Scheduled Jobs</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Declare cron-style jobs that Paperclip schedules and runs</div>
+      </div>
+      <div style="text-align:center;padding:16px;background:var(--surface2);border-radius:10px">
+        <div style="font-size:24px;margin-bottom:8px">🎨</div>
+        <div style="font-size:13px;font-weight:600">Custom UI</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Serve static HTML/JS panels shown in the Paperclip UI</div>
+      </div>
+      <div style="text-align:center;padding:16px;background:var(--surface2);border-radius:10px">
+        <div style="font-size:24px;margin-bottom:8px">💾</div>
+        <div style="font-size:13px;font-weight:600">Persistent State</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Store key-value data using the host's state service</div>
+      </div>
+      <div style="text-align:center;padding:16px;background:var(--surface2);border-radius:10px">
+        <div style="font-size:24px;margin-bottom:8px">📡</div>
+        <div style="font-size:13px;font-weight:600">Emit Events</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Publish live events that appear in the activity log</div>
+      </div>
+      <div style="text-align:center;padding:16px;background:var(--surface2);border-radius:10px">
+        <div style="font-size:24px;margin-bottom:8px">🔐</div>
+        <div style="font-size:13px;font-weight:600">Access Secrets</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Read company secrets securely via the host secrets service</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 8 — REAL-TIME EVENTS
+══════════════════════════════════════════════ -->
+<section id="realtime" class="reveal">
+  <span class="tag tag-cyan">Live Updates</span>
+  <h2>Real-Time Events — How the UI Stays Live</h2>
+  <p>
+    When an agent is working, the dashboard updates in real time. This is powered by
+    <strong>WebSockets</strong> and an in-process event bus.
+  </p>
+
+  <div class="grid-2" style="margin-top:24px">
+    <div>
+      <div class="flow-diagram" style="margin-bottom:16px">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:16px;text-align:center">How a live event travels from agent → your browser</div>
+        <div class="flow-v">
+          <div class="flow-node highlight" style="width:100%;text-align:center">Agent process (stdout)</div>
+          <div class="flow-v-arrow">↓</div>
+          <div class="flow-node" style="width:100%;text-align:center">heartbeat.ts reads chunk</div>
+          <div class="flow-v-arrow">↓</div>
+          <div class="flow-node" style="width:100%;text-align:center">publishLiveEvent({ companyId, type, payload })</div>
+          <div class="flow-v-arrow">↓</div>
+          <div class="flow-node" style="width:100%;text-align:center">In-process EventEmitter (per companyId)</div>
+          <div class="flow-v-arrow">↓</div>
+          <div class="flow-node" style="width:100%;text-align:center">WebSocket server broadcasts to subscribers</div>
+          <div class="flow-v-arrow">↓</div>
+          <div class="flow-node start" style="width:100%;text-align:center">React UI receives event → updates in real time</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="event-demo">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600">Live Event Stream</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 1.5s infinite"></div>
+            <span style="font-size:12px;color:var(--green)">Connected</span>
+          </div>
+        </div>
+        <div class="event-log" id="eventLog"></div>
+        <button class="btn btn-outline" style="margin-top:12px;width:100%" onclick="startEventStream()">▶ Simulate Agent Run</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout cyan" style="margin-top:16px">
+    <p>🔒 WebSocket connections are authenticated — each client must present a Bearer token (user session or agent API key). The server checks it against <code>agent_api_keys</code> or <code>better-auth</code> session tables before subscribing to events.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 9 — GOVERNANCE
+══════════════════════════════════════════════ -->
+<section id="governance" class="reveal">
+  <span class="tag tag-red">Governance</span>
+  <h2>You're the Board — Staying in Control</h2>
+  <p>Paperclip is designed so you can <strong>always override, pause, or terminate</strong> any agent or process at any time. Here's the governance toolkit:</p>
+
+  <div class="grid-2" style="margin-top:24px">
+    <div class="card">
+      <h3>🛑 Pause Controls</h3>
+      <p>You can pause at different levels:</p>
+      <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="padding:10px 14px;border-radius:8px;background:var(--surface2);border-left:3px solid var(--red)">
+          <div style="font-size:13px;font-weight:600">Pause entire company</div>
+          <div style="font-size:12px;color:var(--muted)">All agents stop immediately. No runs start.</div>
+        </div>
+        <div style="padding:10px 14px;border-radius:8px;background:var(--surface2);border-left:3px solid var(--amber)">
+          <div style="font-size:13px;font-weight:600">Pause single agent</div>
+          <div style="font-size:12px;color:var(--muted)">That agent's runs are queued but not started.</div>
+        </div>
+        <div style="padding:10px 14px;border-radius:8px;background:var(--surface2);border-left:3px solid var(--purple)">
+          <div style="font-size:13px;font-weight:600">Pause issue subtree</div>
+          <div style="font-size:12px;color:var(--muted)">Block progress on a branch of issues while you review strategy.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📋 Audit Trail</h3>
+      <p>Everything is logged to <code>activity_log</code> — immutable, append-only records:</p>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2;color:var(--muted);margin-top:12px">
+        <span style="color:var(--green)">heartbeat.started</span> — agt_alice, run_abc<br/>
+        <span style="color:var(--cyan)">environment.lease_acquired</span> — env_local<br/>
+        <span style="color:var(--purple)">issue.status_changed</span> — todo → in_progress<br/>
+        <span style="color:var(--amber)">cost.event_created</span> — $0.043, 2400 tokens<br/>
+        <span style="color:var(--green)">heartbeat.completed</span> — success<br/>
+        <span style="color:var(--red)">budget.threshold_exceeded</span> — 72% warning
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🔑 Secrets Management</h3>
+      <p>API keys and secrets are stored in <code>company_secrets</code>, versioned, and injected into agent environments at runtime — never stored in plaintext in the agent config.</p>
+    </div>
+
+    <div class="card">
+      <h3>🌐 Deployment Modes</h3>
+      <p>Choose how locked-down your Paperclip instance is:</p>
+      <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+        <div style="padding:8px 12px;border-radius:7px;background:var(--surface2);font-size:12px">
+          <strong style="color:var(--green)">local_trusted</strong><span style="color:var(--muted)"> — single user, no auth needed (personal use)</span>
+        </div>
+        <div style="padding:8px 12px;border-radius:7px;background:var(--surface2);font-size:12px">
+          <strong style="color:var(--blue)">authenticated</strong><span style="color:var(--muted)"> — multi-user, login required (team use)</span>
+        </div>
+      </div>
+      <div style="padding:8px 12px;border-radius:7px;background:var(--surface2);font-size:12px;margin-top:6px">
+        <strong style="color:var(--amber)">private exposure</strong><span style="color:var(--muted)"> — blocks requests from unexpected hostnames (SSRF protection)</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 10 — BACKEND CODE PATTERNS
+══════════════════════════════════════════════ -->
+<section id="backend-code" class="reveal">
+  <span class="tag tag-purple">For the Curious</span>
+  <h2>Inside the Backend Code</h2>
+  <p>Now that you understand the concepts, here's <strong>how the TypeScript code is actually structured</strong>.</p>
+
+  <h3 style="margin-bottom:16px">1. The Service Factory Pattern</h3>
+  <p>Every service in Paperclip follows the same pattern — a function that takes <code>db</code> and returns an object of methods. No global singletons (except the event emitter).</p>
+
+  <div class="service-card">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">pattern used in ALL ~50 services</div>
+    <pre style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);line-height:1.7">
+export function agentService(db: Db) {
+  return {
+    getById: async (id: string) => { /* ... */ },
+    create:  async (data: CreateAgent) => { /* ... */ },
+    update:  async (id: string, patch: Partial&lt;Agent&gt;) => { /* ... */ },
+    delete:  async (id: string) => { /* ... */ },
+  }
+}
+
+// Usage anywhere in the codebase:
+const agents = agentService(db)
+const alice = await agents.getById("agt_alice123")</pre>
+  </div>
+
+  <div class="callout" style="margin-top:0">
+    <p>💡 This pattern makes testing easy — just pass a test database. No mocking global state.</p>
+  </div>
+
+  <h3 style="margin-top:32px;margin-bottom:16px">2. Route → Service Architecture</h3>
+  <p>HTTP routes in <code>server/src/routes/</code> are thin — they validate input and delegate to services.</p>
+
+  <div class="service-card" style="border-color:var(--cyan)">
+    <pre style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);line-height:1.7">
+// routes/agents.ts  (thin — just HTTP wiring)
+router.get("/:agentId", async (req, res) => {
+  const agent = await agentService(db).getById(req.params.agentId)
+  res.json(agent)
+})
+
+// services/agents.ts  (fat — all the business logic)
+export function agentService(db: Db) {
+  return {
+    getById: async (id: string) => {
+      const agent = await db.select().from(agents)
+        .where(eq(agents.id, id))
+        .then(rows => rows[0] ?? null)
+      if (!agent) throw notFound("Agent not found")
+      return agent
+    }
+  }
+}</pre>
+  </div>
+
+  <h3 style="margin-top:32px;margin-bottom:16px">3. The Express App Structure</h3>
+  <p>The <code>server/src/app.ts</code> file wires everything together. Key middleware order matters:</p>
+
+  <div class="grid-2">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--muted);font-weight:700;font-size:11px;width:20px">1</span>
+        <div><code>express.json()</code> — parse request body (10MB limit)</div>
+      </div>
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--muted);font-weight:700;font-size:11px;width:20px">2</span>
+        <div><code>privateHostnameGuard</code> — block unexpected hostnames</div>
+      </div>
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--muted);font-weight:700;font-size:11px;width:20px">3</span>
+        <div><code>actorMiddleware</code> — resolve who's making the request</div>
+      </div>
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--muted);font-weight:700;font-size:11px;width:20px">4</span>
+        <div><code>/api/auth</code> — BetterAuth session routes</div>
+      </div>
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid rgba(124,108,248,.3);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--purple);font-weight:700;font-size:11px;width:20px">5</span>
+        <div><code>boardMutationGuard</code> — block writes when board is read-only</div>
+      </div>
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--muted);font-weight:700;font-size:11px;width:20px">6</span>
+        <div>All API routes (<code>/api/companies</code>, <code>/api/agents</code>, etc.)</div>
+      </div>
+      <div style="padding:10px 16px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:13px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--muted);font-weight:700;font-size:11px;width:20px">7</span>
+        <div>Static React UI (SPA fallback for all <code>/*</code> routes)</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📦 On Startup</h3>
+      <p>When Paperclip starts, it runs several initialization tasks:</p>
+      <ul style="color:var(--muted);font-size:13px;padding-left:20px;line-height:2;margin-top:8px">
+        <li>Load all installed plugins (<code>pluginLoader.loadAll()</code>)</li>
+        <li>Start plugin job scheduler (cron runner)</li>
+        <li>Start plugin job coordinator (event wiring)</li>
+        <li>Initialize plugin tool dispatcher</li>
+        <li>Begin feedback export flush interval (5s)</li>
+        <li>Start plugin dev watcher (in dev mode)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <h3 style="margin-bottom:12px">Key Files to Read</h3>
+  <div class="grid-2">
+    <div class="expandable" onclick="this.classList.toggle('open')">
+      <div class="card" style="cursor:pointer">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <code>server/src/services/heartbeat.ts</code>
+          <span class="expand-icon" style="color:var(--muted)">›</span>
+        </div>
+        <p style="margin-top:6px;font-size:13px">The main execution engine — ~1000 lines, owns the full agent run lifecycle.</p>
+        <div class="expand-body">
+          <div class="callout amber"><p>Start here if you want to understand how agents actually run. It ties together environments, workspaces, adapters, costs, and activity logs.</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="expandable" onclick="this.classList.toggle('open')">
+      <div class="card" style="cursor:pointer">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <code>server/src/app.ts</code>
+          <span class="expand-icon" style="color:var(--muted)">›</span>
+        </div>
+        <p style="margin-top:6px;font-size:13px">The Express app factory — all routes, middleware, and startup logic wired together.</p>
+        <div class="expand-body">
+          <div class="callout"><p>Great entry point if you're exploring the codebase. Every major subsystem is referenced here.</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="expandable" onclick="this.classList.toggle('open')">
+      <div class="card" style="cursor:pointer">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <code>packages/db/src/schema/</code>
+          <span class="expand-icon" style="color:var(--muted)">›</span>
+        </div>
+        <p style="margin-top:6px;font-size:13px">70+ Drizzle ORM schema files — one per table, shows every field and relationship.</p>
+        <div class="expand-body">
+          <div class="callout green"><p>Read the schema files to understand the data model. Each file is short (20-50 lines) and self-documenting.</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="expandable" onclick="this.classList.toggle('open')">
+      <div class="card" style="cursor:pointer">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <code>packages/adapters/claude-local/src/</code>
+          <span class="expand-icon" style="color:var(--muted)">›</span>
+        </div>
+        <p style="margin-top:6px;font-size:13px">The Claude Code adapter — shows exactly how Paperclip spawns and manages Claude.</p>
+        <div class="expand-body">
+          <div class="callout cyan"><p>If you use Claude Code, read this to see what CLI args are passed, how sessions are managed, and how the prompt is constructed.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     SECTION 11 — SUMMARY
+══════════════════════════════════════════════ -->
+<section class="reveal">
+  <span class="tag tag-green">Summary</span>
+  <h2>The Full Picture</h2>
+  <p>Here's everything we covered, in one view:</p>
+
+  <div class="flow-diagram" style="padding:40px 24px">
+    <div style="font-size:13px;color:var(--muted);text-align:center;margin-bottom:24px">Paperclip — Complete System Flow</div>
+
+    <!-- Row 1: You -->
+    <div class="flow-row">
+      <div class="flow-node start" style="min-width:120px">👤 You (Board)</div>
+    </div>
+    <div style="text-align:center;color:var(--muted);margin:6px 0">↕ Approvals, Budgets, Pausing</div>
+
+    <!-- Row 2: Paperclip Core -->
+    <div class="flow-row" style="gap:8px">
+      <div class="flow-node highlight">🎯 Goals</div>
+      <div class="flow-node highlight">🏢 Company</div>
+      <div class="flow-node highlight">📊 Org Chart</div>
+      <div class="flow-node highlight">💰 Budgets</div>
+    </div>
+    <div style="text-align:center;color:var(--muted);margin:6px 0">↓ Assigns work to</div>
+
+    <!-- Row 3: Agents -->
+    <div class="flow-row" style="gap:8px">
+      <div class="flow-node">🤖 CEO Agent</div>
+      <div class="flow-node">🤖 CTO Agent</div>
+      <div class="flow-node">🤖 Eng Agent</div>
+      <div class="flow-node">🤖 ...</div>
+    </div>
+    <div style="text-align:center;color:var(--muted);margin:6px 0">↓ Work on</div>
+
+    <!-- Row 4: Issues -->
+    <div class="flow-row" style="gap:8px">
+      <div class="flow-node">🎫 Issues &amp; Subtasks</div>
+      <div class="flow-arrow">triggered by</div>
+      <div class="flow-node">⏰ Routines (cron)</div>
+    </div>
+    <div style="text-align:center;color:var(--muted);margin:6px 0">↓ Executed via</div>
+
+    <!-- Row 5: Heartbeat -->
+    <div class="flow-row">
+      <div class="flow-node highlight" style="min-width:300px">💓 Heartbeat (environment → workspace → run → costs → update)</div>
+    </div>
+    <div style="text-align:center;color:var(--muted);margin:6px 0">↓ Powered by</div>
+
+    <!-- Row 6: Adapters -->
+    <div class="flow-row" style="gap:8px">
+      <div class="flow-node" style="font-size:12px">🎭 Claude</div>
+      <div class="flow-node" style="font-size:12px">🟢 Codex</div>
+      <div class="flow-node" style="font-size:12px">🔵 Cursor</div>
+      <div class="flow-node" style="font-size:12px">✨ Gemini</div>
+      <div class="flow-node" style="font-size:12px">🦞 OpenClaw</div>
+    </div>
+    <div style="text-align:center;color:var(--muted);margin:6px 0">↓ Extended by</div>
+
+    <!-- Row 7: Plugins + Real-time -->
+    <div class="flow-row" style="gap:16px">
+      <div class="flow-node end">🔌 Plugins</div>
+      <div class="flow-node end">📡 Real-time WebSocket → React UI</div>
+    </div>
+  </div>
+
+  <div style="margin-top:32px;padding:28px;background:linear-gradient(135deg,rgba(124,108,248,.08),rgba(34,211,238,.05));border:1px solid rgba(124,108,248,.25);border-radius:20px;text-align:center">
+    <div style="font-size:22px;font-weight:700;margin-bottom:12px">Ready to explore the real code?</div>
+    <div style="color:var(--muted);font-size:15px;margin-bottom:20px">The repo is open source and well-structured for exploration.</div>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      <span style="padding:10px 20px;background:var(--purple);color:#fff;border-radius:8px;font-weight:600;font-size:14px">github.com/paperclipai/paperclip</span>
+      <span style="padding:10px 20px;background:var(--surface2);color:var(--text);border-radius:8px;font-weight:600;font-size:14px;border:1px solid var(--border)">Start with: server/src/app.ts</span>
+    </div>
+  </div>
+</section>
+
+</div><!-- end .page -->
+
+<footer>
+  Built as a visual explainer for the Paperclip open-source project · paperclipai/paperclip
+</footer>
+
+<style>
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .5; transform: scale(.8); }
+}
+</style>
+
+<script>
+// ── ORG CHART ──
+const orgInfoMap = {
+  board: "👤 <strong>You — The Board:</strong> You're the human in charge. You define goals, approve hires, set budgets, and can pause or terminate anything at any time. Paperclip is built so you always stay in control.",
+  ceo:   "🤖 <strong>CEO Agent:</strong> The top-level AI in your company. It receives the company goal and breaks it into strategy. It assigns work to the CTO and CMO. In Paperclip, this is just an <code>agent</code> row with <code>reportsTo = null</code>.",
+  cto:   "🤖 <strong>CTO Agent:</strong> Reports to the CEO. Responsible for the technical roadmap. Creates sub-issues for engineering tasks and assigns them to engineer agents. A regular agent with a well-written <code>role</code> field.",
+  cmo:   "🤖 <strong>CMO Agent:</strong> Reports to the CEO. Handles marketing strategy. Can create and assign issues to writer agents. Operates the same way as any other agent.",
+  eng:   "🤖 <strong>Engineer / Writer Agent:</strong> A leaf-node agent that does the actual work — writing code, creating content, etc. It receives issues, runs heartbeats, and reports completion back up the chain."
+};
+function showOrgInfo(key) {
+  const el = document.getElementById('orgInfo');
+  const content = document.getElementById('orgInfoContent');
+  content.innerHTML = '<p>' + orgInfoMap[key] + '</p>';
+  el.style.display = 'block';
+}
+
+// ── TABS ──
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ── STEPPER ──
+let currentStep = 0;
+const TOTAL_STEPS = 8;
+
+function setStep(n) {
+  const steps = document.querySelectorAll('.step');
+  steps.forEach((s, i) => {
+    s.classList.remove('active', 'done');
+    if (i < n) s.classList.add('done');
+    if (i === n) s.classList.add('active');
+  });
+  currentStep = n;
+  document.getElementById('stepIndicator').textContent = `Step ${n + 1} of ${TOTAL_STEPS}`;
+}
+function nextStep() { if (currentStep < TOTAL_STEPS - 1) setStep(currentStep + 1); }
+function prevStep() { if (currentStep > 0) setStep(currentStep - 1); }
+
+// ── LIVE EVENT STREAM SIMULATION ──
+const eventTypes = [
+  { type: 'run.start',       color: '#10b981', bg: 'rgba(16,185,129,.15)',  label: 'RUN',    msgs: ['Heartbeat started for @alice', 'Acquiring environment lease...'] },
+  { type: 'workspace.ready', color: '#22d3ee', bg: 'rgba(34,211,238,.12)',  label: 'WS',     msgs: ['Git worktree created: issue/fix-auth-abc', 'PAPERCLIP_WORKSPACE_DIR set'] },
+  { type: 'run.output',      color: '#7c6cf8', bg: 'rgba(124,108,248,.15)', label: 'OUT',    msgs: ['> Reading codebase...', '> Found issue in auth.ts:42', '> Applying fix...'] },
+  { type: 'cost.event',      color: '#f59e0b', bg: 'rgba(245,158,11,.12)',  label: 'COST',   msgs: ['$0.031 | 1,840 in / 312 out tokens'] },
+  { type: 'run.output',      color: '#7c6cf8', bg: 'rgba(124,108,248,.15)', label: 'OUT',    msgs: ['> Running tests...', '> All 14 tests passed ✓'] },
+  { type: 'run.complete',    color: '#10b981', bg: 'rgba(16,185,129,.15)',  label: 'DONE',   msgs: ['Run completed successfully', 'Issue status → in_review'] },
+];
+
+let streamRunning = false;
+function startEventStream() {
+  if (streamRunning) return;
+  streamRunning = true;
+  const log = document.getElementById('eventLog');
+  log.innerHTML = '';
+  let delay = 0;
+  eventTypes.forEach(ev => {
+    ev.msgs.forEach(msg => {
+      delay += 400 + Math.random() * 300;
+      setTimeout(() => {
+        const entry = document.createElement('div');
+        entry.className = 'event-entry';
+        entry.innerHTML = `
+          <div class="event-dot" style="background:${ev.color}"></div>
+          <span class="etype" style="background:${ev.bg};color:${ev.color}">${ev.label}</span>
+          <span class="ebody">${msg}</span>`;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+      }, delay);
+    });
+  });
+  setTimeout(() => { streamRunning = false; }, delay + 500);
+}
+
+// ── SCROLL REVEAL ──
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.1 });
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>

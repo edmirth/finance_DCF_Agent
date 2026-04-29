@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Users, Menu, X } from 'lucide-react';
+import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Users, Menu, X, LayoutDashboard } from 'lucide-react';
 import { getSessions, deleteSession, getProjects } from '../api';
 import { SessionSummary, ProjectSummary } from '../types';
 
@@ -13,6 +13,7 @@ const AGENT_TYPE_COLORS: Record<string, string> = {
   portfolio: '#6366F1',
   arena: '#10B981',
   auto: '#10B981',
+  workstation: '#10B981',
 };
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
@@ -24,6 +25,7 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   portfolio: 'Portfolio',
   arena: 'Arena',
   auto: 'Auto',
+  workstation: 'Research',
 };
 
 function SessionRow({
@@ -321,6 +323,14 @@ function Sidebar() {
       >
         {/* Primary nav links */}
         <div style={{ marginBottom: 4 }}>
+          <NavItem
+            to="/research"
+            icon={<LayoutDashboard className="w-4 h-4" />}
+            label="Research"
+            sub="Parallel analyst workstation"
+            isCollapsed={!isMobile && isCollapsed}
+            onClick={() => isMobile && setIsMobileOpen(false)}
+          />
           <NavItem
             to="/"
             end

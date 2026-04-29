@@ -910,3 +910,97 @@ class FinancialDataFetcher:
             logger.error(f"get_price_history failed for {ticker}: {e}")
             return []
 
+    def get_fmp_dcf(
+        self,
+        ticker: str,
+        revenue_growth_pct: Optional[float] = None,
+        beta: Optional[float] = None,
+        risk_free_rate_pct: Optional[float] = None,
+        market_risk_premium_pct: float = 4.72,
+        long_term_growth_rate: float = 2.5,
+        levered: bool = False,
+    ) -> dict:
+        """
+        Fetch DCF valuation from FMP. Covers all four FMP DCF endpoints:
+
+          levered=False, revenue_growth_pct=None  → /stable/discounted-cash-flow
+          levered=True,  revenue_growth_pct=None  → /stable/levered-discounted-cash-flow
+          levered=False, revenue_growth_pct=<val> → /stable/custom-discounted-cash-flow
+          levered=True,  revenue_growth_pct=<val> → /stable/custom-levered-discounted-cash-flow
+
+        Custom endpoints accept our agent-determined assumptions and return a full
+        year-by-year projection with WACC, UFCF/LFCF, terminal value, and equity
+        value per share.  Simple endpoints return FMP's own pre-calculated value.
+
+        Args:
+            ticker: Stock ticker symbol
+            revenue_growth_pct: Revenue growth as decimal (0.09 = 9%).
+                                 If None, calls the simple (pre-calculated) endpoint.
+            beta: Stock beta coefficient
+            risk_free_rate_pct: Risk-free rate as PERCENTAGE (3.62, not 0.0362)
+            market_risk_premium_pct: Equity risk premium as PERCENTAGE (default 4.72)
+            long_term_growth_rate: Terminal growth rate as PERCENTAGE (default 2.5)
+            levered: If True, uses the levered DCF variant (accounts for debt impact)
+
+        Returns:
+            {dcf, stock_price, wacc, enterprise_value, equity_value, terminal_value}
+            wacc is a percentage (8.99 = 8.99%). Empty dict on any failure.
+        """
+        if not self.fmp_api_key:
+            logger.warning("get_fmp_dcf: FMP_API_KEY not set.")
+            return {}
+
+        try:
+            custom = revenue_growth_pct is not None
+
+            if custom:
+                endpoint = (
+                    "/custom-levered-discounted-cash-flow"
+                    if levered
+                    else "/custom-discounted-cash-flow"
+                )
+                params: Dict = {
+                    "symbol":             ticker.upper(),
+                    "longTermGrowthRate": long_term_growth_rate,
+                    "marketRiskPremium":  market_risk_premium_pct,
+                    "revenueGrowthPct":   revenue_growth_pct,
+                }
+                if beta is not None:
+                    params["beta"] = beta
+                if risk_free_rate_pct is not None:
+                    params["riskFreeRate"] = risk_free_rate_pct
+
+                result = self._make_fmp_request(endpoint, params)
+                if result:
+                    return {
+                        "dcf":              float(result.get("equityValuePerShare") or 0),
+                        "stock_price":      float(result.get("price") or 0),
+                        "wacc":             float(result.get("wacc") or 0),
+                        "enterprise_value": float(result.get("enterpriseValue") or 0),
+                        "equity_value":     float(result.get("equityValue") or 0),
+                        "terminal_value":   float(result.get("terminalValue") or 0),
+                    }
+            else:
+                endpoint = (
+                    "/levered-discounted-cash-flow"
+                    if levered
+                    else "/discounted-cash-flow"
+                )
+                result = self._make_fmp_request(
+                    endpoint, {"symbol": ticker.upper()}
+                )
+                if result:
+                    return {
+                        "dcf":              float(result.get("dcf") or 0),
+                        "stock_price":      float(result.get("Stock Price") or 0),
+                        "wacc":             0.0,
+                        "enterprise_value": 0.0,
+                        "equity_value":     0.0,
+                        "terminal_value":   0.0,
+                    }
+
+        except Exception as e:
+            logger.warning(f"get_fmp_dcf failed for {ticker}: {e}")
+
+        return {}
+

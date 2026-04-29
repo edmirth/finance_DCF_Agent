@@ -33,14 +33,22 @@ TEMPLATE_LABELS = {
     "thesis_guardian":     "Thesis Guardian",
     "portfolio_heartbeat": "Portfolio Heartbeat",
     "arena_analyst":       "Arena Analyst",
+    "firm_pipeline":       "Firm Investment Pipeline",
 }
 
 SCHEDULE_LABELS = {
-    "daily_morning": "Every day at 7am",
-    "pre_market": "Weekdays at 6:30am",
-    "weekly_monday": "Every Monday at 7am",
-    "weekly_friday": "Every Friday at 4pm",
-    "monthly": "1st of each month",
+    "daily_morning":       "Every day at 7am",
+    "pre_market":          "Weekdays at 6:30am",
+    "weekly_monday":       "Every Monday at 7am",
+    "weekly_friday":       "Every Friday at 4pm",
+    "monthly":             "1st of each month",
+    # Phase 4 — finance-specific schedules
+    "pre_market_brief":    "Weekdays at 6:30am — pre-market brief",
+    "market_open":         "Weekdays at 9:30am — market open",
+    "market_close":        "Weekdays at 4:00pm — market close",
+    "weekly_friday_close": "Friday at 4:00pm — weekly IC prep",
+    "monthly_first":       "1st of each month at 8am",
+    "quarterly":           "1st of Jan/Apr/Jul/Oct at 8am",
 }
 
 
@@ -93,6 +101,11 @@ class AgentRunnerService:
             elif template == "arena_analyst":
                 raw_outputs, agents_used = self._run_arena_analyst(
                     tickers, agent_config.instruction
+                )
+
+            elif template == "firm_pipeline":
+                raw_outputs, agents_used = self._run_firm_pipeline(
+                    tickers, agent_config
                 )
 
             else:
@@ -213,6 +226,99 @@ class AgentRunnerService:
                 outputs[ticker] = f"Arena run failed for {ticker}: {exc}"
 
         return outputs, ["arena"] if outputs else []
+
+    # ------------------------------------------------------------------
+    # firm_pipeline (Phase 4) — runs the full InvestmentPipeline per ticker.
+    # Each ticker becomes a tracked ResearchTask, gates are enforced, the
+    # PM produces a structured BUY/HOLD/SELL with mandate-aware sizing.
+    # ------------------------------------------------------------------
+
+    def _run_firm_pipeline(
+        self,
+        tickers: list[str],
+        agent_config,
+    ) -> tuple[dict, list]:
+        """
+        For each ticker, create a ResearchTask + execute the InvestmentPipeline.
+        Outputs the structured PM decision so the synthesis prompt can
+        compose a coherent multi-ticker brief.
+        """
+        from backend.investment_pipeline import InvestmentPipeline
+        from backend.database import SyncSessionLocal
+        from backend.models import ResearchTask
+        import uuid as _uuid
+
+        if not tickers:
+            return {}, []
+
+        outputs: dict[str, str] = {}
+        agents_used = ["fundamental", "quant", "risk", "macro", "sentiment", "dcf",
+                       "risk_gate", "compliance_gate", "pm_decision"]
+
+        for ticker in tickers:
+            ticker_upper = ticker.strip().upper()
+            if not ticker_upper:
+                continue
+
+            # 1. Open a ResearchTask seeded with the routine context
+            task_id: Optional[str] = None
+            try:
+                with SyncSessionLocal() as db:
+                    task = ResearchTask(
+                        ticker=ticker_upper,
+                        task_type="thesis_update",
+                        title=f"Routine: {agent_config.name} — {ticker_upper}",
+                        status="pending",
+                        priority="medium",
+                        selected_agents=json.dumps(
+                            ["fundamental", "quant", "risk", "macro", "sentiment", "dcf"]
+                        ),
+                        triggered_by="routine",
+                        notes=(agent_config.instruction or "")[:500] or None,
+                    )
+                    db.add(task)
+                    db.commit()
+                    db.refresh(task)
+                    task_id = task.id
+            except Exception as exc:
+                logger.error(f"firm_pipeline: failed to create task for {ticker_upper}: {exc}")
+
+            # 2. Run the pipeline — emits to /dev/null since this is a background
+            #    routine, not a user-watched run.
+            run_id = str(_uuid.uuid4())
+
+            def _no_op_emit(_event: dict) -> None:
+                return None
+
+            try:
+                pipeline = InvestmentPipeline(
+                    run_id=run_id,
+                    ticker=ticker_upper,
+                    selected_agents=["fundamental", "quant", "risk", "macro", "sentiment", "dcf"],
+                    emit_fn=_no_op_emit,
+                    task_id=task_id,
+                    task_type="thesis_update",
+                    triggered_by="routine",
+                )
+                result = pipeline.run()
+
+                pm = result.get("pm_decision") or {}
+                action = pm.get("action", "HOLD")
+                size = pm.get("suggested_size_pct", 0.0)
+                conviction = pm.get("conviction", "MEDIUM")
+                rationale = pm.get("rationale") or pm.get("summary") or ""
+                blocked = pm.get("blocked", False)
+                size_str = f" at {size:.1f}% NAV" if action == "BUY" and size > 0 else ""
+
+                outputs[ticker_upper] = (
+                    f"## {ticker_upper} — {action}{size_str} ({conviction} conviction)"
+                    f"{' [BLOCKED]' if blocked else ''}\n\n{rationale}"
+                )
+            except Exception as exc:
+                logger.exception(f"firm_pipeline failed for {ticker_upper}")
+                outputs[ticker_upper] = f"Pipeline failed for {ticker_upper}: {exc}"
+
+        return outputs, agents_used
 
     # ------------------------------------------------------------------
     # Synthesis — single Haiku call converts raw outputs to digest

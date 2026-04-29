@@ -4,6 +4,7 @@ from arena.state import ThesisState
 from arena.router import route_from_pm
 from arena.pm import pm_node
 from arena.output import output_node
+from arena.data_fetch_node import data_fetch_node
 from arena.agents import (
     fundamental_node,
     quant_node,
@@ -55,8 +56,9 @@ def build_arena():
     builder = StateGraph(ThesisState)
 
     # ── Core nodes ────────────────────────────────────────────────────────────
-    builder.add_node("pm",     pm_node)
-    builder.add_node("output", output_node)
+    builder.add_node("data_fetch", data_fetch_node)
+    builder.add_node("pm",         pm_node)
+    builder.add_node("output",     output_node)
 
     # ── Sequential loop nodes ─────────────────────────────────────────────────
     builder.add_node("sequence_start",   sequence_start_node)
@@ -74,7 +76,8 @@ def build_arena():
         builder.add_node(name, fn)
 
     # ── Entry edge ────────────────────────────────────────────────────────────
-    builder.add_edge(START, "pm")
+    builder.add_edge(START, "data_fetch")
+    builder.add_edge("data_fetch", "pm")
 
     # ── PM routing ────────────────────────────────────────────────────────────
     # route_from_pm is untouched — returns "agents" or "output".

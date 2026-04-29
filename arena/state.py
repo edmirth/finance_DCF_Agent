@@ -65,6 +65,9 @@ class ThesisState(TypedDict):
     round: int
     active_agents: List[str]
 
+    # Shared data fetched once by data_fetch_node before any agent runs
+    shared_data: dict
+
     # Output
     final_decision: Optional[str]
     conviction_level: Optional[str]
