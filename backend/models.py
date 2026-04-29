@@ -167,7 +167,7 @@ class ScheduledAgent(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # Template: earnings_watcher | market_pulse | thesis_guardian | portfolio_heartbeat | arena_analyst
+    # Template: earnings_watcher | market_pulse | thesis_guardian | portfolio_heartbeat | firm_pipeline
     template: Mapped[str] = mapped_column(String(50))
     tickers: Mapped[str] = mapped_column(Text, default="[]")        # JSON array of ticker strings
     topics: Mapped[str] = mapped_column(Text, default="[]")         # JSON array of topic strings

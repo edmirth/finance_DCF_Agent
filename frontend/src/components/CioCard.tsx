@@ -30,7 +30,6 @@ function saveHistory(entries: ChatEntry[]) {
 const TEMPLATE_LABELS: Record<string, string> = {
   earnings_watcher: 'Earnings Watcher', market_pulse: 'Market Pulse',
   thesis_guardian: 'Thesis Guardian', portfolio_heartbeat: 'Portfolio Heartbeat',
-  arena_analyst: 'Arena Analyst',
 };
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily 7am', pre_market: 'Weekdays 6:30am',

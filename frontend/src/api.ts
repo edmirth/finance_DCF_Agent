@@ -252,7 +252,6 @@ const getAgentIcon = (agentId: string): string => {
     market: '🌐',
     portfolio: '💼',
     earnings: '💰',
-    arena: '⚔️',
   };
   return icons[agentId] || '🤖';
 };
@@ -264,7 +263,6 @@ const getAgentColor = (agentId: string): string => {
     market: 'bg-orange-500',
     portfolio: 'bg-indigo-500',
     earnings: 'bg-yellow-500',
-    arena: 'bg-emerald-500',
   };
   return colors[agentId] || 'bg-gray-500';
 };

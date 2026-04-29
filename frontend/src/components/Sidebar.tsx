@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Users, Menu, X, LayoutDashboard } from 'lucide-react';
+import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard } from 'lucide-react';
 import { getSessions, deleteSession, getProjects } from '../api';
 import { SessionSummary, ProjectSummary } from '../types';
 
@@ -11,7 +11,6 @@ const AGENT_TYPE_COLORS: Record<string, string> = {
   research: '#10B981',
   market: '#F97316',
   portfolio: '#6366F1',
-  arena: '#10B981',
   auto: '#10B981',
   workstation: '#10B981',
 };
@@ -23,7 +22,6 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   research: 'Research',
   market: 'Market',
   portfolio: 'Portfolio',
-  arena: 'Arena',
   auto: 'Auto',
   workstation: 'Research',
 };
@@ -283,7 +281,7 @@ function Sidebar() {
   const loadSessions = async () => {
     try {
       const data = await getSessions(10);
-      setSessions(data);
+      setSessions(data.filter(s => s.agent_type !== 'arena'));
     } catch { /* ignore */ }
   };
 
@@ -345,14 +343,6 @@ function Sidebar() {
             icon={<BarChart2 className="w-4 h-4" />}
             label="Earnings"
             sub="Quarterly trends & transcript"
-            isCollapsed={!isMobile && isCollapsed}
-            onClick={() => isMobile && setIsMobileOpen(false)}
-          />
-          <NavItem
-            to="/arena"
-            icon={<Users className="w-4 h-4" />}
-            label="Arena"
-            sub="Multi-agent debate mode"
             isCollapsed={!isMobile && isCollapsed}
             onClick={() => isMobile && setIsMobileOpen(false)}
           />

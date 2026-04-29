@@ -61,17 +61,6 @@ const TEMPLATES: {
     instructionPlaceholder: 'e.g. My portfolio is 40% mega-cap tech, 30% small-cap industrials, 30% cash. Flag any single-stock move >8%, earnings misses, or macro events that hurt small-cap sentiment.',
     instructionHint: 'Describe your portfolio composition and what to watch for.',
   },
-  {
-    id: 'arena_analyst',
-    label: 'Arena Analyst',
-    description: '5 specialist agents debate bull vs. bear — fundamental, risk, quant, macro, and sentiment — before synthesising a verdict.',
-    color: '#EF4444',
-    bg: '#FEE2E2',
-    letter: 'A',
-    requiresTickers: true,
-    instructionPlaceholder: 'e.g. Should I add to my TSLA position? I currently hold at $220 avg. Debate the FSD monetisation path, energy business optionality, and execution risk on the robotaxi timeline.',
-    instructionHint: 'What question should the committee debate?',
-  },
 ];
 
 const SCHEDULES: { id: ScheduleLabel; label: string; sub: string }[] = [

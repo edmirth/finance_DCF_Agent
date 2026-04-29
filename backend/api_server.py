@@ -50,7 +50,6 @@ from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
 from agents.earnings_agent import create_earnings_agent
 from agents.dcf_agent import DCFAgent
-from arena.arena_agent import ArenaAgent
 from arena.run import run_arena
 from arena.progress import set_arena_queue, clear_arena_queue
 from arena.output import extract_structured_memo
@@ -93,6 +92,7 @@ _IP_WINDOW_SECONDS = 3600  # 1 hour
 _memo_daily_count = 0
 _memo_daily_reset_date: Optional[str] = None
 MEMO_DAILY_CAP = 50
+_TICKER_INPUT_RE = re.compile(r"^[A-Z0-9]{1,5}(?:[.-][A-Z0-9]{1,2})?$")
 
 
 def _check_memo_rate_limits(client_ip: str) -> None:
@@ -194,7 +194,7 @@ class DCFAgentAdapter:
         return self._agent.format_report(result)
 
 
-SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "market", "earnings", "arena"})
+SESSION_SCOPED_AGENT_TYPES = frozenset({"research", "market", "earnings"})
 
 # Hold strong references to fire-and-forget tasks so they aren't GC'd before completion
 _background_tasks: set = set()
@@ -218,13 +218,18 @@ class ResearchConnectionManager:
         conns = self._connections.get(run_id, [])
         if ws in conns:
             conns.remove(ws)
+        if not conns and run_id in self._connections:
+            del self._connections[run_id]
 
     async def broadcast(self, run_id: str, data: dict):
+        stale_connections = []
         for ws in list(self._connections.get(run_id, [])):
             try:
                 await ws.send_json(data)
             except Exception:
-                pass
+                stale_connections.append(ws)
+        for ws in stale_connections:
+            self.disconnect(run_id, ws)
 
 
 research_manager = ResearchConnectionManager()
@@ -237,13 +242,72 @@ def _fire_and_forget(coro) -> asyncio.Task:
     task.add_done_callback(_background_tasks.discard)
     return task
 
+
+def _normalize_selected_agents(
+    requested_agents: Any,
+    *,
+    default_to_all: bool = False,
+) -> List[str]:
+    """
+    Validate and normalize a selected-agents payload.
+
+    - `None` can default to the full research suite when `default_to_all=True`
+    - values are lowercased, stripped, and de-duplicated in first-seen order
+    - invalid or empty explicit selections are rejected instead of silently
+      expanding into an expensive full-agent run
+    """
+    if requested_agents is None:
+        return list(AGENT_META.keys()) if default_to_all else []
+
+    if not isinstance(requested_agents, list):
+        raise ValueError("agents must be provided as a list")
+
+    normalized: List[str] = []
+    invalid: List[str] = []
+
+    for raw_agent in requested_agents:
+        if not isinstance(raw_agent, str):
+            invalid.append(str(raw_agent))
+            continue
+        agent = raw_agent.strip().lower()
+        if not agent:
+            continue
+        if agent not in AGENT_META:
+            invalid.append(raw_agent)
+            continue
+        if agent not in normalized:
+            normalized.append(agent)
+
+    if invalid:
+        valid_agents = ", ".join(AGENT_META.keys())
+        invalid_agents = ", ".join(sorted({str(agent) for agent in invalid}))
+        raise ValueError(
+            f"Invalid agents: {invalid_agents}. Valid agents are: {valid_agents}"
+        )
+
+    if not normalized:
+        raise ValueError("At least one valid agent must be selected")
+
+    return normalized
+
+
+def _normalize_single_ticker(raw_ticker: Any, *, field_name: str = "ticker") -> str:
+    """Validate a single explicit ticker input from API payloads."""
+    ticker = str(raw_ticker or "").strip().upper()
+    if not ticker:
+        raise ValueError(f"{field_name} required")
+    if not _TICKER_INPUT_RE.fullmatch(ticker):
+        raise ValueError(
+            f"Invalid {field_name} format. Use a ticker like AAPL, BRK.B, or 005930.KS"
+        )
+    return ticker
+
 # Map agent types to their fallback methods (when agent_executor is not available)
 AGENT_FALLBACK_METHODS = {
     "research": "chat",  # Research uses 'chat' instead of 'analyze'
     "market": "analyze",
     "portfolio": "analyze",
     "earnings": "analyze",
-    "arena": "analyze",
     "dcf": "analyze",
 }
 
@@ -256,7 +320,7 @@ def extract_ticker_from_query(query: str, is_followup: bool = False) -> Optional
 class ChatMessage(BaseModel):
     """Chat message model"""
     message: str
-    agent_type: str = "research"  # research, market, portfolio, earnings, arena
+    agent_type: str = "research"  # research, market, portfolio, earnings, dcf
     model: str = "claude-sonnet-4-6"
     session_id: Optional[str] = None
     is_followup: bool = False
@@ -298,8 +362,6 @@ def _create_agent_instance(agent_type: str, model: str):
         return create_portfolio_agent(model=model)
     if agent_type == "earnings":
         return create_earnings_agent(model=model)
-    if agent_type == "arena":
-        return ArenaAgent()
     if agent_type == "dcf":
         return DCFAgentAdapter(model=model)
     raise ValueError(f"Unknown agent type: {agent_type}")
@@ -360,7 +422,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
     Args:
         agent: LangChain agent instance (with agent_executor or fallback method)
         message: User's input message to process
-        agent_type: One of 'research', 'market', 'portfolio', 'earnings', 'arena'
+        agent_type: One of 'research', 'market', 'portfolio', 'earnings', 'dcf'
         queue: Async queue for streaming events to SSE response
         is_followup: Whether this is a follow-up question (earnings agent only)
     """
@@ -373,7 +435,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             raise ValueError(f"Unknown agent type: {agent_type}")
 
         # Inject progress queue for agents that use direct tool calls (bypassing LangChain callbacks)
-        if agent_type in ("earnings", "graph", "arena"):
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = queue
             agent._progress_loop = loop
 
@@ -406,7 +468,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
             response = await loop.run_in_executor(None, fallback_method, message)
 
         # Clean up progress queue
-        if agent_type in ("earnings", "graph", "arena"):
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = None
             agent._progress_loop = None
 
@@ -418,7 +480,7 @@ async def run_agent_with_callbacks(agent, message: str, agent_type: str, queue: 
 
     except Exception as e:
         # Clean up progress queue on error too
-        if agent_type in ("earnings", "graph", "arena"):
+        if agent_type in ("earnings", "graph"):
             agent._progress_queue = None
             agent._progress_loop = None
         await queue.put({"type": "error", "error": str(e)})
@@ -895,7 +957,7 @@ async def root():
         "status": "online",
         "service": "Financial Analysis API",
         "version": "1.0.0",
-        "agents": ["research", "market", "portfolio", "earnings", "arena"]
+        "agents": ["research", "market", "portfolio", "earnings"]
     }
 
 
@@ -927,12 +989,6 @@ async def list_agents():
                 "name": "Earnings Analyst",
                 "description": "Fast earnings-focused equity research (15 min) with quarterly trends and estimates",
                 "example": "Analyze NVDA's latest earnings and forward outlook"
-            },
-            {
-                "id": "arena",
-                "name": "Investment Committee",
-                "description": "Multi-agent debate: Fundamental, Risk, Quant, Macro, and Sentiment analysts debate to conviction-rated investment memo",
-                "example": "Should we long NVDA? Full IC review."
             }
         ]
     }
@@ -1588,7 +1644,10 @@ async def upload_document(file: UploadFile = File(...)):
 async def list_sessions(limit: int = 50, db: AsyncSession = Depends(get_db)):
     """List sessions most-recent first."""
     result = await db.execute(
-        select(DBSession).order_by(DBSession.last_active_at.desc()).limit(limit)
+        select(DBSession)
+        .where(DBSession.agent_type != "arena")
+        .order_by(DBSession.last_active_at.desc())
+        .limit(limit)
     )
     sessions = result.scalars().all()
     return [
@@ -2273,14 +2332,18 @@ async def research_websocket(websocket: WebSocket, run_id: str):
 async def research_start(request: Request):
     """Start a parallel research run for a given ticker."""
     body = await request.json()
-    ticker = body.get("ticker", "").strip().upper()
-    requested_agents = body.get("agents", list(AGENT_META.keys()))
-    if not isinstance(requested_agents, list):
-        requested_agents = list(AGENT_META.keys())
-    selected_agents = [a for a in requested_agents if a in AGENT_META] or list(AGENT_META.keys())
-
-    if not ticker:
-        raise HTTPException(status_code=400, detail="ticker required")
+    title = body.get("title", "")
+    title = title.strip() if isinstance(title, str) else ""
+    focus = body.get("focus", "")
+    focus = focus.strip() if isinstance(focus, str) else ""
+    try:
+        ticker = _normalize_single_ticker(body.get("ticker"))
+        selected_agents = _normalize_selected_agents(
+            body.get("agents"),
+            default_to_all=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     run_id = str(uuid_mod_research.uuid4())
 
@@ -2297,11 +2360,13 @@ async def research_start(request: Request):
             ticker=ticker,
             selected_agents=selected_agents,
             emit_fn=sync_emit,
+            assignment_title=title,
+            assignment_focus=focus,
         )
         await asyncio.to_thread(orchestrator.run)
 
     _fire_and_forget(run_orchestrator())
-    return {"run_id": run_id, "ticker": ticker}
+    return {"run_id": run_id, "ticker": ticker, "title": title or None, "focus": focus or None}
 
 
 def _suggest_research_agents_sync(ticker: str) -> list[str]:
@@ -2346,9 +2411,10 @@ def _suggest_research_agents_sync(ticker: str) -> list[str]:
 async def research_pm_suggest(request: Request):
     """PM auto-suggests which agents to run for a given ticker."""
     body = await request.json()
-    ticker = body.get("ticker", "").strip().upper()
-    if not ticker:
-        raise HTTPException(status_code=400, detail="ticker required")
+    try:
+        ticker = _normalize_single_ticker(body.get("ticker"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     agents = await run_in_threadpool(_suggest_research_agents_sync, ticker)
     return {"agents": agents}
@@ -2720,12 +2786,19 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     if priority not in VALID_PRIORITIES:
         raise HTTPException(status_code=400, detail=f"Invalid priority. Must be one of: {sorted(VALID_PRIORITIES)}")
 
-    ticker = body.ticker.strip().upper()
-    if not ticker:
-        raise HTTPException(status_code=400, detail="ticker is required")
+    try:
+        ticker = _normalize_single_ticker(body.ticker, field_name="ticker")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     title = body.title or f"{TASK_TYPE_TITLES.get(task_type, 'Research')}: {ticker}"
-    selected = body.selected_agents or ["fundamental", "quant", "risk", "macro", "sentiment", "dcf"]
+    try:
+        selected = _normalize_selected_agents(
+            body.selected_agents,
+            default_to_all=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     task = ResearchTask(
         ticker=ticker,
@@ -2880,9 +2953,16 @@ async def run_task_pipeline(task_id: str, db: AsyncSession = Depends(get_db)):
         )
 
     try:
-        selected_agents = json.loads(task.selected_agents or "[]") or list(AGENT_META.keys())
+        parsed_agents = json.loads(task.selected_agents or "[]")
     except (json.JSONDecodeError, TypeError):
-        selected_agents = list(AGENT_META.keys())
+        raise HTTPException(
+            status_code=400,
+            detail="Task has invalid selected_agents payload. Update the task and retry.",
+        )
+    try:
+        selected_agents = _normalize_selected_agents(parsed_agents)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Task has invalid selected_agents: {exc}")
 
     ticker = task.ticker
     task_type = task.task_type or "ad_hoc"

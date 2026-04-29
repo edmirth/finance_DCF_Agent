@@ -12,7 +12,6 @@ VALID_AGENT_TEMPLATES = frozenset(
         "market_pulse",
         "thesis_guardian",
         "portfolio_heartbeat",
-        "arena_analyst",
         "firm_pipeline",
     }
 )
@@ -22,7 +21,6 @@ TEMPLATES_REQUIRING_TICKERS = frozenset(
         "earnings_watcher",
         "thesis_guardian",
         "portfolio_heartbeat",
-        "arena_analyst",
         "firm_pipeline",
     }
 )

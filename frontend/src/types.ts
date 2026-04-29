@@ -304,8 +304,7 @@ export type AgentTemplate =
   | 'earnings_watcher'
   | 'market_pulse'
   | 'thesis_guardian'
-  | 'portfolio_heartbeat'
-  | 'arena_analyst';
+  | 'portfolio_heartbeat';
 
 export type ScheduleLabel =
   | 'daily_morning'

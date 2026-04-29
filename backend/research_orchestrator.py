@@ -74,11 +74,19 @@ AGENT_META = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _create_minimal_state(ticker: str, shared_data: dict) -> dict:
+def _create_minimal_state(
+    ticker: str,
+    shared_data: dict,
+    assignment_title: str = "",
+    assignment_focus: str = "",
+) -> dict:
     """Creates a minimal ThesisState-compatible dict for running arena agents."""
+    query_title = assignment_title.strip() or f"Analyze {ticker}"
+    focus_text = assignment_focus.strip()
+    query = query_title if not focus_text else f"{query_title}\n\nFocus: {focus_text}"
     return {
         "ticker": ticker,
-        "query": f"Analyze {ticker}",
+        "query": query,
         "query_mode": "full",
         "raw_outputs": {},
         "agent_signals": {},
@@ -95,7 +103,7 @@ def _create_minimal_state(ticker: str, shared_data: dict) -> dict:
         "conviction_level": None,
         "investment_memo": None,
         # ThesisState extras that agents may read
-        "thesis_summary": "",
+        "thesis_summary": focus_text,
         "consensus_score": 0.0,
     }
 
@@ -160,11 +168,13 @@ def _run_fundamental(
     shared_data: dict,
     emit: Callable,
     start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
 ) -> AgentSection:
     from arena.fundamental_agent import run_fundamental_agent
 
     emit({"type": "agent_step", "agent": "fundamental", "step": "Fetching financial statements & SEC filings..."})
-    state = _create_minimal_state(ticker, shared_data)
+    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
 
     try:
         result = run_fundamental_agent(state)
@@ -202,11 +212,13 @@ def _run_quant(
     shared_data: dict,
     emit: Callable,
     start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
 ) -> AgentSection:
     from arena.quant_agent import run_quant_agent
 
     emit({"type": "agent_step", "agent": "quant", "step": "Computing price momentum, factor scores & volatility..."})
-    state = _create_minimal_state(ticker, shared_data)
+    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
 
     try:
         result = run_quant_agent(state)
@@ -244,11 +256,13 @@ def _run_risk(
     shared_data: dict,
     emit: Callable,
     start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
 ) -> AgentSection:
     from arena.risk_agent import run_risk_agent
 
     emit({"type": "agent_step", "agent": "risk", "step": "Evaluating leverage, liquidity & earnings stability..."})
-    state = _create_minimal_state(ticker, shared_data)
+    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
 
     try:
         result = run_risk_agent(state)
@@ -286,11 +300,13 @@ def _run_macro(
     shared_data: dict,
     emit: Callable,
     start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
 ) -> AgentSection:
     from arena.macro_agent import run_macro_agent
 
     emit({"type": "agent_step", "agent": "macro", "step": "Analysing rates, GDP, inflation & sector cycle..."})
-    state = _create_minimal_state(ticker, shared_data)
+    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
 
     try:
         result = run_macro_agent(state)
@@ -328,11 +344,13 @@ def _run_sentiment(
     shared_data: dict,
     emit: Callable,
     start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
 ) -> AgentSection:
     from arena.sentiment_agent import run_sentiment_agent
 
     emit({"type": "agent_step", "agent": "sentiment", "step": "Scanning news flow, insiders & analyst ratings..."})
-    state = _create_minimal_state(ticker, shared_data)
+    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
 
     try:
         result = run_sentiment_agent(state)
@@ -370,6 +388,8 @@ def _run_dcf(
     shared_data: dict,
     emit: Callable,
     start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
 ) -> AgentSection:
     from agents.dcf_agent import DCFAgent
 
@@ -533,6 +553,8 @@ class ResearchOrchestrator:
         task_id: Optional[str] = None,
         task_type: str = "ad_hoc",
         triggered_by: str = "manual",
+        assignment_title: str = "",
+        assignment_focus: str = "",
     ):
         self.run_id = run_id
         self.ticker = ticker.upper()
@@ -541,6 +563,8 @@ class ResearchOrchestrator:
         self.task_id = task_id
         self.task_type = task_type
         self.triggered_by = triggered_by
+        self.assignment_title = assignment_title.strip()
+        self.assignment_focus = assignment_focus.strip()
 
     # ---------- Task persistence helpers (Phase 2) ----------
 
@@ -563,11 +587,13 @@ class ResearchOrchestrator:
                         task.status = "running"
                         task.started_at = task.started_at or _dt.utcnow()
                         task.run_id = self.run_id
+                        if self.assignment_focus and not task.notes:
+                            task.notes = self.assignment_focus
                         db.commit()
                         return task.id
 
                 # Auto-create
-                title = f"{self.task_type.replace('_', ' ').title()}: {self.ticker}"
+                title = self.assignment_title or f"{self.task_type.replace('_', ' ').title()}: {self.ticker}"
                 task = ResearchTask(
                     ticker=self.ticker,
                     task_type=self.task_type,
@@ -577,6 +603,7 @@ class ResearchOrchestrator:
                     triggered_by=self.triggered_by,
                     run_id=self.run_id,
                     started_at=_dt.utcnow(),
+                    notes=self.assignment_focus or None,
                 )
                 db.add(task)
                 db.commit()
@@ -675,7 +702,12 @@ class ResearchOrchestrator:
         # 1. Fetch shared data
         self.emit({"type": "fetch_start", "message": f"Fetching shared market data for {self.ticker}..."})
         try:
-            minimal_state = _create_minimal_state(self.ticker, {})
+            minimal_state = _create_minimal_state(
+                self.ticker,
+                {},
+                self.assignment_title,
+                self.assignment_focus,
+            )
             fetch_result = data_fetch_node(minimal_state)
             shared_data = fetch_result.get("shared_data", {})
         except Exception as e:
@@ -692,7 +724,15 @@ class ResearchOrchestrator:
                     continue
                 start_time = time.time()
                 self.emit({"type": "agent_start", "agent": agent_name})
-                future = pool.submit(runner, self.ticker, shared_data, self.emit, start_time)
+                future = pool.submit(
+                    runner,
+                    self.ticker,
+                    shared_data,
+                    self.emit,
+                    start_time,
+                    self.assignment_title,
+                    self.assignment_focus,
+                )
                 futures[future] = agent_name
 
             for future in as_completed(futures):

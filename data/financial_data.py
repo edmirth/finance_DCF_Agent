@@ -30,6 +30,7 @@ class FinancialDataFetcher:
     _cache_lock = threading.RLock()  # Thread-safe cache access
     _instance_lock = threading.Lock()  # Thread-safe singleton initialization
     _thread_local = threading.local()  # Per-thread error state (avoids cross-request races)
+    _missing_key_warning_logged = False
 
     def __new__(cls, api_key: Optional[str] = None):
         """Singleton pattern to ensure cache is shared across all instances (thread-safe)"""
@@ -61,13 +62,17 @@ class FinancialDataFetcher:
             return
 
         self.api_key = api_key or os.getenv("FINANCIAL_DATASETS_API_KEY")
-        if not self.api_key:
-            raise ValueError("Financial Datasets API key not found. Set FINANCIAL_DATASETS_API_KEY environment variable.")
-
         self.headers = {
-            "X-API-KEY": self.api_key,
             "Content-Type": "application/json"
         }
+        if self.api_key:
+            self.headers["X-API-KEY"] = self.api_key
+        elif not self.__class__._missing_key_warning_logged:
+            logger.warning(
+                "FINANCIAL_DATASETS_API_KEY not set. Financial Datasets requests will be skipped "
+                "until a key is configured."
+            )
+            self.__class__._missing_key_warning_logged = True
 
         # FMP API key (optional, for DCF comparison)
         self.fmp_api_key = os.getenv("FMP_API_KEY")
@@ -78,6 +83,13 @@ class FinancialDataFetcher:
         self.cache = self._shared_cache
         self.cache_ttl = 900  # 15 minutes TTL for financial data
         self._initialized = True
+
+    def _has_api_key(self) -> bool:
+        """Return whether Financial Datasets requests can be made."""
+        if self.api_key:
+            return True
+        self.last_error_type = "auth_failure"
+        return False
 
     @property
     def last_error_type(self) -> Optional[str]:
@@ -127,6 +139,9 @@ class FinancialDataFetcher:
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """Make API GET request with error handling and retry logic"""
         self.last_error_type = None  # Reset before each request
+        if not self._has_api_key():
+            logger.error("Missing FINANCIAL_DATASETS_API_KEY for Financial Datasets request")
+            return None
         try:
             return self._make_request_with_retry(endpoint, params)
         except requests.exceptions.HTTPError as e:
@@ -171,6 +186,10 @@ class FinancialDataFetcher:
 
     def _make_post_request(self, endpoint: str, payload: Dict) -> Optional[Dict]:
         """Make API POST request with error handling and retry logic"""
+        self.last_error_type = None
+        if not self._has_api_key():
+            logger.error("Missing FINANCIAL_DATASETS_API_KEY for Financial Datasets request")
+            return None
         try:
             return self._make_post_request_with_retry(endpoint, payload)
         except requests.exceptions.HTTPError as e:
@@ -1003,4 +1022,3 @@ class FinancialDataFetcher:
             logger.warning(f"get_fmp_dcf failed for {ticker}: {e}")
 
         return {}
-

@@ -1,9 +1,8 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
 import Portfolio from './pages/Portfolio';
 import EarningsPage from './pages/EarningsPage';
-import ArenaPage from './pages/ArenaPage';
 import InvestmentMemoPage from './pages/InvestmentMemoPage';
 import MemoSharePage from './pages/MemoSharePage';
 import LibraryPage from './pages/LibraryPage';
@@ -26,7 +25,7 @@ function App() {
           <Route path="/earnings"                  element={<EarningsPage />} />
           <Route path="/chat"                      element={<ChatPage />} />
           <Route path="/portfolio"                 element={<Portfolio />} />
-          <Route path="/arena"                     element={<ArenaPage />} />
+          <Route path="/arena"                     element={<Navigate to="/memo" replace />} />
           <Route path="/memo"                      element={<InvestmentMemoPage />} />
           <Route path="/m/:slug"                   element={<MemoSharePage />} />
           <Route path="/library"                   element={<LibraryPage />} />

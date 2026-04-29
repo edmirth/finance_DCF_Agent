@@ -104,7 +104,7 @@ const AgentCard = forwardRef<AgentCardHandle, AgentCardProps>(
     useEffect(() => () => { wsRef.current?.close(); }, []);
 
     // Core run logic — called by the imperative handle
-    const doRun = useCallback(async (ticker: string, focus: string) => {
+    const doRun = useCallback(async (ticker: string, title: string, focus: string) => {
       try {
         const res = await fetch(`${API_BASE}/research/start`, {
           method: 'POST',
@@ -112,6 +112,7 @@ const AgentCard = forwardRef<AgentCardHandle, AgentCardProps>(
           body: JSON.stringify({
             ticker,
             agents: [agentKey],
+            title: title.trim() || undefined,
             focus: focus.trim() || undefined,
           }),
         });
@@ -161,14 +162,14 @@ const AgentCard = forwardRef<AgentCardHandle, AgentCardProps>(
 
     // Expose triggerRun to parent via ref
     useImperativeHandle(ref, () => ({
-      triggerRun: (ticker: string, _title: string, description: string) => {
+      triggerRun: (ticker: string, title: string, description: string) => {
         wsRef.current?.close();
         setActiveTicker(ticker.toUpperCase());
         setSection(null);
         setExpanded(false);
         setCurrentStep('Initialising...');
         setStatus('running');
-        doRun(ticker.toUpperCase(), description);
+        doRun(ticker.toUpperCase(), title, description);
       },
     }), [doRun]);
 

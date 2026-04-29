@@ -3,7 +3,7 @@ Agent Runner Service
 
 Executes scheduled agent configurations against real financial data.
 Supports 5 templates: earnings_watcher, market_pulse, thesis_guardian,
-portfolio_heartbeat, arena_analyst.
+portfolio_heartbeat, firm_pipeline.
 
 Design goals:
   - Concurrent execution: multiple tickers run in parallel via ThreadPoolExecutor
@@ -32,7 +32,6 @@ TEMPLATE_LABELS = {
     "market_pulse":        "Market Pulse",
     "thesis_guardian":     "Thesis Guardian",
     "portfolio_heartbeat": "Portfolio Heartbeat",
-    "arena_analyst":       "Arena Analyst",
     "firm_pipeline":       "Firm Investment Pipeline",
 }
 
@@ -98,14 +97,14 @@ class AgentRunnerService:
             elif template == "portfolio_heartbeat":
                 raw_outputs, agents_used = self._run_portfolio_heartbeat(tickers)
 
-            elif template == "arena_analyst":
-                raw_outputs, agents_used = self._run_arena_analyst(
-                    tickers, agent_config.instruction
-                )
-
             elif template == "firm_pipeline":
                 raw_outputs, agents_used = self._run_firm_pipeline(
                     tickers, agent_config
+                )
+
+            elif template == "arena_analyst":
+                return self._error_result(
+                    "Template 'arena_analyst' has been removed"
                 )
 
             else:
@@ -198,34 +197,6 @@ class AgentRunnerService:
         """Earnings analysis on each holding + sector diversification summary."""
         outputs, agents_used = self._run_earnings_for_tickers(tickers)
         return outputs, agents_used
-
-    def _run_arena_analyst(self, tickers: list[str], instruction: str) -> tuple[dict, list]:
-        from arena.run import run_arena
-
-        outputs: dict[str, str] = {}
-        # Limit arena runs to 2 tickers — each full IC run is expensive
-        for ticker in tickers[:2]:
-            try:
-                query = instruction or f"Should we hold a long position in {ticker}?"
-                state = run_arena(query=query, ticker=ticker, query_mode="full_ic")
-                memo = state.get("investment_memo") or ""
-                signals = state.get("agent_signals", {})
-                consensus = state.get("consensus_score", 0)
-                decision = state.get("final_decision", "")
-                outputs[ticker] = (
-                    f"**Decision:** {decision} | **Consensus:** {consensus:.0%}\n\n"
-                    f"**Investment Memo:**\n{memo}\n\n"
-                    f"**Agent Signals:**\n"
-                    + "\n".join(
-                        f"- {k}: {v.get('view', '')} ({v.get('confidence', 0):.0%} confidence)"
-                        for k, v in signals.items()
-                    )
-                )
-            except Exception as exc:
-                logger.error(f"arena_analyst failed for {ticker}: {exc}")
-                outputs[ticker] = f"Arena run failed for {ticker}: {exc}"
-
-        return outputs, ["arena"] if outputs else []
 
     # ------------------------------------------------------------------
     # firm_pipeline (Phase 4) — runs the full InvestmentPipeline per ticker.

@@ -10,8 +10,16 @@ const TEMPLATE_META: Record<string, { label: string; color: string; bg: string; 
   market_pulse:        { label: 'Market Pulse',        color: '#3B82F6', bg: '#DBEAFE', description: 'Daily market & macro conditions' },
   thesis_guardian:     { label: 'Thesis Guardian',     color: '#10B981', bg: '#D1FAE5', description: 'Monitors your investment thesis' },
   portfolio_heartbeat: { label: 'Portfolio Heartbeat', color: '#8B5CF6', bg: '#EDE9FE', description: 'Weekly portfolio health check' },
-  arena_analyst:       { label: 'Arena Analyst',       color: '#EF4444', bg: '#FEE2E2', description: 'Multi-agent investment debate' },
 };
+
+function getTemplateMeta(template: string) {
+  return TEMPLATE_META[template] || {
+    label: template,
+    color: '#64748B',
+    bg: '#F1F5F9',
+    description: 'Unsupported template',
+  };
+}
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -46,7 +54,7 @@ function AgentCard({
   onRunNow: (id: string) => void;
 }) {
   const navigate = useNavigate();
-  const meta = TEMPLATE_META[agent.template] || TEMPLATE_META.earnings_watcher;
+  const meta = getTemplateMeta(agent.template);
   const [running, setRunning] = useState(false);
 
   const handleRunNow = async (e: React.MouseEvent) => {

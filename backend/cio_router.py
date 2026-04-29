@@ -51,7 +51,6 @@ TEMPLATE_LABELS = {
     "market_pulse":        "Market Pulse",
     "thesis_guardian":     "Thesis Guardian",
     "portfolio_heartbeat": "Portfolio Heartbeat",
-    "arena_analyst":       "Arena Analyst",
 }
 
 SCHEDULE_LABELS = {
@@ -142,7 +141,6 @@ You are the investor's persistent, trusted advisor and team orchestrator. You ar
 - `market_pulse` — Daily macro & market conditions brief
 - `thesis_guardian` — Monitors a specific investment thesis against market changes
 - `portfolio_heartbeat` — Weekly health check across a set of holdings
-- `arena_analyst` — Full investment committee debate (5 specialists) on a ticker
 
 ## Available Schedules
 - `daily_morning`, `pre_market`, `weekly_monday`, `weekly_friday`, `monthly`

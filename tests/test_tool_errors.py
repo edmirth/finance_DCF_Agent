@@ -5,6 +5,7 @@ Covers the regression bug fixed in Feb 2026 where any Financial Datasets API
 failure produced "This may be a delisted or invalid ticker" — even for valid
 companies like NFLX — because the error type was not propagated.
 """
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -90,6 +91,7 @@ class TestErrorMessageAccuracy:
 
         fetcher = FinancialDataFetcher.__new__(FinancialDataFetcher)
         fetcher._initialized = True
+        fetcher.api_key = "test-key"
         fetcher.headers = {}
         fetcher.last_error_type = None
         fetcher.cache = {}
@@ -110,6 +112,7 @@ class TestErrorMessageAccuracy:
 
         fetcher = FinancialDataFetcher.__new__(FinancialDataFetcher)
         fetcher._initialized = True
+        fetcher.api_key = "test-key"
         fetcher.headers = {}
         fetcher.last_error_type = None
         fetcher.cache = {}
@@ -128,6 +131,7 @@ class TestErrorMessageAccuracy:
 
         fetcher = FinancialDataFetcher.__new__(FinancialDataFetcher)
         fetcher._initialized = True
+        fetcher.api_key = "test-key"
         fetcher.headers = {}
         fetcher.last_error_type = None
         fetcher.cache = {}
@@ -140,6 +144,25 @@ class TestErrorMessageAccuracy:
         assert result is None
         assert fetcher.last_error_type == "api_failure"
 
+    def test_missing_api_key_short_circuits_as_auth_failure(self):
+        """Missing FINANCIAL_DATASETS_API_KEY should not crash object creation."""
+        from data.financial_data import FinancialDataFetcher
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FINANCIAL_DATASETS_API_KEY", None)
+            os.environ.pop("FMP_API_KEY", None)
+            FinancialDataFetcher._instance = None
+            FinancialDataFetcher._missing_key_warning_logged = False
+
+            fetcher = FinancialDataFetcher()
+
+            with patch.object(fetcher, "_make_request_with_retry") as mock_request:
+                result = fetcher._make_request("/company/facts", {"ticker": "AAPL"})
+
+        assert result is None
+        assert fetcher.last_error_type == "auth_failure"
+        mock_request.assert_not_called()
+
     def test_error_type_reset_on_each_request(self):
         """last_error_type must be cleared before every request so stale errors don't leak."""
         import requests
@@ -147,6 +170,7 @@ class TestErrorMessageAccuracy:
 
         fetcher = FinancialDataFetcher.__new__(FinancialDataFetcher)
         fetcher._initialized = True
+        fetcher.api_key = "test-key"
         fetcher.headers = {}
         fetcher.last_error_type = "not_found"  # stale from a previous call
         fetcher.cache = {}

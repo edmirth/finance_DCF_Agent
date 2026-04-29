@@ -111,6 +111,24 @@ async def test_create_scheduled_agent_rejects_invalid_schedule_label():
 
 
 @pytest.mark.asyncio
+async def test_create_scheduled_agent_rejects_removed_arena_template():
+    payload = {
+        "name": f"Removed arena {uuid4()}",
+        "template": "arena_analyst",
+        "tickers": ["AAPL"],
+        "topics": [],
+        "instruction": "Run the old arena flow",
+        "schedule_label": "weekly_monday",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/scheduled-agents", json=payload)
+
+    assert response.status_code == 400
+    assert "Invalid template" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_install_firm_routine_rejects_empty_tickers_for_pipeline_routine():
     payload = {
         "catalog_id": "weekly_ic",
@@ -122,6 +140,27 @@ async def test_install_firm_routine_rejects_empty_tickers_for_pipeline_routine()
 
     assert response.status_code == 400
     assert "requires at least one ticker" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_public_agent_catalog_excludes_arena():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/agents")
+
+    assert response.status_code == 200
+    ids = [agent["id"] for agent in response.json()["agents"]]
+    assert "arena" not in ids
+
+
+@pytest.mark.asyncio
+async def test_root_health_agent_list_excludes_arena(monkeypatch):
+    monkeypatch.setattr("backend.api_server.FRONTEND_BUILD_DIR", "/tmp/codex-no-frontend-build")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/")
+
+    assert response.status_code == 200
+    assert "arena" not in response.json()["agents"]
 
 
 @pytest.mark.asyncio

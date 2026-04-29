@@ -84,7 +84,6 @@ const TEMPLATE_LABELS: Record<string, string> = {
   market_pulse: 'Market Pulse',
   thesis_guardian: 'Thesis Guardian',
   portfolio_heartbeat: 'Portfolio Heartbeat',
-  arena_analyst: 'Arena Analyst',
 };
 
 const SCHEDULE_LABELS: Record<string, string> = {
