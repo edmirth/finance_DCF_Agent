@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, Pause, Trash2, ChevronRight, Clock, Loader2, Zap, BrainCircuit } from 'lucide-react';
+import { Play, Pause, Trash2, ChevronRight, Clock, Loader2, Zap, FilePlus2 } from 'lucide-react';
 import { getScheduledAgents, deleteScheduledAgent, updateScheduledAgent, triggerAgentRun, getHireProposals, approveHireProposal, rejectHireProposal } from '../api';
 import { ScheduledAgent, HireProposal } from '../types';
 import { getRoleMeta, roleMetaForAgent } from '../agentRoles';
@@ -175,20 +175,20 @@ function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg mb-5">
-        <BrainCircuit className="w-8 h-8 text-white" />
+        <FilePlus2 className="w-8 h-8 text-white" />
       </div>
       <h2 className="text-xl font-semibold text-slate-900 mb-2" style={{ letterSpacing: '-0.02em' }}>
-        No approved team yet
+        No agents yet
       </h2>
       <p className="text-slate-500 text-sm max-w-xs mb-6 leading-relaxed">
-        Start with the PM. Describe the work you want done and let the system propose the right hires.
+        Open a new issue first. Agent cards will appear here as they are created and approved.
       </p>
       <button
-        onClick={() => navigate('/cio')}
+        onClick={() => navigate('/issues?new=1')}
         className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-800 transition-colors duration-150"
       >
-        <BrainCircuit className="w-4 h-4" />
-        Talk to PM
+        <FilePlus2 className="w-4 h-4" />
+        New Issue
       </button>
     </div>
   );
@@ -356,20 +356,20 @@ export default function AgentsDashboard() {
         <div className="flex items-center justify-between mb-10">
           <div>
             <h1 className="text-3xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
-              Team
+              Dashboard
             </h1>
             <p className="text-slate-500 text-sm">
               {agents.length === 0
-                ? 'Approved agents and pending hire proposals'
+                ? 'Agent cards and pending approvals'
                 : `${activeCount} active · ${pausedCount} paused`}
             </p>
           </div>
           <button
-            onClick={() => navigate('/cio')}
+            onClick={() => navigate('/issues?new=1')}
             className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-800 transition-colors duration-200 shadow-sm"
           >
-            <BrainCircuit className="w-4 h-4" />
-            Talk to PM
+            <FilePlus2 className="w-4 h-4" />
+            New Issue
           </button>
         </div>
 
@@ -378,10 +378,10 @@ export default function AgentsDashboard() {
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
-                  Pending Hire Proposals
+                  Pending Agent Approvals
                 </h2>
                 <p className="text-sm text-slate-500">
-                  CIO suggestions waiting for your approval.
+                  Suggested agents waiting for approval.
                 </p>
               </div>
               <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">

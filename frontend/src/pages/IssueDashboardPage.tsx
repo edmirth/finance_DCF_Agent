@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowRight,
-  BrainCircuit,
   Briefcase,
   ChevronDown,
   CircleDot,
@@ -50,7 +49,6 @@ const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
 const PRIORITY_OPTIONS: TaskPriority[] = ['low', 'medium', 'high', 'urgent'];
 
 type AssigneeChoice =
-  | { kind: 'pm'; id: null; label: string; subtitle: string }
   | { kind: 'none'; id: null; label: string; subtitle: string }
   | { kind: 'agent'; id: string; label: string; subtitle: string };
 
@@ -77,7 +75,7 @@ function assigneeLabel(task: ResearchTask, agentsById: Map<string, ScheduledAgen
   if (task.owner_agent_id && agentsById.has(task.owner_agent_id)) {
     return agentsById.get(task.owner_agent_id)!.name;
   }
-  return 'PM / CIO';
+  return 'No assignee';
 }
 
 function taskProjectLabel(task: ResearchTask, projectsById: Map<string, ProjectSummary>): string {
@@ -135,10 +133,7 @@ function IssueCard({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px] text-slate-500">
-        <span className="inline-flex items-center gap-1.5">
-          <BrainCircuit className="h-3.5 w-3.5 text-slate-400" />
-          {assigneeLabel(task, agentsById)}
-        </span>
+        <span>{assigneeLabel(task, agentsById)}</span>
         <span className="inline-flex items-center gap-1.5">
           <FolderOpen className="h-3.5 w-3.5 text-slate-400" />
           {taskProjectLabel(task, projectsById)}
@@ -199,10 +194,10 @@ function NewIssueModal({
   const [assigneeQuery, setAssigneeQuery] = useState('');
   const [projectQuery, setProjectQuery] = useState('');
   const [selectedAssignee, setSelectedAssignee] = useState<AssigneeChoice>({
-    kind: 'pm',
+    kind: 'none',
     id: null,
-    label: 'PM / CIO',
-    subtitle: 'Default reviewer and staffing lead',
+    label: 'No assignee',
+    subtitle: 'Create the issue without assigning it yet',
   });
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -216,7 +211,6 @@ function NewIssueModal({
   const assigneeOptions = useMemo<AssigneeChoice[]>(() => {
     const normalizedQuery = assigneeQuery.trim().toLowerCase();
     const baseOptions: AssigneeChoice[] = [
-      { kind: 'pm', id: null, label: 'PM / CIO', subtitle: 'Default reviewer and staffing lead' },
       { kind: 'none', id: null, label: 'No assignee', subtitle: 'Create the issue without routing it yet' },
       ...agents.map((agent) => ({
         kind: 'agent' as const,
@@ -266,12 +260,7 @@ function NewIssueModal({
       priority,
       project_id: selectedProjectId || undefined,
       notes: description.trim() || undefined,
-      triggered_by:
-        selectedAssignee.kind === 'pm'
-          ? 'cio_intake'
-          : selectedAssignee.kind === 'agent'
-            ? 'manual_assignment'
-            : 'manual',
+      triggered_by: selectedAssignee.kind === 'agent' ? 'manual_assignment' : 'manual',
       assigned_agent_id: selectedAssignee.kind === 'agent' ? selectedAssignee.id : undefined,
     };
 
@@ -493,7 +482,7 @@ function EmptyBoard({ onCreate }: { onCreate: () => void }) {
         Open the first issue
       </h2>
       <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-500">
-        Start by defining the work. The PM reviews the issue, decides what coverage is needed, and only then hires or delegates analysts.
+        Start by defining the work. Issues live here separately from the agent dashboard and inbox.
       </p>
       <button
         type="button"
@@ -575,10 +564,10 @@ export default function IssueDashboardPage() {
               {liveCount} live
             </div>
             <h1 className="text-4xl font-semibold text-slate-900" style={{ letterSpacing: '-0.05em' }}>
-              Dashboard
+              Issues
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-500">
-              Open the issue first. The PM receives the card, scopes the work, then decides whether to answer directly, delegate to the existing team, or propose new hires.
+              Create and track work items here. The dashboard is for agent cards, while this tab is for the issue queue itself.
             </p>
           </div>
 
@@ -620,17 +609,9 @@ export default function IssueDashboardPage() {
                 Issue board
               </h2>
               <p className="mt-1 text-sm text-slate-500">
-                Each issue is the unit of work. Click through to review PM staffing, task state, and findings.
+                Each issue is the unit of work. Click through to review assignment, task state, and findings.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => navigate('/cio')}
-              className="hidden items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900 md:inline-flex"
-            >
-              <BrainCircuit className="h-4 w-4" />
-              PM view
-            </button>
           </div>
 
           {loading ? (

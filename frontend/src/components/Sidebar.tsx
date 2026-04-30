@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FilePlus2, FileText, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, BrainCircuit, Users, FolderOpen } from 'lucide-react';
+import { BookOpen, FilePlus2, FileText, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, Inbox, CircleDot, FolderOpen } from 'lucide-react';
 
 // Mobile header component with hamburger menu
 function MobileHeader({ onMenuClick }: { onMenuClick: () => void }) {
@@ -188,7 +188,7 @@ function Sidebar() {
           <button
             type="button"
             onClick={() => {
-              navigate('/?new=1');
+              navigate('/issues?new=1');
               isMobile && setIsMobileOpen(false);
             }}
             className="mb-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
@@ -205,23 +205,44 @@ function Sidebar() {
             end
             icon={<LayoutDashboard className="w-4 h-4" />}
             label="Dashboard"
-            sub="Issue board · PM-first workflow"
+            sub="Agents · runs · approvals"
             isCollapsed={!isMobile && isCollapsed}
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
           <NavItem
-            to="/cio"
-            icon={<BrainCircuit className="w-4 h-4" />}
-            label="PM"
-            sub="Issue review · staffing & delegation"
+            to="/inbox"
+            icon={<Inbox className="w-4 h-4" />}
+            label="Inbox"
+            sub="Messages and reports from agents"
             isCollapsed={!isMobile && isCollapsed}
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
+        </div>
+
+        {(isMobile || !isCollapsed) && (
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: '#C4C4C4',
+              textTransform: 'uppercase',
+              letterSpacing: '0.08em',
+              padding: '0 12px',
+              marginTop: 20,
+              marginBottom: 6,
+              fontFamily: 'IBM Plex Mono, monospace',
+            }}
+          >
+            Work
+          </div>
+        )}
+
+        <div style={{ marginBottom: 4 }}>
           <NavItem
-            to="/team"
-            icon={<Users className="w-4 h-4" />}
-            label="Team"
-            sub="Approved roster & proposals"
+            to="/issues"
+            icon={<CircleDot className="w-4 h-4" />}
+            label="Issues"
+            sub="Open work and new issue intake"
             isCollapsed={!isMobile && isCollapsed}
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
@@ -286,7 +307,7 @@ function Sidebar() {
                 fontFamily: 'IBM Plex Sans, sans-serif',
               }}
             >
-              Start with the PM to frame the work and let the system decide what coverage to add.
+              Create work from the Issues tab, review agents on the Dashboard, and use Inbox for their updates.
             </p>
           </div>
         )}

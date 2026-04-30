@@ -217,10 +217,10 @@ export default function InboxPage() {
             <p className="text-slate-500 text-sm">All research findings from your agents</p>
           </div>
           <button
-            onClick={() => navigate('/team')}
+            onClick={() => navigate('/')}
             className="text-sm text-emerald-600 hover:text-emerald-700 font-medium transition-colors duration-150"
           >
-            View team →
+            View dashboard →
           </button>
         </div>
 
@@ -258,8 +258,8 @@ export default function InboxPage() {
               <CheckCircle className="w-7 h-7 text-slate-300" />
             </div>
             <p className="text-slate-500 text-sm">No reports yet.</p>
-            <button onClick={() => navigate('/cio')} className="mt-4 text-sm text-emerald-600 hover:text-emerald-700 font-medium">
-              Talk to PM →
+            <button onClick={() => navigate('/issues?new=1')} className="mt-4 text-sm text-emerald-600 hover:text-emerald-700 font-medium">
+              Open a new issue →
             </button>
           </div>
         ) : (

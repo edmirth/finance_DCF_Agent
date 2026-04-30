@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
-  BrainCircuit,
   FolderOpen,
   Loader2,
   Play,
@@ -35,7 +34,7 @@ function assigneeLabel(task: ResearchTask, agentsById: Map<string, ScheduledAgen
   if (task.owner_agent_id && agentsById.has(task.owner_agent_id)) {
     return agentsById.get(task.owner_agent_id)!.name;
   }
-  return 'PM / CIO';
+  return 'No assignee';
 }
 
 function formatDateTime(iso?: string | null): string {
@@ -125,11 +124,11 @@ export default function IssueDetailPage() {
       <div className="mx-auto max-w-5xl">
         <button
           type="button"
-          onClick={() => navigate('/')}
+          onClick={() => navigate('/issues')}
           className="mb-6 inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to dashboard
+          Back to issues
         </button>
 
         <div className="rounded-[30px] border border-slate-200 bg-white p-8 shadow-sm">
@@ -152,14 +151,6 @@ export default function IssueDetailPage() {
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => navigate(`/cio?issue=${task.id}`)}
-                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
-              >
-                <BrainCircuit className="h-4 w-4" />
-                Open PM desk
-              </button>
               <button
                 type="button"
                 onClick={handleRun}
@@ -198,15 +189,12 @@ export default function IssueDetailPage() {
 
           <div className="mt-6 grid gap-5 lg:grid-cols-[1.3fr,0.7fr]">
             <div className="rounded-3xl border border-slate-200 p-5">
-              <div className="flex items-center gap-2">
-                <BrainCircuit className="h-4 w-4 text-slate-500" />
-                <h2 className="text-lg font-semibold text-slate-900">PM staffing state</h2>
-              </div>
+              <h2 className="text-lg font-semibold text-slate-900">Staffing state</h2>
 
               {selectedAgentCount === 0 ? (
                 <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4">
                   <p className="text-sm text-slate-600">
-                    This issue has not been staffed yet. The intended flow is to send it to the PM first, review the mandate, then let the PM delegate to existing analysts or propose hires.
+                    This issue has not been staffed yet. Assign it to an existing agent or leave it unassigned until you decide who should own the work.
                   </p>
                 </div>
               ) : (
@@ -226,9 +214,9 @@ export default function IssueDetailPage() {
 
               {task.pm_synthesis && (
                 <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">PM synthesis</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Latest synthesis</p>
                   <p className="mt-2 text-sm leading-relaxed text-emerald-900">
-                    {task.pm_synthesis.rationale || task.pm_synthesis.summary || 'PM decision captured.'}
+                    {task.pm_synthesis.rationale || task.pm_synthesis.summary || 'Decision captured.'}
                   </p>
                 </div>
               )}
