@@ -1,100 +1,55 @@
-import { useState, useRef, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Send, Loader2, BrainCircuit, Play, UserPlus, ChevronDown, ChevronUp, X } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  cioChat,
-  cioDelegate,
+  ArrowRight,
+  BrainCircuit,
+  Loader2,
+  Play,
+  UserPlus,
+  X,
+} from 'lucide-react';
+import {
   approveHireProposal,
-  rejectHireProposal,
+  cioDelegate,
+  cioReviewTask,
+  getHireProposals,
   getProjects,
+  getScheduledAgents,
   getTask,
-  CioMessage,
-  CioAction,
+  listTasks,
+  rejectHireProposal,
+  type CioAction,
   type ResearchTask,
 } from '../api';
 import { ROLE_META_BY_KEY } from '../agentRoles';
+import type { HireProposal, ProjectSummary, ScheduledAgent } from '../types';
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+type ReviewActionState = 'idle' | 'loading' | 'done' | 'error' | 'rejected';
 
-interface ChatEntry {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
+interface ReviewState {
+  loading: boolean;
+  message?: string;
   action?: CioAction | null;
-  actionState?: 'idle' | 'loading' | 'done' | 'error' | 'rejected';
+  actionState?: ReviewActionState;
   actionResult?: string;
+  error?: string;
 }
 
-// ── Action Cards ──────────────────────────────────────────────────────────────
+const PRIORITY_TONE: Record<string, string> = {
+  low: 'bg-slate-100 text-slate-600',
+  medium: 'bg-blue-50 text-blue-700',
+  high: 'bg-amber-50 text-amber-700',
+  urgent: 'bg-red-50 text-red-700',
+};
 
-function DelegateCard({
-  action,
-  state,
-  result,
-  onDelegate,
-}: {
-  action: CioAction;
-  state: 'idle' | 'loading' | 'done' | 'error';
-  result?: string;
-  onDelegate: () => void;
-}) {
-  return (
-    <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 overflow-hidden">
-      <div className="px-4 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
-            <Play className="w-3.5 h-3.5 text-blue-600" />
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-slate-800" style={{ letterSpacing: '-0.01em' }}>
-              {action.agent_name}
-            </p>
-            {action.reason && (
-              <p className="text-xs text-slate-500 truncate mt-0.5">{action.reason}</p>
-            )}
-          </div>
-        </div>
-        {state === 'idle' && (
-          <button
-            onClick={onDelegate}
-            className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-xl transition-colors duration-200"
-          >
-            <Play className="w-3 h-3" />
-            Run now
-          </button>
-        )}
-        {state === 'loading' && (
-          <div className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 text-blue-600 text-xs font-medium rounded-xl">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            Running…
-          </div>
-        )}
-        {state === 'done' && (
-          <span className="flex-shrink-0 px-3 py-1.5 bg-emerald-100 text-emerald-700 text-xs font-medium rounded-xl">
-            Dispatched
-          </span>
-        )}
-        {state === 'error' && (
-          <span className="flex-shrink-0 px-3 py-1.5 bg-red-100 text-red-600 text-xs font-medium rounded-xl">
-            Failed
-          </span>
-        )}
-      </div>
-      {result && (
-        <div className="px-4 pb-3 text-xs text-slate-500 border-t border-slate-200 pt-2">
-          {result}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const roleLabel = (action: CioAction) =>
-  (action.role_key && ROLE_META_BY_KEY[action.role_key as keyof typeof ROLE_META_BY_KEY]?.title)
-  || action.role_title
-  || action.template
-  || 'Role';
+const STATUS_TONE: Record<string, string> = {
+  pending: 'bg-slate-100 text-slate-700',
+  running: 'bg-blue-100 text-blue-700',
+  in_review: 'bg-amber-100 text-amber-700',
+  done: 'bg-emerald-100 text-emerald-700',
+  failed: 'bg-red-100 text-red-700',
+  cancelled: 'bg-slate-200 text-slate-600',
+};
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -104,6 +59,110 @@ const SCHEDULE_LABELS: Record<string, string> = {
   monthly: 'Monthly',
 };
 
+const PRIORITY_RANK: Record<string, number> = {
+  urgent: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+function displayTicker(ticker: string): string {
+  return ticker === 'GENERAL' ? 'General' : ticker;
+}
+
+function formatRelativeTime(iso?: string | null): string {
+  if (!iso) return 'Just now';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60_000);
+  const hours = Math.floor(diff / 3_600_000);
+  const days = Math.floor(diff / 86_400_000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
+}
+
+function roleLabel(input: {
+  role_key?: string | null;
+  role_title?: string | null;
+  template?: string | null;
+}) {
+  return (
+    (input.role_key && ROLE_META_BY_KEY[input.role_key as keyof typeof ROLE_META_BY_KEY]?.title)
+    || input.role_title
+    || input.template
+    || 'Role'
+  );
+}
+
+function assigneeLabel(task: ResearchTask, agentsById: Map<string, ScheduledAgent>): string {
+  if (task.assigned_agent_id && agentsById.has(task.assigned_agent_id)) {
+    return agentsById.get(task.assigned_agent_id)!.name;
+  }
+  if (task.owner_agent_id && agentsById.has(task.owner_agent_id)) {
+    return agentsById.get(task.owner_agent_id)!.name;
+  }
+  return 'PM / CIO';
+}
+
+function projectLabel(task: ResearchTask, projectsById: Map<string, ProjectSummary>): string {
+  if (task.project_id && projectsById.has(task.project_id)) {
+    return projectsById.get(task.project_id)!.title;
+  }
+  return 'No project';
+}
+
+function DelegateCard({
+  action,
+  state,
+  result,
+  onDelegate,
+}: {
+  action: CioAction;
+  state: ReviewActionState;
+  result?: string;
+  onDelegate: () => void;
+}) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Delegate run</p>
+          <p className="mt-1 truncate text-sm font-semibold text-slate-900">{action.agent_name}</p>
+          {action.reason && <p className="mt-1 text-xs text-slate-500">{action.reason}</p>}
+        </div>
+        {state === 'idle' && (
+          <button
+            type="button"
+            onClick={onDelegate}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+          >
+            <Play className="h-3 w-3" />
+            Run now
+          </button>
+        )}
+        {state === 'loading' && (
+          <div className="inline-flex items-center gap-1.5 rounded-xl bg-blue-100 px-3 py-1.5 text-xs font-medium text-blue-700">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Running…
+          </div>
+        )}
+        {state === 'done' && (
+          <span className="rounded-xl bg-emerald-100 px-3 py-1.5 text-xs font-medium text-emerald-700">
+            Dispatched
+          </span>
+        )}
+        {state === 'error' && (
+          <span className="rounded-xl bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700">
+            Failed
+          </span>
+        )}
+      </div>
+      {result && <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-500">{result}</div>}
+    </div>
+  );
+}
+
 function HireCard({
   action,
   state,
@@ -112,547 +171,675 @@ function HireCard({
   onReject,
 }: {
   action: CioAction;
-  state: 'idle' | 'loading' | 'done' | 'error' | 'rejected';
+  state: ReviewActionState;
   result?: string;
   onApprove: () => void;
   onReject: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-
   return (
-    <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 overflow-hidden">
+    <div className="mt-4 overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-50">
       <div className="px-4 py-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide" style={{ letterSpacing: '0.04em' }}>
-                Proposal — Hire New Agent
-              </p>
-              <p className="text-sm font-semibold text-slate-800 mt-0.5" style={{ letterSpacing: '-0.01em' }}>
-                {action.name}
-              </p>
-              {action.description && (
-                <p className="text-xs text-slate-500 mt-1">{action.description}</p>
-              )}
-            </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Hire proposal</p>
+            <p className="mt-1 text-sm font-semibold text-slate-900">{action.name}</p>
+            {action.description && <p className="mt-1 text-xs text-slate-600">{action.description}</p>}
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2">
             {state === 'idle' && (
               <>
                 <button
+                  type="button"
                   onClick={onReject}
-                  className="p-1.5 rounded-lg hover:bg-red-100 text-slate-400 hover:text-red-600 transition-colors"
+                  className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-100 hover:text-red-600"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <X className="h-3.5 w-3.5" />
                 </button>
                 <button
+                  type="button"
                   onClick={onApprove}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-xl transition-colors duration-200"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-700"
                 >
-                  <UserPlus className="w-3 h-3" />
+                  <UserPlus className="h-3 w-3" />
                   Approve
                 </button>
               </>
             )}
             {state === 'loading' && (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 text-emerald-600 text-xs font-medium rounded-xl">
-                <Loader2 className="w-3 h-3 animate-spin" />
+              <div className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-100 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                <Loader2 className="h-3 w-3 animate-spin" />
                 Saving…
               </div>
             )}
             {state === 'done' && (
-              <span className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-xl">
+              <span className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white">
                 Approved
               </span>
             )}
             {state === 'rejected' && (
-              <span className="px-3 py-1.5 bg-slate-200 text-slate-600 text-xs font-medium rounded-xl">
+              <span className="rounded-xl bg-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600">
                 Declined
               </span>
             )}
             {state === 'error' && (
-              <span className="px-3 py-1.5 bg-red-100 text-red-600 text-xs font-medium rounded-xl">
+              <span className="rounded-xl bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700">
                 Failed
               </span>
             )}
           </div>
         </div>
 
-        {/* Meta pills */}
-        <div className="flex flex-wrap gap-1.5 mt-3 ml-11">
+        <div className="mt-3 flex flex-wrap gap-1.5">
           {(action.role_key || action.role_title || action.template) && (
-            <span className="px-2 py-0.5 bg-white border border-emerald-200 text-emerald-700 text-xs rounded-lg font-medium">
+            <span className="rounded-lg border border-emerald-200 bg-white px-2 py-0.5 text-xs font-medium text-emerald-700">
               {roleLabel(action)}
             </span>
           )}
           {action.schedule_label && (
-            <span className="px-2 py-0.5 bg-white border border-slate-200 text-slate-600 text-xs rounded-lg">
+            <span className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">
               {SCHEDULE_LABELS[action.schedule_label] || action.schedule_label}
             </span>
           )}
-          {(action.tickers || []).map(t => (
-            <span key={t} className="px-2 py-0.5 bg-white border border-slate-200 text-slate-700 text-xs rounded-lg font-mono">
-              {t}
+          {(action.tickers || []).map((ticker) => (
+            <span key={ticker} className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 font-mono text-xs text-slate-700">
+              {ticker}
             </span>
           ))}
         </div>
 
-        {/* Expand instruction */}
         {action.instruction && (
-          <button
-            onClick={() => setExpanded(e => !e)}
-            className="mt-3 ml-11 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 transition-colors"
-          >
-            {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-            {expanded ? 'Hide' : 'Show'} instructions
-          </button>
-        )}
-        {expanded && action.instruction && (
-          <p className="mt-2 ml-11 text-xs text-slate-600 leading-relaxed bg-white rounded-xl p-3 border border-emerald-100">
+          <p className="mt-3 rounded-xl border border-emerald-100 bg-white p-3 text-xs leading-relaxed text-slate-600">
             {action.instruction}
           </p>
         )}
       </div>
-
-      {result && (
-        <div className="px-4 pb-3 text-xs text-slate-500 border-t border-emerald-100 pt-2">
-          {result}
-        </div>
-      )}
+      {result && <div className="border-t border-emerald-100 px-4 py-2 text-xs text-slate-500">{result}</div>}
     </div>
   );
 }
 
-// ── Message bubble ─────────────────────────────────────────────────────────────
-
-function MessageBubble({
-  entry,
-  onDelegate,
-  onApproveHire,
-  onRejectHire,
+function PendingProposalCard({
+  proposal,
+  onApprove,
+  onReject,
 }: {
-  entry: ChatEntry;
-  onDelegate: (entryId: string) => void;
-  onApproveHire: (entryId: string) => void;
-  onRejectHire: (entryId: string) => void;
+  proposal: HireProposal;
+  onApprove: (proposalId: string) => void;
+  onReject: (proposalId: string) => void;
 }) {
-  const isUser = entry.role === 'user';
-
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
-      {!isUser && (
-        <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center flex-shrink-0 mr-3 mt-0.5 shadow-sm">
-          <BrainCircuit className="w-4 h-4 text-white" />
+    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Pending hire</p>
+      <h3 className="mt-2 text-sm font-semibold text-slate-900">{proposal.name}</h3>
+      <p className="mt-1 text-xs text-slate-600">
+        {roleLabel(proposal)} · Reports to {proposal.reports_to_label || 'CIO'}
+      </p>
+      {proposal.description && <p className="mt-2 text-xs leading-relaxed text-slate-600">{proposal.description}</p>}
+      {proposal.tickers.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {proposal.tickers.map((ticker) => (
+            <span key={ticker} className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 font-mono text-xs text-slate-700">
+              {ticker}
+            </span>
+          ))}
         </div>
       )}
-      <div className={`max-w-[75%] ${isUser ? 'max-w-[60%]' : ''}`}>
-        {isUser ? (
-          <div className="px-4 py-3 bg-slate-900 text-white rounded-2xl rounded-tr-sm text-sm leading-relaxed">
-            {entry.content}
-          </div>
-        ) : (
-          <div>
-            <div className="text-sm text-slate-800 leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:mt-3 prose-headings:mb-1">
-              <ReactMarkdown>{entry.content}</ReactMarkdown>
-            </div>
-            {entry.action?.type === 'delegate' && entry.actionState !== undefined && entry.actionState !== 'rejected' && (
-              <DelegateCard
-                action={entry.action}
-                state={entry.actionState}
-                result={entry.actionResult}
-                onDelegate={() => onDelegate(entry.id)}
-              />
-            )}
-            {entry.action?.type === 'propose_hire' && entry.actionState !== undefined && (
-              <HireCard
-                action={entry.action}
-                state={entry.actionState}
-                result={entry.actionResult}
-                onApprove={() => onApproveHire(entry.id)}
-                onReject={() => onRejectHire(entry.id)}
-              />
-            )}
-          </div>
-        )}
+      <div className="mt-4 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onReject(proposal.id)}
+          className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+        >
+          Decline
+        </button>
+        <button
+          type="button"
+          onClick={() => onApprove(proposal.id)}
+          className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-700"
+        >
+          Approve
+        </button>
       </div>
     </div>
   );
 }
 
-// ── Suggested prompts ──────────────────────────────────────────────────────────
+function ReviewQueueCard({
+  task,
+  projectName,
+  assigneeName,
+  state,
+  onReview,
+  onOpen,
+  onDelegate,
+  onApproveHire,
+  onRejectHire,
+}: {
+  task: ResearchTask;
+  projectName: string;
+  assigneeName: string;
+  state?: ReviewState;
+  onReview: () => void;
+  onOpen: () => void;
+  onDelegate: () => void;
+  onApproveHire: () => void;
+  onRejectHire: () => void;
+}) {
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${PRIORITY_TONE[task.priority] || PRIORITY_TONE.medium}`}>
+              {task.priority}
+            </span>
+            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${STATUS_TONE[task.status] || STATUS_TONE.pending}`}>
+              {task.status.replace('_', ' ')}
+            </span>
+            <span className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+              {displayTicker(task.ticker)}
+            </span>
+          </div>
+          <h3 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
+            {task.title}
+          </h3>
+          <p className="mt-2 text-sm leading-relaxed text-slate-600">
+            {task.notes?.trim() || 'No issue description yet.'}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-slate-500">
+            <span>Project: {projectName}</span>
+            <span>Owner: {assigneeName}</span>
+            <span>Updated {formatRelativeTime(task.updated_at || task.created_at)}</span>
+            <span>
+              Staffing: {task.selected_agents.length > 0 ? task.selected_agents.join(', ') : 'Unstaffed'}
+            </span>
+          </div>
+        </div>
 
-const SUGGESTIONS = [
-  "I want to underwrite NVDA. Build the right team for it.",
-  "What coverage are we missing for a new software idea?",
-  "Run the right workstream for a TSLA risk review.",
-  "Do we need a new analyst for semis right now?",
-  "Summarize what my current team found this week.",
-];
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+          >
+            Open issue
+          </button>
+          <button
+            type="button"
+            onClick={onReview}
+            disabled={state?.loading}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {state?.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <BrainCircuit className="h-4 w-4" />}
+            Run PM review
+          </button>
+        </div>
+      </div>
 
-function issuePrompt(task: ResearchTask, projectTitle?: string | null): string {
-  const detailLines = [
-    `Review this issue for the PM workflow.`,
-    `Title: ${task.title}`,
-    `Ticker: ${task.ticker}`,
-    `Task type: ${task.task_type}`,
-    `Priority: ${task.priority}`,
-    `Project: ${projectTitle || 'No project'}`,
-    `Description: ${task.notes || 'No description provided.'}`,
-    `Current staffing: ${task.selected_agents.length > 0 ? task.selected_agents.join(', ') : 'Unstaffed'}`,
-    `Decide whether you should answer directly, delegate to an existing agent, or propose a hire. If staffing is missing, propose the right hire or delegation.`,
-  ];
-  return detailLines.join('\n');
+      {state?.error && (
+        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+          {state.error}
+        </div>
+      )}
+
+      {state?.message && (
+        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">PM view</p>
+          <p className="mt-2 text-sm leading-relaxed text-slate-700">{state.message}</p>
+        </div>
+      )}
+
+      {state?.action?.type === 'delegate' && state.actionState && state.actionState !== 'rejected' && (
+        <DelegateCard
+          action={state.action}
+          state={state.actionState}
+          result={state.actionResult}
+          onDelegate={onDelegate}
+        />
+      )}
+
+      {state?.action?.type === 'propose_hire' && state.actionState && (
+        <HireCard
+          action={state.action}
+          state={state.actionState}
+          result={state.actionResult}
+          onApprove={onApproveHire}
+          onReject={onRejectHire}
+        />
+      )}
+    </div>
+  );
 }
-
-// ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function CioPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
-  const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [tasks, setTasks] = useState<ResearchTask[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [agents, setAgents] = useState<ScheduledAgent[]>([]);
+  const [pendingProposals, setPendingProposals] = useState<HireProposal[]>([]);
   const [linkedIssue, setLinkedIssue] = useState<ResearchTask | null>(null);
-  const [linkedProjectTitle, setLinkedProjectTitle] = useState<string | null>(null);
-  const [issueError, setIssueError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reviewStates, setReviewStates] = useState<Record<string, ReviewState>>({});
 
   const issueId = searchParams.get('issue');
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [entries]);
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [taskRows, projectRows, agentRows, proposalRows] = await Promise.all([
+        listTasks({ limit: 200 }),
+        getProjects(),
+        getScheduledAgents(),
+        getHireProposals('pending'),
+      ]);
+      setTasks(taskRows);
+      setProjects(projectRows);
+      setAgents(agentRows);
+      setPendingProposals(proposalRows);
+    } catch {
+      setError('Could not load the PM desk.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const loadIssue = async () => {
+    load();
+  }, []);
+
+  useEffect(() => {
+    const loadLinkedIssue = async () => {
       if (!issueId) {
         setLinkedIssue(null);
-        setLinkedProjectTitle(null);
-        setIssueError(null);
         return;
       }
       try {
         const task = await getTask(issueId);
         setLinkedIssue(task);
-        setIssueError(null);
-        if (task.project_id) {
-          const projects = await getProjects();
-          const project = projects.find((candidate) => candidate.id === task.project_id);
-          setLinkedProjectTitle(project?.title || null);
-        } else {
-          setLinkedProjectTitle(null);
-        }
       } catch {
         setLinkedIssue(null);
-        setLinkedProjectTitle(null);
-        setIssueError('Could not load the linked issue.');
       }
     };
-
-    loadIssue();
+    loadLinkedIssue();
   }, [issueId]);
 
-  const buildHistory = (): CioMessage[] =>
-    entries.map(e => ({ role: e.role, content: e.content }));
+  const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+  const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
-  const send = async (text: string) => {
-    if (!text.trim() || isLoading) return;
+  const reviewQueue = useMemo(() => {
+    const openTasks = tasks.filter((task) => !['done', 'cancelled'].includes(task.status));
+    const deduped = new Map<string, ResearchTask>();
+    if (linkedIssue) {
+      deduped.set(linkedIssue.id, linkedIssue);
+    }
+    for (const task of openTasks) {
+      if (
+        task.status === 'pending'
+        || task.status === 'in_review'
+        || task.selected_agents.length === 0
+        || task.id === issueId
+      ) {
+        deduped.set(task.id, task);
+      }
+    }
 
-    const userEntry: ChatEntry = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: text.trim(),
-    };
-    setEntries(prev => [...prev, userEntry]);
-    setInput('');
-    setIsLoading(true);
+    return Array.from(deduped.values()).sort((left, right) => {
+      if (left.id === issueId) return -1;
+      if (right.id === issueId) return 1;
+      const leftRank = PRIORITY_RANK[left.priority] ?? 99;
+      const rightRank = PRIORITY_RANK[right.priority] ?? 99;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return new Date(right.updated_at || right.created_at || 0).getTime() - new Date(left.updated_at || left.created_at || 0).getTime();
+    });
+  }, [issueId, linkedIssue, tasks]);
+
+  const activeTeam = useMemo(
+    () => agents.filter((agent) => agent.is_active).sort((left, right) => left.name.localeCompare(right.name)),
+    [agents],
+  );
+
+  const runReview = async (task: ResearchTask) => {
+    setReviewStates((current) => ({
+      ...current,
+      [task.id]: { loading: true },
+    }));
 
     try {
-      const history = [...buildHistory(), { role: 'user' as const, content: text.trim() }];
-      const res = await cioChat(history);
-
-      const assistantEntry: ChatEntry = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: res.message,
-        action: res.action ?? null,
-        actionState: !res.action
-          ? undefined
-          : res.action.proposal_status === 'approved'
-            ? 'done'
-            : res.action.proposal_status === 'rejected'
-              ? 'rejected'
-              : 'idle',
-      };
-      setEntries(prev => [...prev, assistantEntry]);
-    } catch {
-      setEntries(prev => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: 'Something went wrong. Please try again.',
+      const response = await cioReviewTask(task.id);
+      setReviewStates((current) => ({
+        ...current,
+        [task.id]: {
+          loading: false,
+          message: response.message,
+          action: response.action ?? null,
+          actionState: !response.action
+            ? undefined
+            : response.action.proposal_status === 'approved'
+              ? 'done'
+              : response.action.proposal_status === 'rejected'
+                ? 'rejected'
+                : 'idle',
         },
-      ]);
-    } finally {
-      setIsLoading(false);
+      }));
+      if (response.action?.type === 'propose_hire') {
+        const proposals = await getHireProposals('pending');
+        setPendingProposals(proposals);
+      }
+    } catch {
+      setReviewStates((current) => ({
+        ...current,
+        [task.id]: {
+          loading: false,
+          error: 'PM review failed. Please try again.',
+        },
+      }));
     }
   };
 
-  const handleDelegate = async (entryId: string) => {
-    const entry = entries.find(e => e.id === entryId);
-    if (!entry?.action?.agent_id) return;
+  const handleDelegate = async (taskId: string) => {
+    const review = reviewStates[taskId];
+    if (!review?.action?.agent_id) return;
 
-    setEntries(prev =>
-      prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' } : e)
-    );
+    setReviewStates((current) => ({
+      ...current,
+      [taskId]: { ...current[taskId], actionState: 'loading' },
+    }));
 
     try {
-      const result = await cioDelegate(entry.action.agent_id);
-      setEntries(prev =>
-        prev.map(e =>
-          e.id === entryId
-            ? { ...e, actionState: 'done', actionResult: `Run started — ID: ${result.run_id}. Check Inbox for results.` }
-            : e
-        )
-      );
+      const result = await cioDelegate(review.action.agent_id);
+      setReviewStates((current) => ({
+        ...current,
+        [taskId]: {
+          ...current[taskId],
+          actionState: 'done',
+          actionResult: `Run started — ID: ${result.run_id}. Check Inbox for results.`,
+        },
+      }));
     } catch {
-      setEntries(prev =>
-        prev.map(e =>
-          e.id === entryId
-            ? { ...e, actionState: 'error', actionResult: 'Failed to dispatch agent run.' }
-            : e
-        )
-      );
+      setReviewStates((current) => ({
+        ...current,
+        [taskId]: {
+          ...current[taskId],
+          actionState: 'error',
+          actionResult: 'Failed to dispatch agent run.',
+        },
+      }));
     }
   };
 
-  const handleApproveHire = async (entryId: string) => {
-    const entry = entries.find(e => e.id === entryId);
-    if (!entry?.action?.proposal_id) return;
+  const handleApproveFromReview = async (taskId: string) => {
+    const review = reviewStates[taskId];
+    if (!review?.action?.proposal_id) return;
 
-    setEntries(prev =>
-      prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' } : e)
-    );
+    setReviewStates((current) => ({
+      ...current,
+      [taskId]: { ...current[taskId], actionState: 'loading' },
+    }));
 
     try {
-      const result = await approveHireProposal(entry.action.proposal_id);
-      setEntries(prev =>
-        prev.map(e =>
-          e.id === entryId
-            ? {
-                ...e,
-                actionState: 'done',
-                actionResult: `${result.agent.name} approved and added to the team.`,
-              }
-            : e
-        )
-      );
+      const result = await approveHireProposal(review.action.proposal_id);
+      setReviewStates((current) => ({
+        ...current,
+        [taskId]: {
+          ...current[taskId],
+          actionState: 'done',
+          actionResult: `${result.agent.name} approved and added to the team.`,
+        },
+      }));
+      await load();
     } catch {
-      setEntries(prev =>
-        prev.map(e =>
-          e.id === entryId
-            ? { ...e, actionState: 'error', actionResult: 'Failed to hire agent.' }
-            : e
-        )
-      );
+      setReviewStates((current) => ({
+        ...current,
+        [taskId]: {
+          ...current[taskId],
+          actionState: 'error',
+          actionResult: 'Failed to approve the hire proposal.',
+        },
+      }));
     }
   };
 
-  const handleRejectHire = async (entryId: string) => {
-    const entry = entries.find(e => e.id === entryId);
-    if (!entry?.action?.proposal_id) return;
+  const handleRejectFromReview = async (taskId: string) => {
+    const review = reviewStates[taskId];
+    if (!review?.action?.proposal_id) return;
 
-    setEntries(prev =>
-      prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' } : e)
-    );
+    setReviewStates((current) => ({
+      ...current,
+      [taskId]: { ...current[taskId], actionState: 'loading' },
+    }));
 
     try {
-      await rejectHireProposal(entry.action.proposal_id);
-      setEntries(prev =>
-        prev.map(e =>
-          e.id === entryId
-            ? { ...e, actionState: 'rejected', actionResult: 'Hire proposal declined.' }
-            : e
-        )
-      );
+      await rejectHireProposal(review.action.proposal_id);
+      setReviewStates((current) => ({
+        ...current,
+        [taskId]: {
+          ...current[taskId],
+          actionState: 'rejected',
+          actionResult: 'Hire proposal declined.',
+        },
+      }));
+      const proposals = await getHireProposals('pending');
+      setPendingProposals(proposals);
     } catch {
-      setEntries(prev =>
-        prev.map(e =>
-          e.id === entryId
-            ? { ...e, actionState: 'error', actionResult: 'Failed to update hire proposal.' }
-            : e
-        )
-      );
+      setReviewStates((current) => ({
+        ...current,
+        [taskId]: {
+          ...current[taskId],
+          actionState: 'error',
+          actionResult: 'Failed to update the hire proposal.',
+        },
+      }));
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      send(input);
+  const handleApproveProposal = async (proposalId: string) => {
+    try {
+      await approveHireProposal(proposalId);
+      await load();
+    } catch {
+      setError('Failed to approve the hire proposal.');
     }
   };
 
-  const isEmpty = entries.length === 0;
+  const handleRejectProposal = async (proposalId: string) => {
+    try {
+      await rejectHireProposal(proposalId);
+      const proposals = await getHireProposals('pending');
+      setPendingProposals(proposals);
+    } catch {
+      setError('Failed to decline the hire proposal.');
+    }
+  };
 
   return (
-    <div className="flex flex-col h-screen bg-white" style={{ paddingLeft: '80px' }}>
-      {/* Header */}
-      <div className="flex-shrink-0 border-b border-slate-100 px-8 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm">
-            <BrainCircuit className="w-4.5 h-4.5 text-white" strokeWidth={2} />
-          </div>
+    <div className="min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-7xl px-6 py-10 lg:px-10">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-base font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
-              Chief Investment Officer
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 shadow-sm ring-1 ring-slate-200">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              PM desk
+            </div>
+            <h1 className="text-4xl font-semibold text-slate-900" style={{ letterSpacing: '-0.05em' }}>
+              PM Workflow
             </h1>
-            <p className="text-xs text-slate-400 font-light">Your first point of contact for staffing and delegation</p>
+            <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-500">
+              Issues arrive here first. The PM reviews the card, decides whether to delegate to the current team or propose a hire, and then pushes the work forward. No chat step.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-center">
+              <p className="text-2xl font-semibold text-slate-900" style={{ letterSpacing: '-0.04em' }}>{reviewQueue.length}</p>
+              <p className="text-xs text-slate-500">Queue</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-center">
+              <p className="text-2xl font-semibold text-slate-900" style={{ letterSpacing: '-0.04em' }}>{pendingProposals.length}</p>
+              <p className="text-xs text-slate-500">Pending hires</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-center">
+              <p className="text-2xl font-semibold text-slate-900" style={{ letterSpacing: '-0.04em' }}>{activeTeam.length}</p>
+              <p className="text-xs text-slate-500">Active team</p>
+            </div>
           </div>
         </div>
-        <button
-          onClick={() => navigate('/team')}
-          className="text-xs text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-xl hover:bg-slate-50 transition-colors flex items-center gap-1.5"
-        >
-          View team →
-        </button>
-      </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
-        {isEmpty ? (
-          <div className="flex flex-col items-center justify-center h-full px-8 pb-16">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg mb-6">
-              <BrainCircuit className="w-8 h-8 text-white" strokeWidth={1.5} />
-            </div>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-2" style={{ letterSpacing: '-0.03em' }}>
-              Start with the PM
-            </h2>
-            <p className="text-slate-500 text-sm text-center max-w-sm mb-10 font-light leading-relaxed">
-              Describe the work you want done. The PM can answer directly, propose hires, and staff the right analysts for the job.
-            </p>
-            {linkedIssue && (
-              <div className="w-full max-w-2xl rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-left mb-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">
-                      Linked issue
-                    </p>
-                    <h3 className="mt-2 text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
-                      {linkedIssue.title}
-                    </h3>
-                    <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-                      {linkedIssue.notes || 'No issue description provided.'}
-                    </p>
-                    <p className="mt-3 text-xs text-slate-500">
-                      {linkedIssue.ticker} · {linkedProjectTitle || 'No project'} · {linkedIssue.priority}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => send(issuePrompt(linkedIssue, linkedProjectTitle))}
-                    className="flex-shrink-0 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 transition-colors"
-                  >
-                    Ask PM to staff this
-                  </button>
-                </div>
+        {linkedIssue && (
+          <div className="mt-8 rounded-[28px] border border-emerald-200 bg-emerald-50 p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Linked issue</p>
+                <h2 className="mt-2 text-2xl font-semibold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
+                  {linkedIssue.title}
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                  {linkedIssue.notes || 'No issue description provided.'}
+                </p>
+                <p className="mt-3 text-xs text-slate-500">
+                  {displayTicker(linkedIssue.ticker)} · {projectLabel(linkedIssue, projectsById)} · {linkedIssue.priority}
+                </p>
               </div>
-            )}
-            {issueError && (
-              <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-                {issueError}
-              </div>
-            )}
-            <div className="flex flex-col gap-2 w-full max-w-md">
-              {SUGGESTIONS.map(s => (
+              <div className="flex flex-wrap gap-2">
                 <button
-                  key={s}
-                  onClick={() => send(s)}
-                  className="text-left px-4 py-3 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-sm text-slate-700 transition-all duration-200 font-light"
-                  style={{ letterSpacing: '-0.01em' }}
+                  type="button"
+                  onClick={() => navigate(`/issues/${linkedIssue.id}`)}
+                  className="rounded-2xl border border-emerald-200 bg-white px-4 py-2 text-sm font-medium text-emerald-700 transition hover:border-emerald-300"
                 >
-                  {s}
+                  Open issue
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => runReview(linkedIssue)}
+                  disabled={reviewStates[linkedIssue.id]?.loading}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {reviewStates[linkedIssue.id]?.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <BrainCircuit className="h-4 w-4" />}
+                  Run PM review
+                </button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="max-w-2xl mx-auto px-6 py-8">
-            {linkedIssue && (
-              <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-                  Working from issue
-                </p>
-                <p className="mt-1 text-sm font-medium text-slate-900">{linkedIssue.title}</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {linkedIssue.ticker} · {linkedProjectTitle || 'No project'}
-                </p>
-              </div>
-            )}
-            {entries.map(entry => (
-              <MessageBubble
-                key={entry.id}
-                entry={entry}
-                onDelegate={handleDelegate}
-                onApproveHire={handleApproveHire}
-                onRejectHire={handleRejectHire}
-              />
-            ))}
-            {isLoading && (
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center flex-shrink-0 shadow-sm">
-                  <BrainCircuit className="w-4 h-4 text-white" />
-                </div>
-                <div className="flex items-center gap-1.5 px-4 py-3 rounded-2xl bg-slate-50">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            )}
-            <div ref={bottomRef} />
           </div>
         )}
-      </div>
 
-      {/* Input */}
-      <div className="flex-shrink-0 border-t border-slate-100 px-8 py-5">
-        <div className="max-w-2xl mx-auto">
-          <div className="relative flex items-end gap-3 p-3 rounded-2xl border border-slate-200 focus-within:border-slate-400 transition-colors bg-white shadow-sm">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Describe the analysis or work you want done…"
-              rows={1}
-              className="flex-1 resize-none outline-none text-sm text-slate-900 placeholder-slate-400 leading-relaxed max-h-36 bg-transparent py-1 px-1 font-light"
-              style={{ letterSpacing: '-0.01em' }}
-              onInput={e => {
-                const el = e.currentTarget;
-                el.style.height = 'auto';
-                el.style.height = `${el.scrollHeight}px`;
-              }}
-            />
-            <button
-              onClick={() => send(input)}
-              disabled={!input.trim() || isLoading}
-              className="flex-shrink-0 w-8 h-8 rounded-xl bg-slate-900 hover:bg-slate-700 disabled:bg-slate-200 text-white disabled:text-slate-400 flex items-center justify-center transition-all duration-200 mb-0.5"
-            >
-              {isLoading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Send className="w-3.5 h-3.5" />
-              )}
-            </button>
+        {error && (
+          <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+            {error}
           </div>
-          <p className="text-center text-xs text-slate-400 mt-2 font-light">
-            Enter to send · Shift+Enter for new line
-          </p>
+        )}
+
+        <div className="mt-8 grid gap-6 xl:grid-cols-[1.25fr,0.75fr]">
+          <div className="space-y-6">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
+                    Review queue
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Unstaffed, pending, or in-review issues that need PM direction.
+                  </p>
+                </div>
+              </div>
+
+              {loading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                </div>
+              ) : reviewQueue.length === 0 ? (
+                <div className="py-16 text-center">
+                  <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
+                    <BrainCircuit className="h-5 w-5" />
+                  </div>
+                  <p className="text-sm text-slate-500">No issues currently need PM review.</p>
+                </div>
+              ) : (
+                <div className="mt-6 space-y-4">
+                  {reviewQueue.map((task) => (
+                    <ReviewQueueCard
+                      key={task.id}
+                      task={task}
+                      projectName={projectLabel(task, projectsById)}
+                      assigneeName={assigneeLabel(task, agentsById)}
+                      state={reviewStates[task.id]}
+                      onReview={() => runReview(task)}
+                      onOpen={() => navigate(`/issues/${task.id}`)}
+                      onDelegate={() => handleDelegate(task.id)}
+                      onApproveHire={() => handleApproveFromReview(task.id)}
+                      onRejectHire={() => handleRejectFromReview(task.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
+                    Pending hires
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">Approvals waiting on your decision.</p>
+                </div>
+                <Link to="/team" className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800">
+                  Team
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+              </div>
+
+              {pendingProposals.length === 0 ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  No pending hire proposals.
+                </div>
+              ) : (
+                <div className="mt-6 space-y-4">
+                  {pendingProposals.map((proposal) => (
+                    <PendingProposalCard
+                      key={proposal.id}
+                      proposal={proposal}
+                      onApprove={handleApproveProposal}
+                      onReject={handleRejectProposal}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="border-b border-slate-100 pb-4">
+                <h2 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
+                  Active team
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">Current analysts available for delegation.</p>
+              </div>
+
+              {activeTeam.length === 0 ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  No approved active agents yet.
+                </div>
+              ) : (
+                <div className="mt-6 space-y-3">
+                  {activeTeam.slice(0, 8).map((agent) => (
+                    <div key={agent.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900">{agent.name}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {roleLabel(agent)} · Reports to {agent.reports_to_label || 'CIO'}
+                        </p>
+                      </div>
+                      <Link to={`/scheduled-agents/${agent.id}`} className="text-xs font-medium text-emerald-700 hover:text-emerald-800">
+                        Open
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

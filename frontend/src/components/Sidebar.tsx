@@ -1,96 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FilePlus2, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, BrainCircuit, Users, FolderOpen } from 'lucide-react';
-import { getSessions, deleteSession, getProjects } from '../api';
-import { SessionSummary, ProjectSummary } from '../types';
-
-const AGENT_TYPE_COLORS: Record<string, string> = {
-  analyst: '#8B5CF6',
-  earnings: '#F59E0B',
-  graph: '#10B981',
-  research: '#10B981',
-  market: '#F97316',
-  portfolio: '#6366F1',
-  auto: '#10B981',
-  workstation: '#10B981',
-};
-
-const AGENT_TYPE_LABELS: Record<string, string> = {
-  analyst: 'Analyst',
-  earnings: 'Earnings',
-  graph: 'Graph',
-  research: 'Research',
-  market: 'Market',
-  portfolio: 'Portfolio',
-  auto: 'Auto',
-  workstation: 'Research',
-};
-
-function SessionRow({
-  session,
-  onDelete,
-  onSelect,
-}: {
-  session: SessionSummary;
-  onDelete: (id: string) => void;
-  onSelect: (id: string) => void;
-}) {
-  const color = AGENT_TYPE_COLORS[session.agent_type] || '#9CA3AF';
-  const label = AGENT_TYPE_LABELS[session.agent_type] || session.agent_type;
-  const dateStr = new Date(session.last_active_at).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
-
-  return (
-    <div
-      onClick={() => onSelect(session.id)}
-      className="group flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer transition-colors duration-100 hover:bg-[#F7F7F5]"
-    >
-      {/* Colored dot indicator */}
-      <div
-        className="flex-shrink-0 mt-[5px]"
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: color,
-          opacity: 0.7,
-        }}
-      />
-      <div className="flex-1 min-w-0">
-        <p
-          className="text-[13px] font-medium text-slate-700 truncate leading-snug"
-          title={session.title}
-          style={{ letterSpacing: '-0.01em' }}
-        >
-          {session.title}
-        </p>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span
-            style={{
-              fontSize: '0.625rem',
-              fontWeight: 500,
-              color,
-              letterSpacing: '0.01em',
-              fontFamily: 'IBM Plex Mono, monospace',
-            }}
-          >
-            {label}
-          </span>
-          <span className="text-slate-300">·</span>
-          <span className="text-[10px] text-slate-400">{dateStr}</span>
-        </div>
-      </div>
-      <button
-        onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
-        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-50 text-slate-300 hover:text-red-400 transition-all duration-100 flex-shrink-0 mt-0.5"
-      >
-        <Trash2 className="w-3 h-3" />
-      </button>
-    </div>
-  );
-}
+import { BookOpen, FilePlus2, FileText, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, BrainCircuit, Users, FolderOpen } from 'lucide-react';
 
 // Mobile header component with hamburger menu
 function MobileHeader({ onMenuClick }: { onMenuClick: () => void }) {
@@ -253,56 +163,11 @@ function Sidebar() {
     return stored === 'true';
   });
   const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_projects, setProjects] = useState<ProjectSummary[]>([]);
 
   // Close mobile drawer on route change
   useEffect(() => {
     setIsMobileOpen(false);
   }, [location.pathname]);
-
-  useEffect(() => {
-    loadSessions();
-    loadProjects();
-    const interval = setInterval(() => {
-      loadSessions();
-      loadProjects();
-    }, 30_000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const handler = () => loadSessions();
-    window.addEventListener('sessionSaved', handler);
-    return () => window.removeEventListener('sessionSaved', handler);
-  }, []);
-
-  const loadSessions = async () => {
-    try {
-      const data = await getSessions(10);
-      setSessions(data.filter(s => s.agent_type !== 'arena'));
-    } catch { /* ignore */ }
-  };
-
-  const loadProjects = async () => {
-    try {
-      const data = await getProjects();
-      setProjects(data.filter((p: { status: string }) => p.status === 'active').slice(0, 5));
-    } catch { /* ignore */ }
-  };
-
-  const handleDeleteSession = async (id: string) => {
-    try {
-      await deleteSession(id);
-      setSessions(prev => prev.filter(s => s.id !== id));
-    } catch { /* ignore */ }
-  };
-
-  const handleSelectSession = (id: string) => {
-    navigate(`/chat?session=${id}`);
-    setIsMobileOpen(false);
-  };
 
   const toggleSidebar = () => {
     const newState = !isCollapsed;
@@ -402,52 +267,7 @@ function Sidebar() {
           />
         </div>
 
-        {/* Recent sessions */}
-        {(isMobile || !isCollapsed) && sessions.length > 0 && (
-          <div style={{ marginTop: 24 }}>
-            <div
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: '#C4C4C4',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-                padding: '0 12px',
-                marginBottom: 6,
-                fontFamily: 'IBM Plex Mono, monospace',
-              }}
-            >
-              Recent
-            </div>
-            <div>
-              {sessions.map(session => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  onDelete={handleDeleteSession}
-                  onSelect={handleSelectSession}
-                />
-              ))}
-            </div>
-            <NavLink
-              to="/library"
-              onClick={() => isMobile && setIsMobileOpen(false)}
-              className="block mt-2 px-3 transition-colors duration-100"
-              style={{
-                fontSize: 11,
-                color: '#10B981',
-                textDecoration: 'none',
-                fontWeight: 500,
-                letterSpacing: '-0.01em',
-              }}
-            >
-              View all →
-            </NavLink>
-          </div>
-        )}
-
-        {/* Empty state prompt */}
-        {(isMobile || !isCollapsed) && sessions.length === 0 && (
+        {(isMobile || !isCollapsed) && (
           <div
             style={{
               marginTop: 20,

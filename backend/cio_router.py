@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agent_roles import ROLE_CATALOG, infer_role_identity, resolve_role_definition, validate_role_key
 from backend.database import get_db
 from backend.heartbeat_service import create_heartbeat_run, ensure_agent_heartbeat_routine
-from backend.models import ScheduledAgent, AgentRun, HireProposal
+from backend.models import ScheduledAgent, AgentRun, HireProposal, Project, ResearchTask
 from backend.scheduler import register_agent_job, next_run_time, SUPPORTED_SCHEDULE_LABELS
 from backend.scheduled_agent_config import (
     normalize_tickers,
@@ -249,6 +249,10 @@ class CioChatResponse(BaseModel):
     action: Optional[CioAction] = None
 
 
+class CioTaskReviewResponse(CioChatResponse):
+    task_id: str
+
+
 class HireFromCioRequest(BaseModel):
     action: CioAction
     delivery_inapp: bool = True
@@ -257,6 +261,29 @@ class HireFromCioRequest(BaseModel):
 
 class HireProposalDecisionRequest(BaseModel):
     decision_note: Optional[str] = None
+
+
+def _build_task_review_prompt(task: ResearchTask, project_title: Optional[str]) -> str:
+    try:
+        selected_agents = json.loads(task.selected_agents or "[]")
+    except (json.JSONDecodeError, TypeError):
+        selected_agents = []
+
+    lines = [
+        "Review this issue for the PM workflow.",
+        f"Title: {task.title}",
+        f"Ticker: {task.ticker}",
+        f"Task type: {task.task_type}",
+        f"Priority: {task.priority}",
+        f"Project: {project_title or 'No project'}",
+        f"Description: {task.notes or 'No description provided.'}",
+        f"Current staffing: {', '.join(selected_agents) if selected_agents else 'Unstaffed'}",
+        (
+            "Decide whether you should answer directly, delegate to an existing agent, "
+            "or propose a hire. If staffing is missing, propose the right hire or delegation."
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def _cio_chat_sync(system_prompt: str, messages: list[dict]) -> dict:
@@ -465,19 +492,14 @@ async def _approve_hire_proposal(
     return agent
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
-@router.post("/cio/chat", response_model=CioChatResponse)
-async def cio_chat(
-    request: CioChatRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Send a message to the CIO. Returns a response and optionally an action."""
-
+async def _run_cio_response(
+    db: AsyncSession,
+    messages: list[dict],
+    *,
+    proposed_by: str = "cio",
+) -> CioChatResponse:
     team_context = await _build_team_context(db)
     system_prompt = _build_system_prompt(team_context)
-
-    messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
     try:
         parsed = await run_in_threadpool(_cio_chat_sync, system_prompt, messages)
@@ -487,7 +509,7 @@ async def cio_chat(
 
         if action and action.type == "propose_hire":
             try:
-                proposal = await _create_hire_proposal(db, action)
+                proposal = await _create_hire_proposal(db, action, proposed_by=proposed_by)
                 action.proposal_id = proposal.id
                 action.proposal_status = proposal.status
             except HTTPException as exc:
@@ -495,22 +517,55 @@ async def cio_chat(
                 message = f"{message}\n\nI could not turn that suggestion into a valid hire proposal."
                 action = None
 
-        return CioChatResponse(
-            message=message,
-            action=action,
-        )
+        return CioChatResponse(message=message, action=action)
 
     except json.JSONDecodeError:
         return CioChatResponse(
-            message="I had trouble formulating my response. Could you rephrase that?",
+            message="I had trouble formulating my response. Please retry the review.",
             action=None,
         )
-    except Exception as exc:
-        logger.exception("cio_chat failed")
+    except Exception:
+        logger.exception("cio response generation failed")
         return CioChatResponse(
             message="Something went wrong on my end. Please try again.",
             action=None,
         )
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.post("/cio/chat", response_model=CioChatResponse)
+async def cio_chat(
+    request: CioChatRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a message to the CIO. Returns a response and optionally an action."""
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    return await _run_cio_response(db, messages)
+
+
+@router.post("/cio/review-task/{task_id}", response_model=CioTaskReviewResponse)
+async def review_task_with_cio(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    project_title: Optional[str] = None
+    if task.project_id:
+        project_result = await db.execute(select(Project.title).where(Project.id == task.project_id))
+        project_title = project_result.scalar_one_or_none()
+
+    prompt = _build_task_review_prompt(task, project_title)
+    response = await _run_cio_response(
+        db,
+        [{"role": "user", "content": prompt}],
+        proposed_by=f"issue:{task.id}",
+    )
+    return CioTaskReviewResponse(task_id=task.id, message=response.message, action=response.action)
 
 
 @router.post("/cio/delegate/{agent_id}", status_code=202)

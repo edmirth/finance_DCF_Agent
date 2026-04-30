@@ -1,6 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
-import ChatPage from './pages/ChatPage';
 import Portfolio from './pages/Portfolio';
 import EarningsPage from './pages/EarningsPage';
 import InvestmentMemoPage from './pages/InvestmentMemoPage';
@@ -28,7 +27,7 @@ function App() {
           <Route path="/issues/:taskId"            element={<IssueDetailPage />} />
           <Route path="/research"                  element={<ResearchWorkstation />} />
           <Route path="/earnings"                  element={<EarningsPage />} />
-          <Route path="/chat"                      element={<ChatPage />} />
+          <Route path="/chat"                      element={<Navigate to="/" replace />} />
           <Route path="/portfolio"                 element={<Portfolio />} />
           <Route path="/arena"                     element={<Navigate to="/memo" replace />} />
           <Route path="/memo"                      element={<InvestmentMemoPage />} />

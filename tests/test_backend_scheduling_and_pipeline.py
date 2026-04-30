@@ -266,6 +266,60 @@ async def test_cio_chat_persists_hire_proposal():
 
 
 @pytest.mark.asyncio
+async def test_cio_review_task_persists_hire_proposal():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        project_response = await client.post(
+            "/projects",
+            json={"title": "Semis Coverage", "thesis": "Review AI capex names."},
+        )
+        project_id = project_response.json()["id"]
+
+        task_response = await client.post(
+            "/tasks",
+            json={
+                "ticker": "NVDA",
+                "project_id": project_id,
+                "title": "Review NVDA staffing",
+                "notes": "Need the PM to decide coverage and staffing.",
+            },
+        )
+        task_id = task_response.json()["id"]
+
+    mocked_response = {
+        "message": "This issue needs dedicated semiconductor coverage.",
+        "action": {
+            "type": "propose_hire",
+            "role_key": "semis_analyst",
+            "role_title": "Semis Analyst",
+            "name": f"Semis {uuid4()}",
+            "description": "Own semiconductor coverage for the PM.",
+            "tickers": ["NVDA"],
+            "topics": ["AI demand"],
+            "instruction": "Cover NVDA and monitor AI demand, pricing power, and hyperscaler capex.",
+            "schedule_label": "weekly_monday",
+        },
+    }
+
+    with patch("backend.cio_router._cio_chat_sync", return_value=mocked_response):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(f"/cio/review-task/{task_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_id"] == task_id
+    assert body["action"]["proposal_status"] == "pending"
+    proposal_id = body["action"]["proposal_id"]
+    assert proposal_id
+
+    async with AsyncSessionLocal() as db:
+        proposal = await db.get(HireProposal, proposal_id)
+
+    assert proposal is not None
+    assert proposal.status == "pending"
+    assert proposal.proposed_by == f"issue:{task_id}"
+
+
+@pytest.mark.asyncio
 async def test_hire_proposal_approve_creates_agent():
     proposal_payload = {
         "action": {

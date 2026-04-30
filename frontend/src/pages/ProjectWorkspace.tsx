@@ -1014,14 +1014,14 @@ function ProjectWorkspace() {
               <div>
                 {projectSessions.length === 0 ? (
                   <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8125rem', color: '#9CA3AF', textAlign: 'center', marginTop: '1rem' }}>
-                    No sessions yet. Start a chat to create your first session.
+                    No sessions yet. Start a research session to create your first session.
                   </p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                     {projectSessions.map(s => (
                       <button
                         key={s.id}
-                        onClick={() => navigate(`/chat?session=${s.id}`)}
+                        onClick={() => navigate(`/projects/${projectId}?session=${s.id}`)}
                         style={{
                           display: 'block',
                           width: '100%',

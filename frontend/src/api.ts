@@ -526,8 +526,17 @@ export interface CioChatResponse {
   action?: CioAction | null;
 }
 
+export interface CioTaskReviewResponse extends CioChatResponse {
+  task_id: string;
+}
+
 export const cioChat = async (messages: CioMessage[]): Promise<CioChatResponse> => {
   const response = await api.post('/cio/chat', { messages });
+  return response.data;
+};
+
+export const cioReviewTask = async (taskId: string): Promise<CioTaskReviewResponse> => {
+  const response = await api.post(`/cio/review-task/${taskId}`);
   return response.data;
 };
 

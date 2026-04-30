@@ -158,7 +158,7 @@ export default function IssueDetailPage() {
                 className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
               >
                 <BrainCircuit className="h-4 w-4" />
-                Review with PM
+                Open PM desk
               </button>
               <button
                 type="button"
