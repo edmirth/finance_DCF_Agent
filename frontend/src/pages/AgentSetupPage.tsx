@@ -1,67 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Check, Plus, X, Zap } from 'lucide-react';
-import { createScheduledAgent, triggerAgentRun } from '../api';
-import { AgentTemplate, ScheduleLabel } from '../types';
+import { createScheduledAgent, getScheduledAgents, triggerAgentRun } from '../api';
+import { AgentRoleKey, ScheduleLabel, ScheduledAgent } from '../types';
+import { ROLE_DEFS } from '../agentRoles';
 
-// ── Template definitions ──────────────────────────────────────────────────────
+// ── Role definitions ──────────────────────────────────────────────────────────
 
-const TEMPLATES: {
-  id: AgentTemplate;
-  label: string;
-  description: string;
-  color: string;
-  bg: string;
-  letter: string;
-  requiresTickers: boolean;
-  instructionPlaceholder: string;
-  instructionHint: string;
-}[] = [
-  {
-    id: 'earnings_watcher',
-    label: 'Earnings Watcher',
-    description: 'Deep earnings analysis before and after each report. EPS surprises, guidance, management tone, analyst reactions.',
-    color: '#F59E0B',
-    bg: '#FEF3C7',
-    letter: 'E',
-    requiresTickers: true,
-    instructionPlaceholder: 'e.g. I own AAPL at $175 avg cost. Focus on iPhone unit demand, Services margin expansion, and any change in buyback pace. Flag if gross margins drop below 44%.',
-    instructionHint: 'What do you own, at what price, and what would change your view?',
-  },
-  {
-    id: 'market_pulse',
-    label: 'Market Pulse',
-    description: 'Daily macro brief — indices, sector rotation, VIX, Fed signals, and what it all means for your portfolio.',
-    color: '#3B82F6',
-    bg: '#DBEAFE',
-    letter: 'M',
-    requiresTickers: false,
-    instructionPlaceholder: 'e.g. I run a long/short tech portfolio. Focus on rate sensitivity, AI infrastructure themes, and any FOMC language shifts. Alert me if VIX spikes above 25.',
-    instructionHint: 'What macro factors matter most to your strategy?',
-  },
-  {
-    id: 'thesis_guardian',
-    label: 'Thesis Guardian',
-    description: 'Write your investment thesis. The agent monitors news, earnings, and macro data to tell you if it\'s holding or breaking.',
-    color: '#10B981',
-    bg: '#D1FAE5',
-    letter: 'T',
-    requiresTickers: true,
-    instructionPlaceholder: 'e.g. My thesis on NVDA: AI training compute demand stays elevated through 2026 driven by hyperscaler capex. Bull case breaks if data center revenue growth decelerates meaningfully or AMD closes the performance gap.',
-    instructionHint: 'State your thesis and what would invalidate it.',
-  },
-  {
-    id: 'portfolio_heartbeat',
-    label: 'Portfolio Heartbeat',
-    description: 'Weekly health check across all your holdings — concentration risk, material changes, anything worth reviewing.',
-    color: '#8B5CF6',
-    bg: '#EDE9FE',
-    letter: 'P',
-    requiresTickers: true,
-    instructionPlaceholder: 'e.g. My portfolio is 40% mega-cap tech, 30% small-cap industrials, 30% cash. Flag any single-stock move >8%, earnings misses, or macro events that hurt small-cap sentiment.',
-    instructionHint: 'Describe your portfolio composition and what to watch for.',
-  },
-];
+const ROLE_OPTIONS = ROLE_DEFS;
 
 const SCHEDULES: { id: ScheduleLabel; label: string; sub: string }[] = [
   { id: 'daily_morning', label: 'Daily',         sub: 'Every morning at 7am' },
@@ -133,24 +79,26 @@ function TickerInput({ tickers, onChange }: { tickers: string[]; onChange: (t: s
 // ── Wizard state ──────────────────────────────────────────────────────────────
 
 interface WizardState {
-  template: AgentTemplate | null;
+  role_key: AgentRoleKey | null;
   name: string;
   tickers: string[];
   topics: string[];
   instruction: string;
   schedule_label: ScheduleLabel;
+  manager_agent_id: string;
   delivery_email: string;
   delivery_inapp: boolean;
   run_after_create: boolean;
 }
 
 const DEFAULT: WizardState = {
-  template: null,
+  role_key: null,
   name: '',
   tickers: [],
   topics: [],
   instruction: '',
   schedule_label: 'weekly_monday',
+  manager_agent_id: '',
   delivery_email: '',
   delivery_inapp: true,
   run_after_create: false,
@@ -162,17 +110,17 @@ function Step1({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
   return (
     <div>
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
-        What type of agent?
+        What seat are you hiring?
       </h2>
-      <p className="text-slate-500 text-sm mb-7">Pick the template that matches what you want monitored.</p>
+      <p className="text-slate-500 text-sm mb-7">Pick a real firm role. The right analyst engine will run underneath.</p>
 
       <div className="space-y-2.5">
-        {TEMPLATES.map(t => {
-          const selected = state.template === t.id;
+        {ROLE_OPTIONS.map(t => {
+          const selected = state.role_key === t.key;
           return (
             <button
-              key={t.id}
-              onClick={() => set({ template: t.id, name: state.name || t.label })}
+              key={t.key}
+              onClick={() => set({ role_key: t.key, name: state.name || t.title })}
               className={`w-full flex items-start gap-4 text-left px-4 py-4 rounded-2xl border-2 transition-all duration-150 ${
                 selected ? 'border-slate-900 bg-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
               }`}
@@ -185,7 +133,7 @@ function Step1({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-sm text-slate-900">{t.label}</span>
+                  <span className="font-semibold text-sm text-slate-900">{t.title}</span>
                   {selected && (
                     <span className="w-4 h-4 bg-slate-900 rounded-full flex items-center justify-center flex-shrink-0">
                       <Check className="w-2.5 h-2.5 text-white" />
@@ -204,17 +152,25 @@ function Step1({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
 
 // ── Step 2: Configure ─────────────────────────────────────────────────────────
 
-function Step2({ state, set }: { state: WizardState; set: (p: Partial<WizardState>) => void }) {
-  const tmpl = TEMPLATES.find(t => t.id === state.template)!;
+function Step2({
+  state,
+  set,
+  managers,
+}: {
+  state: WizardState;
+  set: (p: Partial<WizardState>) => void;
+  managers: ScheduledAgent[];
+}) {
+  const role = ROLE_OPTIONS.find(t => t.key === state.role_key)!;
   const instructionWords = state.instruction.trim().split(/\s+/).filter(Boolean).length;
   const instructionTooShort = state.instruction.trim().length > 0 && instructionWords < 10;
 
   return (
     <div>
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
-        Configure the agent
+        Configure the role
       </h2>
-      <p className="text-slate-500 text-sm mb-7">Name it, set its scope, and write your instruction.</p>
+      <p className="text-slate-500 text-sm mb-7">Name the seat, set its scope, and define what it owns.</p>
 
       <div className="space-y-5">
         {/* Name */}
@@ -225,13 +181,34 @@ function Step2({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
           <input
             value={state.name}
             onChange={e => set({ name: e.target.value })}
-            placeholder={tmpl.label}
+            placeholder={role.title}
             className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-slate-400 bg-white"
           />
         </div>
 
+        <div>
+          <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+            Reports to
+          </label>
+          <select
+            value={state.manager_agent_id}
+            onChange={e => set({ manager_agent_id: e.target.value })}
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-slate-400 bg-white"
+          >
+            <option value="">CIO / PM</option>
+            {managers.map(manager => (
+              <option key={manager.id} value={manager.id}>
+                {manager.name} · {manager.reports_to_label || 'CIO'}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-slate-400 mt-1.5">
+            New team members can report directly to the CIO or to an existing lead.
+          </p>
+        </div>
+
         {/* Tickers */}
-        {tmpl.requiresTickers && (
+        {role.requiresTickers && (
           <div>
             <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
               Tickers to watch
@@ -260,11 +237,11 @@ function Step2({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
           <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-0.5">
             Your instruction
           </label>
-          <p className="text-xs text-slate-400 mb-1.5">{tmpl.instructionHint}</p>
+          <p className="text-xs text-slate-400 mb-1.5">{role.instructionHint}</p>
           <textarea
             value={state.instruction}
             onChange={e => set({ instruction: e.target.value })}
-            placeholder={tmpl.instructionPlaceholder}
+            placeholder={role.instructionPlaceholder}
             rows={5}
             className={`w-full px-3.5 py-3 border rounded-2xl text-sm focus:outline-none bg-white resize-none leading-relaxed transition-colors ${
               instructionTooShort ? 'border-amber-300 focus:border-amber-400' : 'border-slate-200 focus:border-slate-400'
@@ -292,7 +269,7 @@ function Step3({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
         Schedule &amp; delivery
       </h2>
-      <p className="text-slate-500 text-sm mb-7">When should it run, and how should findings reach you?</p>
+        <p className="text-slate-500 text-sm mb-7">When should this seat wake up, and how should findings reach you?</p>
 
       {/* Schedule */}
       <div className="mb-6">
@@ -389,17 +366,30 @@ export default function AgentSetupPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [state, setState] = useState<WizardState>(DEFAULT);
+  const [managers, setManagers] = useState<ScheduledAgent[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   const set = (patch: Partial<WizardState>) => setState(prev => ({ ...prev, ...patch }));
 
+  useEffect(() => {
+    const loadManagers = async () => {
+      try {
+        const agents = await getScheduledAgents();
+        setManagers(agents);
+      } catch {
+        setManagers([]);
+      }
+    };
+    loadManagers();
+  }, []);
+
   const canAdvance = (): boolean => {
-    if (step === 1) return !!state.template;
+    if (step === 1) return !!state.role_key;
     if (step === 2) {
-      const tmpl = TEMPLATES.find(t => t.id === state.template)!;
+      const role = ROLE_OPTIONS.find(t => t.key === state.role_key)!;
       const hasName = !!state.name.trim();
-      const hasTickers = !tmpl.requiresTickers || state.tickers.length > 0;
+      const hasTickers = !role.requiresTickers || state.tickers.length > 0;
       return hasName && hasTickers;
     }
     return true;
@@ -411,11 +401,12 @@ export default function AgentSetupPage() {
     try {
       const agent = await createScheduledAgent({
         name: state.name,
-        template: state.template!,
+        role_key: state.role_key!,
         tickers: state.tickers,
         topics: state.topics,
         instruction: state.instruction,
         schedule_label: state.schedule_label,
+        manager_agent_id: state.manager_agent_id || undefined,
         delivery_email: state.delivery_email || undefined,
         delivery_inapp: state.delivery_inapp,
       });
@@ -439,7 +430,7 @@ export default function AgentSetupPage() {
 
         {/* Back / cancel */}
         <button
-          onClick={() => step > 1 ? setStep(s => s - 1) : navigate('/scheduled-agents')}
+          onClick={() => step > 1 ? setStep(s => s - 1) : navigate('/team')}
           className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 mb-8 transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -451,7 +442,7 @@ export default function AgentSetupPage() {
           <ProgressBar step={step} total={TOTAL_STEPS} />
 
           {step === 1 && <Step1 state={state} set={set} />}
-          {step === 2 && <Step2 state={state} set={set} />}
+          {step === 2 && <Step2 state={state} set={set} managers={managers} />}
           {step === 3 && <Step3 state={state} set={set} />}
 
           {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
@@ -490,8 +481,8 @@ export default function AgentSetupPage() {
 
         {/* Step label */}
         <p className="text-center text-xs text-slate-400 mt-4">
-          {step === 1 && 'Choose the type of monitoring you need'}
-          {step === 2 && 'The more specific your instruction, the better the findings'}
+          {step === 1 && 'Choose the firm role you want to hire'}
+          {step === 2 && 'Define the seat clearly so the PM gets useful coverage'}
           {step === 3 && 'You can change the schedule anytime from the agent page'}
         </p>
       </div>

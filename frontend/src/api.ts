@@ -431,11 +431,13 @@ export const getProjectSessions = async (id: string): Promise<SessionSummary[]> 
 export interface ScheduledAgentPayload {
   name: string;
   description?: string;
-  template: string;
+  template?: string;
+  role_key?: string;
   tickers: string[];
   topics: string[];
   instruction: string;
   schedule_label: string;
+  manager_agent_id?: string;
   delivery_email?: string;
   delivery_inapp: boolean;
 }
@@ -479,6 +481,11 @@ export const getAgentRun = async (runId: string) => {
   return response.data as import('./types').AgentRun;
 };
 
+export const getHeartbeatRuns = async (agentId: string, limit = 20) => {
+  const response = await api.get(`/scheduled-agents/${agentId}/heartbeat-runs`, { params: { limit } });
+  return response.data.runs as import('./types').HeartbeatRun[];
+};
+
 export const getInbox = async (limit = 30, alertLevel?: string) => {
   const response = await api.get('/inbox', { params: { limit, alert_level: alertLevel } });
   return response.data.items as (import('./types').AgentRun & { agent_name: string })[];
@@ -500,6 +507,8 @@ export interface CioAction {
   agent_name?: string;
   reason?: string;
   // propose_hire fields
+  role_key?: string;
+  role_title?: string;
   name?: string;
   description?: string;
   template?: string;
@@ -507,6 +516,9 @@ export interface CioAction {
   topics?: string[];
   instruction?: string;
   schedule_label?: string;
+  manager_agent_id?: string;
+  proposal_id?: string;
+  proposal_status?: import('./types').HireProposalStatus;
 }
 
 export interface CioChatResponse {
@@ -524,11 +536,55 @@ export const cioDelegate = async (agentId: string): Promise<{ run_id: string; st
   return response.data;
 };
 
+export const getHireProposals = async (status?: import('./types').HireProposalStatus) => {
+  const response = await api.get('/cio/hire-proposals', { params: status ? { status } : undefined });
+  return response.data.proposals as import('./types').HireProposal[];
+};
+
+export const createHireProposal = async (
+  action: CioAction,
+  deliveryInapp = true,
+  deliveryEmail?: string
+) => {
+  const response = await api.post('/cio/hire-proposals', {
+    action,
+    delivery_inapp: deliveryInapp,
+    delivery_email: deliveryEmail,
+  });
+  return response.data as import('./types').HireProposal;
+};
+
+export const approveHireProposal = async (
+  proposalId: string,
+  decisionNote?: string
+): Promise<{
+  proposal: import('./types').HireProposal;
+  agent: { id: string; name: string; role_key?: string; role_title?: string; template: string; tickers: string[]; schedule_label: string; created_at: string };
+}> => {
+  const response = await api.post(`/cio/hire-proposals/${proposalId}/approve`, {
+    decision_note: decisionNote,
+  });
+  return response.data;
+};
+
+export const rejectHireProposal = async (
+  proposalId: string,
+  decisionNote?: string
+) => {
+  const response = await api.post(`/cio/hire-proposals/${proposalId}/reject`, {
+    decision_note: decisionNote,
+  });
+  return response.data as import('./types').HireProposal;
+};
+
 export const cioHire = async (
   action: CioAction,
   deliveryInapp = true,
   deliveryEmail?: string
-): Promise<{ id: string; name: string; template: string; tickers: string[]; schedule_label: string; created_at: string }> => {
+): Promise<{
+  proposal: import('./types').HireProposal;
+  agent: { id: string; name: string; role_key?: string; role_title?: string; template: string; tickers: string[]; schedule_label: string; created_at: string };
+}> => {
   const response = await api.post('/cio/hire', {
     action,
     delivery_inapp: deliveryInapp,
@@ -659,6 +715,9 @@ export interface ResearchTask {
   pm_synthesis: PmSynthesis | null;
   overall_sentiment: 'bullish' | 'bearish' | 'neutral' | null;
   parent_task_id: string | null;
+  owner_agent_id: string | null;
+  assigned_agent_id: string | null;
+  source_heartbeat_run_id: string | null;
   triggered_by: string;
   run_id: string | null;
   mandate_check: GateStatus;
@@ -679,6 +738,9 @@ export interface CreateTaskBody {
   title?: string;
   priority?: TaskPriority;
   selected_agents?: string[];
+  owner_agent_id?: string;
+  assigned_agent_id?: string;
+  source_heartbeat_run_id?: string;
   notes?: string;
   triggered_by?: string;
 }

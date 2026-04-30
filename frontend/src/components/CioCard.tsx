@@ -3,7 +3,8 @@ import {
   Send, Loader2, BrainCircuit, Play, UserPlus,
   ChevronDown, ChevronUp, X, Zap,
 } from 'lucide-react';
-import { cioChat, cioDelegate, cioHire, CioMessage, CioAction } from '../api';
+import { cioChat, cioDelegate, approveHireProposal, rejectHireProposal, CioMessage, CioAction } from '../api';
+import { ROLE_META_BY_KEY } from '../agentRoles';
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
@@ -14,7 +15,7 @@ interface ChatEntry {
   role: 'user' | 'assistant';
   content: string;
   action?: CioAction | null;
-  actionState?: 'idle' | 'loading' | 'done' | 'error';
+  actionState?: 'idle' | 'loading' | 'done' | 'error' | 'rejected';
   actionResult?: string;
 }
 
@@ -27,10 +28,11 @@ function saveHistory(entries: ChatEntry[]) {
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
-const TEMPLATE_LABELS: Record<string, string> = {
-  earnings_watcher: 'Earnings Watcher', market_pulse: 'Market Pulse',
-  thesis_guardian: 'Thesis Guardian', portfolio_heartbeat: 'Portfolio Heartbeat',
-};
+const roleLabel = (action: CioAction) =>
+  (action.role_key && ROLE_META_BY_KEY[action.role_key as keyof typeof ROLE_META_BY_KEY]?.title)
+  || action.role_title
+  || action.template
+  || 'Role';
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily 7am', pre_market: 'Weekdays 6:30am',
   weekly_monday: 'Every Monday', weekly_friday: 'Every Friday', monthly: 'Monthly',
@@ -62,9 +64,9 @@ function DelegateCard({ action, state, result, onRun }: {
   );
 }
 
-function HireCard({ action, state, result, onHire, onDismiss }: {
-  action: CioAction; state: 'idle' | 'loading' | 'done' | 'error';
-  result?: string; onHire: () => void; onDismiss: () => void;
+function HireCard({ action, state, result, onApprove, onReject }: {
+  action: CioAction; state: 'idle' | 'loading' | 'done' | 'error' | 'rejected';
+  result?: string; onApprove: () => void; onReject: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -76,9 +78,9 @@ function HireCard({ action, state, result, onHire, onDismiss }: {
           <p className="text-sm font-medium text-slate-800">{action.name}</p>
           {action.description && <p className="text-xs text-slate-500 mt-0.5">{action.description}</p>}
           <div className="flex flex-wrap gap-1 mt-1.5">
-            {action.template && (
+            {(action.role_key || action.role_title || action.template) && (
               <span className="text-xs px-1.5 py-0.5 bg-white border border-emerald-200 text-emerald-700 rounded-md font-medium">
-                {TEMPLATE_LABELS[action.template] || action.template}
+                {roleLabel(action)}
               </span>
             )}
             {action.schedule_label && (
@@ -104,14 +106,15 @@ function HireCard({ action, state, result, onHire, onDismiss }: {
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {state === 'idle' && (
             <>
-              <button onClick={onDismiss} className="p-1 rounded-lg hover:bg-emerald-100 text-slate-400 hover:text-slate-500 transition-colors"><X className="w-3 h-3" /></button>
-              <button onClick={onHire} className="flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors">
-                <UserPlus className="w-2.5 h-2.5" /> Hire
+              <button onClick={onReject} className="p-1 rounded-lg hover:bg-red-100 text-slate-400 hover:text-red-500 transition-colors"><X className="w-3 h-3" /></button>
+              <button onClick={onApprove} className="flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors">
+                <UserPlus className="w-2.5 h-2.5" /> Approve
               </button>
             </>
           )}
           {state === 'loading' && <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />}
-          {state === 'done' && <span className="text-xs font-medium text-emerald-600">Hired ✓</span>}
+          {state === 'done' && <span className="text-xs font-medium text-emerald-600">Approved ✓</span>}
+          {state === 'rejected' && <span className="text-xs font-medium text-slate-500">Declined</span>}
           {state === 'error' && <span className="text-xs text-red-500">Failed</span>}
         </div>
       </div>
@@ -121,11 +124,11 @@ function HireCard({ action, state, result, onHire, onDismiss }: {
 
 // ── Message row ───────────────────────────────────────────────────────────────
 
-function MessageRow({ entry, onDelegate, onHire, onDismiss }: {
+function MessageRow({ entry, onDelegate, onApproveHire, onRejectHire }: {
   entry: ChatEntry;
   onDelegate: (id: string) => void;
-  onHire: (id: string) => void;
-  onDismiss: (id: string) => void;
+  onApproveHire: (id: string) => void;
+  onRejectHire: (id: string) => void;
 }) {
   const isUser = entry.role === 'user';
   return (
@@ -143,11 +146,11 @@ function MessageRow({ entry, onDelegate, onHire, onDismiss }: {
         ) : (
           <div>
             <p className="text-sm text-slate-700 leading-relaxed">{entry.content}</p>
-            {entry.action?.type === 'delegate' && entry.actionState !== undefined && (
+            {entry.action?.type === 'delegate' && entry.actionState !== undefined && entry.actionState !== 'rejected' && (
               <DelegateCard action={entry.action} state={entry.actionState} result={entry.actionResult} onRun={() => onDelegate(entry.id)} />
             )}
             {entry.action?.type === 'propose_hire' && entry.actionState !== undefined && (
-              <HireCard action={entry.action} state={entry.actionState} result={entry.actionResult} onHire={() => onHire(entry.id)} onDismiss={() => onDismiss(entry.id)} />
+              <HireCard action={entry.action} state={entry.actionState} result={entry.actionResult} onApprove={() => onApproveHire(entry.id)} onReject={() => onRejectHire(entry.id)} />
             )}
           </div>
         )}
@@ -161,7 +164,7 @@ function MessageRow({ entry, onDelegate, onHire, onDismiss }: {
 const SUGGESTIONS = [
   "What did my agents find this week?",
   "Run my earnings watcher now",
-  "Hire an agent to watch NVDA",
+  "Hire a quant analyst to cover NVDA",
   "Brief me on my team",
 ];
 
@@ -193,7 +196,14 @@ export default function CioCard({ onAgentHired }: { onAgentHired?: () => void })
       const res = await cioChat(history);
       setEntries(prev => [...prev, {
         id: crypto.randomUUID(), role: 'assistant', content: res.message,
-        action: res.action ?? null, actionState: res.action ? 'idle' : undefined,
+        action: res.action ?? null,
+        actionState: !res.action
+          ? undefined
+          : res.action.proposal_status === 'approved'
+            ? 'done'
+            : res.action.proposal_status === 'rejected'
+              ? 'rejected'
+              : 'idle',
       }]);
     } catch {
       setEntries(prev => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: 'Something went wrong. Please try again.' }]);
@@ -215,22 +225,31 @@ export default function CioCard({ onAgentHired }: { onAgentHired?: () => void })
     }
   };
 
-  const handleHire = async (entryId: string) => {
+  const handleApproveHire = async (entryId: string) => {
     const entry = entries.find(e => e.id === entryId);
-    if (!entry?.action) return;
+    if (!entry?.action?.proposal_id) return;
     setEntries(prev => prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' as const } : e));
     try {
-      const result = await cioHire(entry.action);
+      const result = await approveHireProposal(entry.action.proposal_id);
       setEntries(prev => prev.map(e => e.id === entryId
-        ? { ...e, actionState: 'done' as const, actionResult: `${result.name} hired and scheduled.` } : e));
+        ? { ...e, actionState: 'done' as const, actionResult: `${result.agent.name} approved and added to the team.` } : e));
       onAgentHired?.();
     } catch {
       setEntries(prev => prev.map(e => e.id === entryId ? { ...e, actionState: 'error' as const } : e));
     }
   };
 
-  const handleDismiss = (entryId: string) => {
-    setEntries(prev => prev.map(e => e.id === entryId ? { ...e, action: null, actionState: undefined } : e));
+  const handleRejectHire = async (entryId: string) => {
+    const entry = entries.find(e => e.id === entryId);
+    if (!entry?.action?.proposal_id) return;
+    setEntries(prev => prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' as const } : e));
+    try {
+      await rejectHireProposal(entry.action.proposal_id);
+      setEntries(prev => prev.map(e => e.id === entryId
+        ? { ...e, actionState: 'rejected' as const, actionResult: 'Hire proposal declined.' } : e));
+    } catch {
+      setEntries(prev => prev.map(e => e.id === entryId ? { ...e, actionState: 'error' as const } : e));
+    }
   };
 
   const isEmpty = entries.length === 0;
@@ -289,8 +308,8 @@ export default function CioCard({ onAgentHired }: { onAgentHired?: () => void })
                 key={entry.id}
                 entry={entry}
                 onDelegate={handleDelegate}
-                onHire={handleHire}
-                onDismiss={handleDismiss}
+                onApproveHire={handleApproveHire}
+                onRejectHire={handleRejectHire}
               />
             ))}
             {isLoading && (

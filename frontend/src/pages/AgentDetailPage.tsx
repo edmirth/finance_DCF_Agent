@@ -5,25 +5,11 @@ import {
   CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp
 } from 'lucide-react';
 import {
-  getScheduledAgent, getAgentRuns, triggerAgentRun,
+  getScheduledAgent, getAgentRuns, getHeartbeatRuns, triggerAgentRun,
   updateScheduledAgent, deleteScheduledAgent
 } from '../api';
-import { ScheduledAgent, AgentRun, AlertLevel } from '../types';
-
-const TEMPLATE_META: Record<string, { label: string; color: string; bg: string }> = {
-  earnings_watcher:    { label: 'Earnings Watcher',    color: '#F59E0B', bg: '#FEF3C7' },
-  market_pulse:        { label: 'Market Pulse',        color: '#3B82F6', bg: '#DBEAFE' },
-  thesis_guardian:     { label: 'Thesis Guardian',     color: '#10B981', bg: '#D1FAE5' },
-  portfolio_heartbeat: { label: 'Portfolio Heartbeat', color: '#8B5CF6', bg: '#EDE9FE' },
-};
-
-function getTemplateMeta(template: string) {
-  return TEMPLATE_META[template] || {
-    label: template,
-    color: '#64748B',
-    bg: '#F1F5F9',
-  };
-}
+import { ScheduledAgent, AgentRun, AlertLevel, HeartbeatRun } from '../types';
+import { roleMetaForAgent } from '../agentRoles';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -151,6 +137,41 @@ function RunRow({ run }: { run: AgentRun }) {
   );
 }
 
+function HeartbeatRow({ run }: { run: HeartbeatRun }) {
+  const context = run.context || {};
+  const directReports = Number(context.direct_reports_count || 0);
+  const pendingHires = Number(context.pending_hire_proposals_count || 0);
+  const openTasks = Number(context.open_research_tasks_count || 0);
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl px-5 py-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 uppercase tracking-wide">
+              {run.trigger_type}
+            </span>
+            <span className="text-xs text-slate-400">{formatDate(run.started_at)}</span>
+          </div>
+          <p className="text-sm text-slate-800">{run.summary || run.error || 'Heartbeat wake-up recorded.'}</p>
+        </div>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-lg ${
+          run.status === 'completed' ? 'bg-emerald-100 text-emerald-700' :
+          run.status === 'failed' ? 'bg-red-100 text-red-700' :
+          'bg-blue-100 text-blue-700'
+        }`}>
+          {run.status}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-4 mt-3 text-xs text-slate-500">
+        <span>Open tasks: {openTasks}</span>
+        <span>Pending hires: {pendingHires}</span>
+        <span>Direct reports: {directReports}</span>
+      </div>
+    </div>
+  );
+}
+
 // Minimal markdown → html (headings, bold, bullets, paragraphs)
 function markdownToHtml(md: string): string {
   return md
@@ -171,6 +192,7 @@ export default function AgentDetailPage() {
 
   const [agent, setAgent] = useState<ScheduledAgent | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [heartbeatRuns, setHeartbeatRuns] = useState<HeartbeatRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningNow, setRunningNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,9 +216,10 @@ export default function AgentDetailPage() {
 
   const load = async (id: string, silent = false) => {
     try {
-      const [a, r] = await Promise.all([getScheduledAgent(id), getAgentRuns(id, 20)]);
+      const [a, r, h] = await Promise.all([getScheduledAgent(id), getAgentRuns(id, 20), getHeartbeatRuns(id, 10)]);
       setAgent(a);
       setRuns(r);
+      setHeartbeatRuns(h);
       if (!silent) setError(null);
     } catch {
       if (!silent) setError('Failed to load agent data.');
@@ -227,7 +250,7 @@ export default function AgentDetailPage() {
   const handleDelete = async () => {
     if (!agent || !confirm(`Delete "${agent.name}"?`)) return;
     await deleteScheduledAgent(agent.id);
-    navigate('/scheduled-agents');
+    navigate('/team');
   };
 
   if (loading) {
@@ -246,7 +269,7 @@ export default function AgentDetailPage() {
     );
   }
 
-  const meta = getTemplateMeta(agent.template);
+  const meta = roleMetaForAgent(agent);
 
   return (
     <div className="min-h-screen bg-slate-50 pl-20" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
@@ -254,11 +277,11 @@ export default function AgentDetailPage() {
 
         {/* Back */}
         <button
-          onClick={() => navigate('/scheduled-agents')}
+          onClick={() => navigate('/team')}
           className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 mb-8 transition-colors duration-150"
         >
           <ChevronLeft className="w-4 h-4" />
-          All agents
+          Team
         </button>
 
         {/* Agent header */}
@@ -269,7 +292,7 @@ export default function AgentDetailPage() {
                 className="w-12 h-12 rounded-xl flex items-center justify-center text-xl font-bold flex-shrink-0"
                 style={{ background: meta.bg, color: meta.color }}
               >
-                {meta.label[0]}
+                {meta.letter}
               </div>
               <div>
                 <div className="flex items-center gap-2 mb-0.5">
@@ -281,7 +304,8 @@ export default function AgentDetailPage() {
                     style={agent.is_active ? { boxShadow: '0 0 0 3px #D1FAE5' } : {}}
                   />
                 </div>
-                <span className="text-sm font-medium" style={{ color: meta.color }}>{meta.label}</span>
+                <span className="text-sm font-medium" style={{ color: meta.color }}>{meta.displayTitle}</span>
+                <p className="text-xs text-slate-400 mt-1">Reports to {agent.reports_to_label || 'CIO'}</p>
               </div>
             </div>
 
@@ -319,6 +343,11 @@ export default function AgentDetailPage() {
                 <Clock className="w-3.5 h-3.5 text-slate-400" />
                 {SCHEDULE_LABELS[agent.schedule_label]}
               </p>
+              {agent.heartbeat_routine && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Heartbeat routine · {agent.heartbeat_routine.timezone_name}
+                </p>
+              )}
             </div>
             {agent.tickers.length > 0 && (
               <div>
@@ -348,6 +377,19 @@ export default function AgentDetailPage() {
             </div>
           )}
         </div>
+
+        {heartbeatRuns.length > 0 && (
+          <>
+            <h2 className="text-base font-semibold text-slate-900 mb-4" style={{ letterSpacing: '-0.01em' }}>
+              Heartbeat Log
+            </h2>
+            <div className="space-y-3 mb-6">
+              {heartbeatRuns.map(run => (
+                <HeartbeatRow key={run.id} run={run} />
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Run history */}
         <h2 className="text-base font-semibold text-slate-900 mb-4" style={{ letterSpacing: '-0.01em' }}>

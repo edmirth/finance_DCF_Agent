@@ -539,6 +539,50 @@ AGENT_RUNNERS = {
 }
 
 
+def run_specialist_agent_once(
+    agent_name: str,
+    ticker: str,
+    assignment_title: str = "",
+    assignment_focus: str = "",
+    shared_data: Optional[dict] = None,
+) -> AgentSection:
+    """
+    Run one specialist analyst outside the full workstation orchestration flow.
+
+    This is used by persistent team agents so they can execute the same
+    specialist logic as the Research Workstation without duplicating runner code.
+    """
+    runner = AGENT_RUNNERS.get(agent_name)
+    if not runner:
+        raise ValueError(f"Unsupported specialist agent: {agent_name}")
+
+    ticker_upper = ticker.strip().upper()
+    if not ticker_upper:
+        raise ValueError("Ticker is required")
+
+    effective_title = assignment_title.strip() or f"Analyze {ticker_upper}"
+    effective_focus = assignment_focus.strip()
+    payload = shared_data
+    if payload is None:
+        minimal_state = _create_minimal_state(
+            ticker_upper,
+            {},
+            effective_title,
+            effective_focus,
+        )
+        fetch_result = data_fetch_node(minimal_state)
+        payload = fetch_result.get("shared_data", {})
+
+    return runner(
+        ticker_upper,
+        payload,
+        lambda _event: None,
+        time.time(),
+        effective_title,
+        effective_focus,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator class
 # ---------------------------------------------------------------------------

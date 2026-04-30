@@ -33,6 +33,11 @@ TEMPLATE_LABELS = {
     "thesis_guardian":     "Thesis Guardian",
     "portfolio_heartbeat": "Portfolio Heartbeat",
     "firm_pipeline":       "Firm Investment Pipeline",
+    "fundamental_analyst": "Fundamental Analyst",
+    "quant_analyst":       "Quant Analyst",
+    "risk_analyst":        "Risk Analyst",
+    "macro_analyst":       "Macro Analyst",
+    "sentiment_analyst":   "Sentiment Analyst",
 }
 
 SCHEDULE_LABELS = {
@@ -48,6 +53,14 @@ SCHEDULE_LABELS = {
     "weekly_friday_close": "Friday at 4:00pm — weekly IC prep",
     "monthly_first":       "1st of each month at 8am",
     "quarterly":           "1st of Jan/Apr/Jul/Oct at 8am",
+}
+
+SPECIALIST_TEMPLATE_TO_AGENT = {
+    "fundamental_analyst": "fundamental",
+    "quant_analyst": "quant",
+    "risk_analyst": "risk",
+    "macro_analyst": "macro",
+    "sentiment_analyst": "sentiment",
 }
 
 
@@ -100,6 +113,13 @@ class AgentRunnerService:
             elif template == "firm_pipeline":
                 raw_outputs, agents_used = self._run_firm_pipeline(
                     tickers, agent_config
+                )
+
+            elif template in SPECIALIST_TEMPLATE_TO_AGENT:
+                raw_outputs, agents_used = self._run_specialist_analyst(
+                    tickers,
+                    agent_config.instruction,
+                    template,
                 )
 
             elif template == "arena_analyst":
@@ -197,6 +217,51 @@ class AgentRunnerService:
         """Earnings analysis on each holding + sector diversification summary."""
         outputs, agents_used = self._run_earnings_for_tickers(tickers)
         return outputs, agents_used
+
+    def _run_specialist_analyst(
+        self,
+        tickers: list[str],
+        instruction: str,
+        template: str,
+    ) -> tuple[dict, list]:
+        from backend.research_orchestrator import run_specialist_agent_once
+
+        specialist = SPECIALIST_TEMPLATE_TO_AGENT[template]
+        outputs: dict[str, str] = {}
+
+        def _analyze(ticker: str) -> tuple[str, str]:
+            section = run_specialist_agent_once(
+                specialist,
+                ticker,
+                assignment_title=f"{TEMPLATE_LABELS[template]} coverage for {ticker}",
+                assignment_focus=instruction,
+            )
+
+            if section.error and not section.content and not section.key_points:
+                return ticker, f"Analysis failed for {ticker}: {section.error}"
+
+            sentiment = section.sentiment.upper()
+            confidence = f"{section.confidence:.0%}"
+            bullets = "\n".join(f"- {point}" for point in section.key_points[:5])
+            body = section.content.strip()
+            parts = [
+                f"## {ticker} — {section.title} ({sentiment}, {confidence} confidence)",
+            ]
+            if bullets:
+                parts.append(bullets)
+            if body:
+                parts.append(body)
+            if section.error:
+                parts.append(f"Warning: {section.error}")
+            return ticker, "\n\n".join(parts)
+
+        with ThreadPoolExecutor(max_workers=min(MAX_TICKER_WORKERS, len(tickers) or 1)) as ex:
+            futures = {ex.submit(_analyze, t): t for t in tickers}
+            for future in as_completed(futures):
+                ticker_sym, result = future.result()
+                outputs[ticker_sym] = result
+
+        return outputs, [specialist] if outputs else []
 
     # ------------------------------------------------------------------
     # firm_pipeline (Phase 4) — runs the full InvestmentPipeline per ticker.

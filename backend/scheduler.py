@@ -24,6 +24,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from backend.config import MARKET_SCHEDULE_TIMEZONE
+from backend.heartbeat_service import (
+    create_heartbeat_run,
+    dispatch_manager_heartbeat_actions,
+    ensure_agent_heartbeat_routine,
+    finalize_heartbeat_run,
+    plan_manager_heartbeat_actions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +96,9 @@ async def sync_jobs() -> None:
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ScheduledAgent).where(ScheduledAgent.is_active == True))
         agents = result.scalars().all()
+        for agent in agents:
+            await ensure_agent_heartbeat_routine(db, agent)
+        await db.commit()
 
     # Remove stale jobs (agents that were deleted or deactivated)
     active_ids = {a.id for a in agents}
@@ -162,7 +172,7 @@ async def _fire_agent_run(agent_id: str) -> None:
     5. Send email if configured
     """
     from backend.database import AsyncSessionLocal
-    from backend.models import ScheduledAgent, AgentRun
+    from backend.models import ScheduledAgent, AgentRun, HeartbeatRun
     from backend.agent_runner import get_runner
     from sqlalchemy import select
 
@@ -178,6 +188,7 @@ async def _fire_agent_run(agent_id: str) -> None:
             return
 
         # Create run record
+        await ensure_agent_heartbeat_routine(db, agent_config)
         run = AgentRun(
             id=_new_uuid(),
             scheduled_agent_id=agent_id,
@@ -185,8 +196,17 @@ async def _fire_agent_run(agent_id: str) -> None:
             started_at=datetime.now(timezone.utc),
         )
         db.add(run)
+        await db.flush()
+        heartbeat_run = await create_heartbeat_run(
+            db,
+            agent_config,
+            trigger_type="scheduled",
+            agent_run_id=run.id,
+            started_at=run.started_at,
+        )
         await db.commit()
         run_id = run.id
+        heartbeat_run_id = heartbeat_run.id
 
         # Copy config values before closing session scope
         config_snapshot = _ConfigSnapshot(agent_config)
@@ -200,6 +220,10 @@ async def _fire_agent_run(agent_id: str) -> None:
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
         run = result.scalar_one_or_none()
+        heartbeat_result = await db.execute(
+            select(HeartbeatRun).where(HeartbeatRun.id == heartbeat_run_id)
+        )
+        heartbeat_run = heartbeat_result.scalar_one_or_none()
         if run:
             run.status = "failed" if outcome.get("error") else "completed"
             run.report = outcome.get("report", "")
@@ -222,8 +246,16 @@ async def _fire_agent_run(agent_id: str) -> None:
             agent.last_run_status = run.status if run else "failed"
             agent.last_run_summary = outcome.get("findings_summary", "")
             agent.next_run_at = next_run_time(agent.schedule_label, now=completed_at)
+            await finalize_heartbeat_run(db, heartbeat_run, agent, outcome)
+            planned_dispatches = await plan_manager_heartbeat_actions(db, agent, heartbeat_run)
+        else:
+            await finalize_heartbeat_run(db, heartbeat_run, None, outcome)
+            planned_dispatches = []
 
         await db.commit()
+
+    if planned_dispatches:
+        dispatch_manager_heartbeat_actions(planned_dispatches)
 
     # Send email notification if configured
     if config_snapshot.delivery_email and not outcome.get("error"):

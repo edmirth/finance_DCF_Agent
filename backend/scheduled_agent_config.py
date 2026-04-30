@@ -13,6 +13,11 @@ VALID_AGENT_TEMPLATES = frozenset(
         "thesis_guardian",
         "portfolio_heartbeat",
         "firm_pipeline",
+        "fundamental_analyst",
+        "quant_analyst",
+        "risk_analyst",
+        "macro_analyst",
+        "sentiment_analyst",
     }
 )
 
@@ -22,6 +27,11 @@ TEMPLATES_REQUIRING_TICKERS = frozenset(
         "thesis_guardian",
         "portfolio_heartbeat",
         "firm_pipeline",
+        "fundamental_analyst",
+        "quant_analyst",
+        "risk_analyst",
+        "macro_analyst",
+        "sentiment_analyst",
     }
 )
 

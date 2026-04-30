@@ -13,6 +13,7 @@ import AgentSetupPage from './pages/AgentSetupPage';
 import AgentDetailPage from './pages/AgentDetailPage';
 import InboxPage from './pages/InboxPage';
 import ResearchWorkstation from './pages/ResearchWorkstation';
+import CioPage from './pages/CioPage';
 
 function App() {
   return (
@@ -31,7 +32,9 @@ function App() {
           <Route path="/library"                   element={<LibraryPage />} />
           <Route path="/projects"                  element={<ProjectsListPage />} />
           <Route path="/projects/:projectId"       element={<ProjectWorkspace />} />
-          <Route path="/scheduled-agents"          element={<AgentsDashboard />} />
+          <Route path="/cio"                       element={<CioPage />} />
+          <Route path="/team"                      element={<AgentsDashboard />} />
+          <Route path="/scheduled-agents"          element={<Navigate to="/cio" replace />} />
           <Route path="/scheduled-agents/new"      element={<AgentSetupPage />} />
           <Route path="/scheduled-agents/:agentId" element={<AgentDetailPage />} />
           <Route path="/inbox"                     element={<InboxPage />} />

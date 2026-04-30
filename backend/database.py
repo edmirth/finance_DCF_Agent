@@ -136,6 +136,10 @@ async def init_db() -> None:
                 topics TEXT NOT NULL DEFAULT '[]',
                 instruction TEXT NOT NULL DEFAULT '',
                 schedule_label TEXT NOT NULL DEFAULT 'weekly_monday',
+                role_key TEXT,
+                role_title TEXT,
+                role_family TEXT,
+                manager_agent_id TEXT,
                 delivery_email TEXT,
                 delivery_inapp INTEGER NOT NULL DEFAULT 1,
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -153,6 +157,32 @@ async def init_db() -> None:
             pass
         except Exception as e:
             logger.error(f"Unexpected error creating ix_scheduled_agents_is_active index: {e}")
+        for _col in ["role_key", "role_title", "role_family", "manager_agent_id"]:
+            try:
+                await conn.execute(text(f"ALTER TABLE scheduled_agents ADD COLUMN {_col} TEXT"))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                    pass
+                else:
+                    logger.error(f"Unexpected OperationalError adding {_col} column: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error adding {_col} column: {e}")
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduled_agents_manager_agent_id ON scheduled_agents (manager_agent_id)"))
+        except OperationalError:
+            pass
+        except Exception as e:
+            logger.error(f"Unexpected error creating ix_scheduled_agents_manager_agent_id index: {e}")
+        for _idx, _col in [
+            ("ix_scheduled_agents_role_key", "role_key"),
+            ("ix_scheduled_agents_role_family", "role_family"),
+        ]:
+            try:
+                await conn.execute(text(f"CREATE INDEX IF NOT EXISTS {_idx} ON scheduled_agents ({_col})"))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating {_idx} index: {e}")
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS agent_runs (
                 id TEXT PRIMARY KEY,
@@ -183,6 +213,103 @@ async def init_db() -> None:
                 pass
             else:
                 logger.error(f"Unexpected OperationalError adding key_findings column: {e}")
+        # Idempotent migration: agent_routines and heartbeat_runs
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_routines (
+                id TEXT PRIMARY KEY,
+                scheduled_agent_id TEXT NOT NULL REFERENCES scheduled_agents(id) ON DELETE CASCADE,
+                routine_type TEXT NOT NULL DEFAULT 'heartbeat',
+                schedule_label TEXT NOT NULL DEFAULT 'weekly_monday',
+                timezone_name TEXT NOT NULL DEFAULT 'America/New_York',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                last_run_at DATETIME,
+                next_run_at DATETIME,
+                last_run_status TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                UNIQUE(scheduled_agent_id, routine_type)
+            )
+        """))
+        for _idx in [
+            "CREATE INDEX IF NOT EXISTS ix_agent_routines_scheduled_agent_id ON agent_routines (scheduled_agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_routines_is_active ON agent_routines (is_active)",
+        ]:
+            try:
+                await conn.execute(text(_idx))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating agent_routines index: {e}")
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS heartbeat_runs (
+                id TEXT PRIMARY KEY,
+                scheduled_agent_id TEXT NOT NULL REFERENCES scheduled_agents(id) ON DELETE CASCADE,
+                agent_routine_id TEXT REFERENCES agent_routines(id) ON DELETE SET NULL,
+                agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+                trigger_type TEXT NOT NULL DEFAULT 'scheduled',
+                status TEXT NOT NULL DEFAULT 'running',
+                summary TEXT NOT NULL DEFAULT '',
+                alert_level TEXT NOT NULL DEFAULT 'none',
+                material_change INTEGER NOT NULL DEFAULT 0,
+                context_json TEXT NOT NULL DEFAULT '{}',
+                outcome_json TEXT NOT NULL DEFAULT '{}',
+                started_at DATETIME NOT NULL,
+                completed_at DATETIME,
+                error TEXT
+            )
+        """))
+        for _idx in [
+            "CREATE INDEX IF NOT EXISTS ix_heartbeat_runs_scheduled_agent_id ON heartbeat_runs (scheduled_agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_heartbeat_runs_agent_routine_id ON heartbeat_runs (agent_routine_id)",
+            "CREATE INDEX IF NOT EXISTS ix_heartbeat_runs_started_at ON heartbeat_runs (started_at)",
+            "CREATE INDEX IF NOT EXISTS ix_heartbeat_runs_trigger_type ON heartbeat_runs (trigger_type)",
+        ]:
+            try:
+                await conn.execute(text(_idx))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating heartbeat_runs index: {e}")
+        # Idempotent migration: hire_proposals table
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hire_proposals (
+                id TEXT PRIMARY KEY,
+                proposed_by TEXT NOT NULL DEFAULT 'cio',
+                status TEXT NOT NULL DEFAULT 'pending',
+                name TEXT NOT NULL,
+                description TEXT,
+                template TEXT NOT NULL,
+                role_key TEXT,
+                role_title TEXT,
+                role_family TEXT,
+                tickers TEXT NOT NULL DEFAULT '[]',
+                topics TEXT NOT NULL DEFAULT '[]',
+                instruction TEXT NOT NULL DEFAULT '',
+                schedule_label TEXT NOT NULL DEFAULT 'weekly_monday',
+                manager_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
+                delivery_email TEXT,
+                delivery_inapp INTEGER NOT NULL DEFAULT 1,
+                approved_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
+                decision_note TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                decided_at DATETIME
+            )
+        """))
+        for _idx in [
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_status ON hire_proposals (status)",
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_role_key ON hire_proposals (role_key)",
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_role_family ON hire_proposals (role_family)",
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_created_at ON hire_proposals (created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_manager_agent_id ON hire_proposals (manager_agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_approved_agent_id ON hire_proposals (approved_agent_id)",
+        ]:
+            try:
+                await conn.execute(text(_idx))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating hire_proposals index: {e}")
         # Idempotent migration: research_tasks (firm "issues" board)
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS research_tasks (
@@ -198,6 +325,9 @@ async def init_db() -> None:
                 pm_synthesis TEXT,
                 overall_sentiment TEXT,
                 parent_task_id TEXT REFERENCES research_tasks(id) ON DELETE SET NULL,
+                owner_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
+                assigned_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
+                source_heartbeat_run_id TEXT REFERENCES heartbeat_runs(id) ON DELETE SET NULL,
                 triggered_by TEXT NOT NULL DEFAULT 'manual',
                 run_id TEXT,
                 mandate_check TEXT NOT NULL DEFAULT 'not_run',
@@ -212,12 +342,25 @@ async def init_db() -> None:
                 updated_at DATETIME NOT NULL
             )
         """))
+        for _col in ["owner_agent_id", "assigned_agent_id", "source_heartbeat_run_id"]:
+            try:
+                await conn.execute(text(f"ALTER TABLE research_tasks ADD COLUMN {_col} TEXT"))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                    pass
+                else:
+                    logger.error(f"Unexpected OperationalError adding research_tasks {_col} column: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error adding research_tasks {_col} column: {e}")
         for _idx in [
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_status ON research_tasks (status)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_ticker ON research_tasks (ticker)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_created_at ON research_tasks (created_at)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_parent_task_id ON research_tasks (parent_task_id)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_run_id ON research_tasks (run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_owner_agent_id ON research_tasks (owner_agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_assigned_agent_id ON research_tasks (assigned_agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_source_heartbeat_run_id ON research_tasks (source_heartbeat_run_id)",
         ]:
             try:
                 await conn.execute(text(_idx))

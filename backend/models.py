@@ -12,6 +12,9 @@ Tables:
   project_documents — uploaded files + chroma chunk references
   scheduled_agents  — user-configured persistent agent workers
   agent_runs        — execution history for scheduled agents
+  agent_routines    — persistent heartbeat routines attached to agents
+  heartbeat_runs    — execution log of agent wake-up cycles
+  hire_proposals    — pending CIO / PM hire suggestions awaiting approval
 """
 from __future__ import annotations
 import uuid
@@ -174,6 +177,15 @@ class ScheduledAgent(Base):
     instruction: Mapped[str] = mapped_column(Text, default="")      # User's thesis / instruction
     # Schedule: daily_morning | pre_market | weekly_monday | weekly_friday | monthly
     schedule_label: Mapped[str] = mapped_column(String(50), default="weekly_monday")
+    role_key: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    role_title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role_family: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    manager_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     delivery_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     delivery_inapp: Mapped[bool] = mapped_column(default=True)
     is_active: Mapped[bool] = mapped_column(default=True, index=True)
@@ -187,6 +199,20 @@ class ScheduledAgent(Base):
     runs: Mapped[List["AgentRun"]] = relationship(
         "AgentRun", back_populates="scheduled_agent", cascade="all, delete-orphan",
         order_by="AgentRun.started_at.desc()"
+    )
+    routines: Mapped[List["AgentRoutine"]] = relationship(
+        "AgentRoutine", back_populates="scheduled_agent", cascade="all, delete-orphan",
+        order_by="AgentRoutine.created_at.desc()"
+    )
+    heartbeat_runs: Mapped[List["HeartbeatRun"]] = relationship(
+        "HeartbeatRun", back_populates="scheduled_agent", cascade="all, delete-orphan",
+        order_by="HeartbeatRun.started_at.desc()"
+    )
+    manager: Mapped[Optional["ScheduledAgent"]] = relationship(
+        "ScheduledAgent",
+        remote_side="ScheduledAgent.id",
+        foreign_keys=[manager_agent_id],
+        backref="direct_reports",
     )
 
 
@@ -214,6 +240,112 @@ class AgentRun(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="runs")
+    heartbeat_runs: Mapped[List["HeartbeatRun"]] = relationship(
+        "HeartbeatRun", back_populates="agent_run"
+    )
+
+
+class AgentRoutine(Base):
+    """A first-class wake-up routine attached to an agent."""
+    __tablename__ = "agent_routines"
+    __table_args__ = (
+        UniqueConstraint("scheduled_agent_id", "routine_type", name="uq_agent_routine_type"),
+        Index("ix_agent_routines_scheduled_agent_id", "scheduled_agent_id"),
+        Index("ix_agent_routines_is_active", "is_active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    scheduled_agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scheduled_agents.id", ondelete="CASCADE")
+    )
+    routine_type: Mapped[str] = mapped_column(String(50), default="heartbeat")
+    schedule_label: Mapped[str] = mapped_column(String(50), default="weekly_monday")
+    timezone_name: Mapped[str] = mapped_column(String(64), default="America/New_York")
+    is_active: Mapped[bool] = mapped_column(default=True)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_run_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="routines")
+    heartbeat_runs: Mapped[List["HeartbeatRun"]] = relationship(
+        "HeartbeatRun", back_populates="routine", cascade="all, delete-orphan",
+        order_by="HeartbeatRun.started_at.desc()"
+    )
+
+
+class HeartbeatRun(Base):
+    """A wake-up cycle for an agent routine, separate from the content/report payload."""
+    __tablename__ = "heartbeat_runs"
+    __table_args__ = (
+        Index("ix_heartbeat_runs_scheduled_agent_id", "scheduled_agent_id"),
+        Index("ix_heartbeat_runs_agent_routine_id", "agent_routine_id"),
+        Index("ix_heartbeat_runs_started_at", "started_at"),
+        Index("ix_heartbeat_runs_trigger_type", "trigger_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    scheduled_agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scheduled_agents.id", ondelete="CASCADE")
+    )
+    agent_routine_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("agent_routines.id", ondelete="SET NULL"), nullable=True
+    )
+    agent_run_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    trigger_type: Mapped[str] = mapped_column(String(20), default="scheduled")
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    alert_level: Mapped[str] = mapped_column(String(10), default="none")
+    material_change: Mapped[bool] = mapped_column(default=False)
+    context_json: Mapped[str] = mapped_column(Text, default="{}")
+    outcome_json: Mapped[str] = mapped_column(Text, default="{}")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="heartbeat_runs")
+    routine: Mapped[Optional["AgentRoutine"]] = relationship("AgentRoutine", back_populates="heartbeat_runs")
+    agent_run: Mapped[Optional["AgentRun"]] = relationship("AgentRun", back_populates="heartbeat_runs")
+
+
+class HireProposal(Base):
+    """A proposed hire that must be approved or rejected before an agent is created."""
+    __tablename__ = "hire_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    proposed_by: Mapped[str] = mapped_column(String(50), default="cio")
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    template: Mapped[str] = mapped_column(String(50))
+    role_key: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    role_title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role_family: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    tickers: Mapped[str] = mapped_column(Text, default="[]")
+    topics: Mapped[str] = mapped_column(Text, default="[]")
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    schedule_label: Mapped[str] = mapped_column(String(50), default="weekly_monday")
+    manager_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    delivery_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    delivery_inapp: Mapped[bool] = mapped_column(default=True)
+    approved_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    decision_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class ResearchTask(Base):
@@ -246,6 +378,15 @@ class ResearchTask(Base):
     # Linkage / triggering
     parent_task_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("research_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    owner_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("scheduled_agents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    assigned_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("scheduled_agents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_heartbeat_run_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("heartbeat_runs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     triggered_by: Mapped[str] = mapped_column(String(50), default="manual")
     run_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)

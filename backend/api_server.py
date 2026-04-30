@@ -2582,6 +2582,7 @@ class InstallRoutineBody(BaseModel):
 @app.post("/firm/routines/install", status_code=201)
 async def install_firm_routine(body: InstallRoutineBody, db: AsyncSession = Depends(get_db)):
     """Install one of the catalog routines as a ScheduledAgent."""
+    from backend.heartbeat_service import ensure_agent_heartbeat_routine
     from backend.models import ScheduledAgent
     from backend.scheduler import register_agent_job, next_run_time
 
@@ -2613,6 +2614,8 @@ async def install_firm_routine(body: InstallRoutineBody, db: AsyncSession = Depe
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
+    await ensure_agent_heartbeat_routine(db, agent)
+    await db.commit()
 
     # Register the cron job immediately so it's live without restart
     try:
@@ -2706,6 +2709,9 @@ class TaskCreate(BaseModel):
     priority: Optional[str] = "medium"
     selected_agents: Optional[List[str]] = None
     parent_task_id: Optional[str] = None
+    owner_agent_id: Optional[str] = None
+    assigned_agent_id: Optional[str] = None
+    source_heartbeat_run_id: Optional[str] = None
     triggered_by: Optional[str] = "manual"
     notes: Optional[str] = None
 
@@ -2719,6 +2725,9 @@ class TaskPatch(BaseModel):
     completed_agents: Optional[List[str]] = None
     findings: Optional[Dict[str, Any]] = None
     pm_synthesis: Optional[Dict[str, Any]] = None
+    owner_agent_id: Optional[str] = None
+    assigned_agent_id: Optional[str] = None
+    source_heartbeat_run_id: Optional[str] = None
     mandate_check: Optional[str] = None
     risk_check: Optional[str] = None
     compliance_check: Optional[str] = None
@@ -2758,6 +2767,9 @@ def _task_to_dict(t) -> dict:
         "pm_synthesis": synthesis,
         "overall_sentiment": t.overall_sentiment,
         "parent_task_id": t.parent_task_id,
+        "owner_agent_id": t.owner_agent_id,
+        "assigned_agent_id": t.assigned_agent_id,
+        "source_heartbeat_run_id": t.source_heartbeat_run_id,
         "triggered_by": t.triggered_by,
         "run_id": t.run_id,
         "mandate_check": t.mandate_check,
@@ -2807,6 +2819,9 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
         priority=priority,
         selected_agents=json.dumps(selected),
         parent_task_id=body.parent_task_id,
+        owner_agent_id=body.owner_agent_id,
+        assigned_agent_id=body.assigned_agent_id,
+        source_heartbeat_run_id=body.source_heartbeat_run_id,
         triggered_by=body.triggered_by or "manual",
         notes=body.notes,
     )
@@ -2892,6 +2907,12 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
         t.notes = body.notes
     if body.overall_sentiment is not None:
         t.overall_sentiment = body.overall_sentiment
+    if body.owner_agent_id is not None:
+        t.owner_agent_id = body.owner_agent_id
+    if body.assigned_agent_id is not None:
+        t.assigned_agent_id = body.assigned_agent_id
+    if body.source_heartbeat_run_id is not None:
+        t.source_heartbeat_run_id = body.source_heartbeat_run_id
     if body.completed_agents is not None:
         t.completed_agents = json.dumps(body.completed_agents)
     if body.findings is not None:

@@ -1,25 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Play, Pause, Trash2, ChevronRight, Clock, Loader2, Zap } from 'lucide-react';
-import { getScheduledAgents, deleteScheduledAgent, updateScheduledAgent, triggerAgentRun } from '../api';
-import { ScheduledAgent } from '../types';
-import CioCard from '../components/CioCard';
-
-const TEMPLATE_META: Record<string, { label: string; color: string; bg: string; description: string }> = {
-  earnings_watcher:    { label: 'Earnings Watcher',    color: '#F59E0B', bg: '#FEF3C7', description: 'Tracks earnings for your tickers' },
-  market_pulse:        { label: 'Market Pulse',        color: '#3B82F6', bg: '#DBEAFE', description: 'Daily market & macro conditions' },
-  thesis_guardian:     { label: 'Thesis Guardian',     color: '#10B981', bg: '#D1FAE5', description: 'Monitors your investment thesis' },
-  portfolio_heartbeat: { label: 'Portfolio Heartbeat', color: '#8B5CF6', bg: '#EDE9FE', description: 'Weekly portfolio health check' },
-};
-
-function getTemplateMeta(template: string) {
-  return TEMPLATE_META[template] || {
-    label: template,
-    color: '#64748B',
-    bg: '#F1F5F9',
-    description: 'Unsupported template',
-  };
-}
+import { Play, Pause, Trash2, ChevronRight, Clock, Loader2, Zap, BrainCircuit } from 'lucide-react';
+import { getScheduledAgents, deleteScheduledAgent, updateScheduledAgent, triggerAgentRun, getHireProposals, approveHireProposal, rejectHireProposal } from '../api';
+import { ScheduledAgent, HireProposal } from '../types';
+import { getRoleMeta, roleMetaForAgent } from '../agentRoles';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -54,7 +38,7 @@ function AgentCard({
   onRunNow: (id: string) => void;
 }) {
   const navigate = useNavigate();
-  const meta = getTemplateMeta(agent.template);
+  const meta = roleMetaForAgent(agent);
   const [running, setRunning] = useState(false);
 
   const handleRunNow = async (e: React.MouseEvent) => {
@@ -87,7 +71,7 @@ function AgentCard({
             className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold"
             style={{ background: meta.bg, color: meta.color }}
           >
-            {meta.label[0]}
+            {meta.letter}
           </div>
           <div className="min-w-0">
             <h3 className="font-semibold text-slate-900 text-sm truncate" style={{ letterSpacing: '-0.01em' }}>
@@ -97,8 +81,11 @@ function AgentCard({
               className="text-xs font-medium"
               style={{ color: meta.color }}
             >
-              {meta.label}
+              {meta.displayTitle}
             </span>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Reports to {agent.reports_to_label || 'CIO'}
+            </p>
           </div>
         </div>
 
@@ -187,22 +174,86 @@ function EmptyState() {
   const navigate = useNavigate();
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-5">
-        <Zap className="w-8 h-8 text-slate-400" />
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg mb-5">
+        <BrainCircuit className="w-8 h-8 text-white" />
       </div>
       <h2 className="text-xl font-semibold text-slate-900 mb-2" style={{ letterSpacing: '-0.02em' }}>
-        No agents yet
+        No approved team yet
       </h2>
       <p className="text-slate-500 text-sm max-w-xs mb-6 leading-relaxed">
-        Create your first agent to start receiving automated research while you sleep.
+        Start with the PM. Describe the work you want done and let the system propose the right hires.
       </p>
       <button
-        onClick={() => navigate('/scheduled-agents/new')}
+        onClick={() => navigate('/cio')}
         className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-800 transition-colors duration-150"
       >
-        <Plus className="w-4 h-4" />
-        Create agent
+        <BrainCircuit className="w-4 h-4" />
+        Talk to PM
       </button>
+    </div>
+  );
+}
+
+function PendingProposalCard({
+  proposal,
+  onApprove,
+  onReject,
+}: {
+  proposal: HireProposal;
+  onApprove: (proposalId: string) => void;
+  onReject: (proposalId: string) => void;
+}) {
+  const meta = getRoleMeta({
+    role_key: proposal.role_key,
+    role_title: proposal.role_title,
+    template: proposal.template,
+  });
+
+  return (
+    <div className="bg-white border border-emerald-200 rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3 min-w-0">
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold"
+            style={{ background: meta.bg, color: meta.color }}
+          >
+            {meta.letter}
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Pending Hire Proposal</p>
+            <h3 className="font-semibold text-slate-900 text-sm truncate" style={{ letterSpacing: '-0.01em' }}>
+              {proposal.name}
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">{meta.displayTitle} · Reports to {proposal.reports_to_label || 'CIO'}</p>
+            {proposal.description && (
+              <p className="text-xs text-slate-500 mt-2 leading-relaxed">{proposal.description}</p>
+            )}
+            {proposal.tickers.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-3">
+                {proposal.tickers.map((ticker) => (
+                  <span key={ticker} className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700">
+                    {ticker}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => onReject(proposal.id)}
+            className="px-3 py-1.5 rounded-xl border border-slate-200 text-slate-600 text-xs font-medium hover:bg-slate-50 transition-colors"
+          >
+            Decline
+          </button>
+          <button
+            onClick={() => onApprove(proposal.id)}
+            className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors"
+          >
+            Approve
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -210,6 +261,7 @@ function EmptyState() {
 export default function AgentsDashboard() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<ScheduledAgent[]>([]);
+  const [pendingProposals, setPendingProposals] = useState<HireProposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ msg: string; type: 'error' | 'success' } | null>(null);
 
@@ -224,10 +276,14 @@ export default function AgentsDashboard() {
 
   const load = async () => {
     try {
-      const data = await getScheduledAgents();
-      setAgents(data);
+      const [agentData, proposalData] = await Promise.all([
+        getScheduledAgents(),
+        getHireProposals('pending'),
+      ]);
+      setAgents(agentData);
+      setPendingProposals(proposalData);
     } catch {
-      showToast('Could not load agents — backend may be offline.');
+      showToast('Could not load team state — backend may be offline.');
     } finally {
       setLoading(false);
     }
@@ -262,6 +318,27 @@ export default function AgentsDashboard() {
     }
   };
 
+  const handleApproveProposal = async (proposalId: string) => {
+    try {
+      const result = await approveHireProposal(proposalId);
+      setPendingProposals(prev => prev.filter(p => p.id !== proposalId));
+      showToast(`${result.agent.name} approved and added to the team.`, 'success');
+      await load();
+    } catch {
+      showToast('Failed to approve hire proposal.');
+    }
+  };
+
+  const handleRejectProposal = async (proposalId: string) => {
+    try {
+      await rejectHireProposal(proposalId);
+      setPendingProposals(prev => prev.filter(p => p.id !== proposalId));
+      showToast('Hire proposal declined.', 'success');
+    } catch {
+      showToast('Failed to decline hire proposal.');
+    }
+  };
+
   const activeCount  = agents.filter(a => a.is_active).length;
   const pausedCount  = agents.filter(a => !a.is_active).length;
 
@@ -279,25 +356,50 @@ export default function AgentsDashboard() {
         <div className="flex items-center justify-between mb-10">
           <div>
             <h1 className="text-3xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
-              Your Agents
+              Team
             </h1>
             <p className="text-slate-500 text-sm">
               {agents.length === 0
-                ? 'Persistent research workers that run while you sleep'
+                ? 'Approved agents and pending hire proposals'
                 : `${activeCount} active · ${pausedCount} paused`}
             </p>
           </div>
           <button
-            onClick={() => navigate('/scheduled-agents/new')}
+            onClick={() => navigate('/cio')}
             className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-800 transition-colors duration-200 shadow-sm"
           >
-            <Plus className="w-4 h-4" />
-            New agent
+            <BrainCircuit className="w-4 h-4" />
+            Talk to PM
           </button>
         </div>
 
-        {/* CIO Card — always visible at top */}
-        <CioCard onAgentHired={load} />
+        {pendingProposals.length > 0 && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
+                  Pending Hire Proposals
+                </h2>
+                <p className="text-sm text-slate-500">
+                  CIO suggestions waiting for your approval.
+                </p>
+              </div>
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">
+                {pendingProposals.length} pending
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-4">
+              {pendingProposals.map((proposal) => (
+                <PendingProposalCard
+                  key={proposal.id}
+                  proposal={proposal}
+                  onApprove={handleApproveProposal}
+                  onReject={handleRejectProposal}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Content */}
         {loading ? (

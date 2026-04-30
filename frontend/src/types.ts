@@ -304,7 +304,30 @@ export type AgentTemplate =
   | 'earnings_watcher'
   | 'market_pulse'
   | 'thesis_guardian'
-  | 'portfolio_heartbeat';
+  | 'portfolio_heartbeat'
+  | 'firm_pipeline'
+  | 'fundamental_analyst'
+  | 'quant_analyst'
+  | 'risk_analyst'
+  | 'macro_analyst'
+  | 'sentiment_analyst';
+
+export type AgentRoleKey =
+  | 'generalist_analyst'
+  | 'semis_analyst'
+  | 'software_analyst'
+  | 'financials_analyst'
+  | 'healthcare_analyst'
+  | 'consumer_analyst'
+  | 'industrials_analyst'
+  | 'energy_analyst'
+  | 'earnings_analyst'
+  | 'portfolio_analyst'
+  | 'thesis_monitor'
+  | 'quant_strategist'
+  | 'risk_manager'
+  | 'macro_strategist'
+  | 'market_narrative_analyst';
 
 export type ScheduleLabel =
   | 'daily_morning'
@@ -320,10 +343,16 @@ export interface ScheduledAgent {
   name: string;
   description?: string;
   template: AgentTemplate;
+  role_key?: AgentRoleKey | null;
+  role_title?: string | null;
+  role_family?: string | null;
   tickers: string[];
   topics: string[];
   instruction: string;
   schedule_label: ScheduleLabel;
+  manager_agent_id?: string | null;
+  manager_agent_name?: string | null;
+  reports_to_label?: string;
   delivery_email?: string;
   delivery_inapp: boolean;
   is_active: boolean;
@@ -331,6 +360,7 @@ export interface ScheduledAgent {
   next_run_at?: string;
   last_run_status?: 'completed' | 'failed';
   last_run_summary?: string;
+  heartbeat_routine?: HeartbeatRoutine | null;
   created_at: string;
   updated_at: string;
 }
@@ -351,4 +381,63 @@ export interface AgentRun {
   error?: string;
   // inbox-only: joined from scheduled_agents
   agent_name?: string;
+}
+
+export interface HeartbeatRoutine {
+  id: string;
+  routine_type: string;
+  schedule_label: ScheduleLabel;
+  timezone_name: string;
+  is_active: boolean;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  last_run_status?: 'completed' | 'failed' | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HeartbeatRun {
+  id: string;
+  scheduled_agent_id: string;
+  agent_routine_id?: string | null;
+  agent_run_id?: string | null;
+  trigger_type: 'scheduled' | 'manual' | 'delegated' | string;
+  status: 'running' | 'completed' | 'failed';
+  summary: string;
+  alert_level: AlertLevel;
+  material_change: boolean;
+  context: Record<string, unknown>;
+  outcome: Record<string, unknown>;
+  started_at: string;
+  completed_at?: string | null;
+  error?: string | null;
+}
+
+export type HireProposalStatus = 'pending' | 'approved' | 'rejected';
+
+export interface HireProposal {
+  id: string;
+  proposed_by: string;
+  status: HireProposalStatus;
+  name: string;
+  description?: string | null;
+  template: AgentTemplate;
+  role_key?: AgentRoleKey | null;
+  role_title?: string | null;
+  role_family?: string | null;
+  tickers: string[];
+  topics: string[];
+  instruction: string;
+  schedule_label: ScheduleLabel;
+  manager_agent_id?: string | null;
+  manager_agent_name?: string | null;
+  reports_to_label?: string;
+  delivery_email?: string | null;
+  delivery_inapp: boolean;
+  approved_agent_id?: string | null;
+  approved_agent_name?: string | null;
+  decision_note?: string | null;
+  created_at: string;
+  updated_at: string;
+  decided_at?: string | null;
 }

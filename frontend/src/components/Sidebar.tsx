@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard } from 'lucide-react';
+import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, BrainCircuit, Users } from 'lucide-react';
 import { getSessions, deleteSession, getProjects } from '../api';
 import { SessionSummary, ProjectSummary } from '../types';
 
@@ -322,6 +322,22 @@ function Sidebar() {
         {/* Primary nav links */}
         <div style={{ marginBottom: 4 }}>
           <NavItem
+            to="/cio"
+            icon={<BrainCircuit className="w-4 h-4" />}
+            label="PM"
+            sub="Start here · staffing & delegation"
+            isCollapsed={!isMobile && isCollapsed}
+            onClick={() => isMobile && setIsMobileOpen(false)}
+          />
+          <NavItem
+            to="/team"
+            icon={<Users className="w-4 h-4" />}
+            label="Team"
+            sub="Approved roster & proposals"
+            isCollapsed={!isMobile && isCollapsed}
+            onClick={() => isMobile && setIsMobileOpen(false)}
+          />
+          <NavItem
             to="/research"
             icon={<LayoutDashboard className="w-4 h-4" />}
             label="Research"
@@ -420,7 +436,7 @@ function Sidebar() {
                 fontFamily: 'IBM Plex Sans, sans-serif',
               }}
             >
-              Search a ticker to generate your first investment memo.
+              Start with the PM to frame the work and let the system decide what coverage to add.
             </p>
           </div>
         )}

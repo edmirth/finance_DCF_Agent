@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Send, Loader2, BrainCircuit, Play, UserPlus, ChevronDown, ChevronUp, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { cioChat, cioDelegate, cioHire, CioMessage, CioAction } from '../api';
+import { cioChat, cioDelegate, approveHireProposal, rejectHireProposal, CioMessage, CioAction } from '../api';
+import { ROLE_META_BY_KEY } from '../agentRoles';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -11,7 +12,7 @@ interface ChatEntry {
   role: 'user' | 'assistant';
   content: string;
   action?: CioAction | null;
-  actionState?: 'idle' | 'loading' | 'done' | 'error';
+  actionState?: 'idle' | 'loading' | 'done' | 'error' | 'rejected';
   actionResult?: string;
 }
 
@@ -79,12 +80,11 @@ function DelegateCard({
   );
 }
 
-const TEMPLATE_LABELS: Record<string, string> = {
-  earnings_watcher: 'Earnings Watcher',
-  market_pulse: 'Market Pulse',
-  thesis_guardian: 'Thesis Guardian',
-  portfolio_heartbeat: 'Portfolio Heartbeat',
-};
+const roleLabel = (action: CioAction) =>
+  (action.role_key && ROLE_META_BY_KEY[action.role_key as keyof typeof ROLE_META_BY_KEY]?.title)
+  || action.role_title
+  || action.template
+  || 'Role';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -98,14 +98,14 @@ function HireCard({
   action,
   state,
   result,
-  onHire,
-  onDismiss,
+  onApprove,
+  onReject,
 }: {
   action: CioAction;
-  state: 'idle' | 'loading' | 'done' | 'error';
+  state: 'idle' | 'loading' | 'done' | 'error' | 'rejected';
   result?: string;
-  onHire: () => void;
-  onDismiss: () => void;
+  onApprove: () => void;
+  onReject: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -133,29 +133,34 @@ function HireCard({
             {state === 'idle' && (
               <>
                 <button
-                  onClick={onDismiss}
-                  className="p-1.5 rounded-lg hover:bg-emerald-100 text-slate-400 hover:text-slate-600 transition-colors"
+                  onClick={onReject}
+                  className="p-1.5 rounded-lg hover:bg-red-100 text-slate-400 hover:text-red-600 transition-colors"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
                 <button
-                  onClick={onHire}
+                  onClick={onApprove}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-xl transition-colors duration-200"
                 >
                   <UserPlus className="w-3 h-3" />
-                  Hire
+                  Approve
                 </button>
               </>
             )}
             {state === 'loading' && (
               <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 text-emerald-600 text-xs font-medium rounded-xl">
                 <Loader2 className="w-3 h-3 animate-spin" />
-                Hiring…
+                Saving…
               </div>
             )}
             {state === 'done' && (
               <span className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-xl">
-                Hired
+                Approved
+              </span>
+            )}
+            {state === 'rejected' && (
+              <span className="px-3 py-1.5 bg-slate-200 text-slate-600 text-xs font-medium rounded-xl">
+                Declined
               </span>
             )}
             {state === 'error' && (
@@ -168,9 +173,9 @@ function HireCard({
 
         {/* Meta pills */}
         <div className="flex flex-wrap gap-1.5 mt-3 ml-11">
-          {action.template && (
+          {(action.role_key || action.role_title || action.template) && (
             <span className="px-2 py-0.5 bg-white border border-emerald-200 text-emerald-700 text-xs rounded-lg font-medium">
-              {TEMPLATE_LABELS[action.template] || action.template}
+              {roleLabel(action)}
             </span>
           )}
           {action.schedule_label && (
@@ -216,13 +221,13 @@ function HireCard({
 function MessageBubble({
   entry,
   onDelegate,
-  onHire,
-  onDismissAction,
+  onApproveHire,
+  onRejectHire,
 }: {
   entry: ChatEntry;
   onDelegate: (entryId: string) => void;
-  onHire: (entryId: string) => void;
-  onDismissAction: (entryId: string) => void;
+  onApproveHire: (entryId: string) => void;
+  onRejectHire: (entryId: string) => void;
 }) {
   const isUser = entry.role === 'user';
 
@@ -243,7 +248,7 @@ function MessageBubble({
             <div className="text-sm text-slate-800 leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:mt-3 prose-headings:mb-1">
               <ReactMarkdown>{entry.content}</ReactMarkdown>
             </div>
-            {entry.action?.type === 'delegate' && entry.actionState !== undefined && (
+            {entry.action?.type === 'delegate' && entry.actionState !== undefined && entry.actionState !== 'rejected' && (
               <DelegateCard
                 action={entry.action}
                 state={entry.actionState}
@@ -256,8 +261,8 @@ function MessageBubble({
                 action={entry.action}
                 state={entry.actionState}
                 result={entry.actionResult}
-                onHire={() => onHire(entry.id)}
-                onDismiss={() => onDismissAction(entry.id)}
+                onApprove={() => onApproveHire(entry.id)}
+                onReject={() => onRejectHire(entry.id)}
               />
             )}
           </div>
@@ -270,11 +275,11 @@ function MessageBubble({
 // ── Suggested prompts ──────────────────────────────────────────────────────────
 
 const SUGGESTIONS = [
-  "What's the current state of my research team?",
-  "Run an earnings analysis on NVDA",
-  "Hire an agent to monitor my AAPL thesis",
-  "What are the latest findings from my agents?",
-  "Set up a weekly market pulse report",
+  "I want to underwrite NVDA. Build the right team for it.",
+  "What coverage are we missing for a new software idea?",
+  "Run the right workstream for a TSLA risk review.",
+  "Do we need a new analyst for semis right now?",
+  "Summarize what my current team found this week.",
 ];
 
 // ── Main page ──────────────────────────────────────────────────────────────────
@@ -315,7 +320,13 @@ export default function CioPage() {
         role: 'assistant',
         content: res.message,
         action: res.action ?? null,
-        actionState: res.action ? 'idle' : undefined,
+        actionState: !res.action
+          ? undefined
+          : res.action.proposal_status === 'approved'
+            ? 'done'
+            : res.action.proposal_status === 'rejected'
+              ? 'rejected'
+              : 'idle',
       };
       setEntries(prev => [...prev, assistantEntry]);
     } catch {
@@ -360,23 +371,23 @@ export default function CioPage() {
     }
   };
 
-  const handleHire = async (entryId: string) => {
+  const handleApproveHire = async (entryId: string) => {
     const entry = entries.find(e => e.id === entryId);
-    if (!entry?.action) return;
+    if (!entry?.action?.proposal_id) return;
 
     setEntries(prev =>
       prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' } : e)
     );
 
     try {
-      const result = await cioHire(entry.action);
+      const result = await approveHireProposal(entry.action.proposal_id);
       setEntries(prev =>
         prev.map(e =>
           e.id === entryId
             ? {
                 ...e,
                 actionState: 'done',
-                actionResult: `${result.name} hired and scheduled. View in Agents dashboard.`,
+                actionResult: `${result.agent.name} approved and added to the team.`,
               }
             : e
         )
@@ -392,10 +403,32 @@ export default function CioPage() {
     }
   };
 
-  const handleDismissAction = (entryId: string) => {
+  const handleRejectHire = async (entryId: string) => {
+    const entry = entries.find(e => e.id === entryId);
+    if (!entry?.action?.proposal_id) return;
+
     setEntries(prev =>
-      prev.map(e => e.id === entryId ? { ...e, action: null, actionState: undefined } : e)
+      prev.map(e => e.id === entryId ? { ...e, actionState: 'loading' } : e)
     );
+
+    try {
+      await rejectHireProposal(entry.action.proposal_id);
+      setEntries(prev =>
+        prev.map(e =>
+          e.id === entryId
+            ? { ...e, actionState: 'rejected', actionResult: 'Hire proposal declined.' }
+            : e
+        )
+      );
+    } catch {
+      setEntries(prev =>
+        prev.map(e =>
+          e.id === entryId
+            ? { ...e, actionState: 'error', actionResult: 'Failed to update hire proposal.' }
+            : e
+        )
+      );
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -419,11 +452,11 @@ export default function CioPage() {
             <h1 className="text-base font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
               Chief Investment Officer
             </h1>
-            <p className="text-xs text-slate-400 font-light">Your persistent investment advisor</p>
+            <p className="text-xs text-slate-400 font-light">Your first point of contact for staffing and delegation</p>
           </div>
         </div>
         <button
-          onClick={() => navigate('/scheduled-agents')}
+          onClick={() => navigate('/team')}
           className="text-xs text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-xl hover:bg-slate-50 transition-colors flex items-center gap-1.5"
         >
           View team →
@@ -438,10 +471,10 @@ export default function CioPage() {
               <BrainCircuit className="w-8 h-8 text-white" strokeWidth={1.5} />
             </div>
             <h2 className="text-2xl font-semibold text-slate-900 mb-2" style={{ letterSpacing: '-0.03em' }}>
-              Your CIO is ready
+              Start with the PM
             </h2>
             <p className="text-slate-500 text-sm text-center max-w-sm mb-10 font-light leading-relaxed">
-              Ask anything about your portfolio, delegate to your research team, or hire new agents.
+              Describe the work you want done. The PM can answer directly, propose hires, and staff the right analysts for the job.
             </p>
             <div className="flex flex-col gap-2 w-full max-w-md">
               {SUGGESTIONS.map(s => (
@@ -463,8 +496,8 @@ export default function CioPage() {
                 key={entry.id}
                 entry={entry}
                 onDelegate={handleDelegate}
-                onHire={handleHire}
-                onDismissAction={handleDismissAction}
+                onApproveHire={handleApproveHire}
+                onRejectHire={handleRejectHire}
               />
             ))}
             {isLoading && (
@@ -493,7 +526,7 @@ export default function CioPage() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask your CIO anything…"
+              placeholder="Describe the analysis or work you want done…"
               rows={1}
               className="flex-1 resize-none outline-none text-sm text-slate-900 placeholder-slate-400 leading-relaxed max-h-36 bg-transparent py-1 px-1 font-light"
               style={{ letterSpacing: '-0.01em' }}
