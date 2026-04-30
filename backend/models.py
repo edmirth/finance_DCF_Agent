@@ -376,6 +376,9 @@ class ResearchTask(Base):
     overall_sentiment: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # Linkage / triggering
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     parent_task_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("research_tasks.id", ondelete="SET NULL"), nullable=True, index=True
     )

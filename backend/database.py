@@ -324,6 +324,7 @@ async def init_db() -> None:
                 findings TEXT NOT NULL DEFAULT '{}',
                 pm_synthesis TEXT,
                 overall_sentiment TEXT,
+                project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
                 parent_task_id TEXT REFERENCES research_tasks(id) ON DELETE SET NULL,
                 owner_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
                 assigned_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
@@ -342,7 +343,7 @@ async def init_db() -> None:
                 updated_at DATETIME NOT NULL
             )
         """))
-        for _col in ["owner_agent_id", "assigned_agent_id", "source_heartbeat_run_id"]:
+        for _col in ["project_id", "owner_agent_id", "assigned_agent_id", "source_heartbeat_run_id"]:
             try:
                 await conn.execute(text(f"ALTER TABLE research_tasks ADD COLUMN {_col} TEXT"))
             except OperationalError as e:
@@ -356,6 +357,7 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_status ON research_tasks (status)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_ticker ON research_tasks (ticker)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_created_at ON research_tasks (created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_research_tasks_project_id ON research_tasks (project_id)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_parent_task_id ON research_tasks (parent_task_id)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_run_id ON research_tasks (run_id)",
             "CREATE INDEX IF NOT EXISTS ix_research_tasks_owner_agent_id ON research_tasks (owner_agent_id)",

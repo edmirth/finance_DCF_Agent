@@ -1021,7 +1021,7 @@ function ProjectWorkspace() {
                     {projectSessions.map(s => (
                       <button
                         key={s.id}
-                        onClick={() => navigate(`/?session=${s.id}`)}
+                        onClick={() => navigate(`/chat?session=${s.id}`)}
                         style={{
                           display: 'block',
                           width: '100%',

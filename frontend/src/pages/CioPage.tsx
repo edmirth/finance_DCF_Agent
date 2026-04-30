@@ -1,8 +1,18 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Send, Loader2, BrainCircuit, Play, UserPlus, ChevronDown, ChevronUp, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { cioChat, cioDelegate, approveHireProposal, rejectHireProposal, CioMessage, CioAction } from '../api';
+import {
+  cioChat,
+  cioDelegate,
+  approveHireProposal,
+  rejectHireProposal,
+  getProjects,
+  getTask,
+  CioMessage,
+  CioAction,
+  type ResearchTask,
+} from '../api';
 import { ROLE_META_BY_KEY } from '../agentRoles';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -282,19 +292,69 @@ const SUGGESTIONS = [
   "Summarize what my current team found this week.",
 ];
 
+function issuePrompt(task: ResearchTask, projectTitle?: string | null): string {
+  const detailLines = [
+    `Review this issue for the PM workflow.`,
+    `Title: ${task.title}`,
+    `Ticker: ${task.ticker}`,
+    `Task type: ${task.task_type}`,
+    `Priority: ${task.priority}`,
+    `Project: ${projectTitle || 'No project'}`,
+    `Description: ${task.notes || 'No description provided.'}`,
+    `Current staffing: ${task.selected_agents.length > 0 ? task.selected_agents.join(', ') : 'Unstaffed'}`,
+    `Decide whether you should answer directly, delegate to an existing agent, or propose a hire. If staffing is missing, propose the right hire or delegation.`,
+  ];
+  return detailLines.join('\n');
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function CioPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [linkedIssue, setLinkedIssue] = useState<ResearchTask | null>(null);
+  const [linkedProjectTitle, setLinkedProjectTitle] = useState<string | null>(null);
+  const [issueError, setIssueError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const issueId = searchParams.get('issue');
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [entries]);
+
+  useEffect(() => {
+    const loadIssue = async () => {
+      if (!issueId) {
+        setLinkedIssue(null);
+        setLinkedProjectTitle(null);
+        setIssueError(null);
+        return;
+      }
+      try {
+        const task = await getTask(issueId);
+        setLinkedIssue(task);
+        setIssueError(null);
+        if (task.project_id) {
+          const projects = await getProjects();
+          const project = projects.find((candidate) => candidate.id === task.project_id);
+          setLinkedProjectTitle(project?.title || null);
+        } else {
+          setLinkedProjectTitle(null);
+        }
+      } catch {
+        setLinkedIssue(null);
+        setLinkedProjectTitle(null);
+        setIssueError('Could not load the linked issue.');
+      }
+    };
+
+    loadIssue();
+  }, [issueId]);
 
   const buildHistory = (): CioMessage[] =>
     entries.map(e => ({ role: e.role, content: e.content }));
@@ -476,6 +536,37 @@ export default function CioPage() {
             <p className="text-slate-500 text-sm text-center max-w-sm mb-10 font-light leading-relaxed">
               Describe the work you want done. The PM can answer directly, propose hires, and staff the right analysts for the job.
             </p>
+            {linkedIssue && (
+              <div className="w-full max-w-2xl rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-left mb-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                      Linked issue
+                    </p>
+                    <h3 className="mt-2 text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.02em' }}>
+                      {linkedIssue.title}
+                    </h3>
+                    <p className="mt-2 text-sm text-slate-600 leading-relaxed">
+                      {linkedIssue.notes || 'No issue description provided.'}
+                    </p>
+                    <p className="mt-3 text-xs text-slate-500">
+                      {linkedIssue.ticker} · {linkedProjectTitle || 'No project'} · {linkedIssue.priority}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => send(issuePrompt(linkedIssue, linkedProjectTitle))}
+                    className="flex-shrink-0 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 transition-colors"
+                  >
+                    Ask PM to staff this
+                  </button>
+                </div>
+              </div>
+            )}
+            {issueError && (
+              <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                {issueError}
+              </div>
+            )}
             <div className="flex flex-col gap-2 w-full max-w-md">
               {SUGGESTIONS.map(s => (
                 <button
@@ -491,6 +582,17 @@ export default function CioPage() {
           </div>
         ) : (
           <div className="max-w-2xl mx-auto px-6 py-8">
+            {linkedIssue && (
+              <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
+                  Working from issue
+                </p>
+                <p className="mt-1 text-sm font-medium text-slate-900">{linkedIssue.title}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {linkedIssue.ticker} · {linkedProjectTitle || 'No project'}
+                </p>
+              </div>
+            )}
             {entries.map(entry => (
               <MessageBubble
                 key={entry.id}

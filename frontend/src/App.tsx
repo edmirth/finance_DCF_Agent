@@ -8,6 +8,8 @@ import MemoSharePage from './pages/MemoSharePage';
 import LibraryPage from './pages/LibraryPage';
 import ProjectsListPage from './pages/ProjectsListPage';
 import ProjectWorkspace from './pages/ProjectWorkspace';
+import IssueDashboardPage from './pages/IssueDashboardPage';
+import IssueDetailPage from './pages/IssueDetailPage';
 import AgentsDashboard from './pages/AgentsDashboard';
 import AgentSetupPage from './pages/AgentSetupPage';
 import AgentDetailPage from './pages/AgentDetailPage';
@@ -21,7 +23,9 @@ function App() {
       <Sidebar />
       <div className="pt-14 md:pt-0 md:pl-[60px] lg:pl-[240px] transition-all duration-300">
         <Routes>
-          <Route path="/"                          element={<InvestmentMemoPage />} />
+          <Route path="/"                          element={<IssueDashboardPage />} />
+          <Route path="/dashboard"                 element={<Navigate to="/" replace />} />
+          <Route path="/issues/:taskId"            element={<IssueDetailPage />} />
           <Route path="/research"                  element={<ResearchWorkstation />} />
           <Route path="/earnings"                  element={<EarningsPage />} />
           <Route path="/chat"                      element={<ChatPage />} />

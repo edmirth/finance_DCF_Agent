@@ -2708,6 +2708,7 @@ class TaskCreate(BaseModel):
     title: Optional[str] = None
     priority: Optional[str] = "medium"
     selected_agents: Optional[List[str]] = None
+    project_id: Optional[str] = None
     parent_task_id: Optional[str] = None
     owner_agent_id: Optional[str] = None
     assigned_agent_id: Optional[str] = None
@@ -2721,6 +2722,7 @@ class TaskPatch(BaseModel):
     priority: Optional[str] = None
     title: Optional[str] = None
     notes: Optional[str] = None
+    project_id: Optional[str] = None
     overall_sentiment: Optional[str] = None
     completed_agents: Optional[List[str]] = None
     findings: Optional[Dict[str, Any]] = None
@@ -2766,6 +2768,7 @@ def _task_to_dict(t) -> dict:
         "findings": findings,
         "pm_synthesis": synthesis,
         "overall_sentiment": t.overall_sentiment,
+        "project_id": t.project_id,
         "parent_task_id": t.parent_task_id,
         "owner_agent_id": t.owner_agent_id,
         "assigned_agent_id": t.assigned_agent_id,
@@ -2788,7 +2791,7 @@ def _task_to_dict(t) -> dict:
 @app.post("/tasks", status_code=201)
 async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     """Create a new research task. Used by manual creation and by routines."""
-    from backend.models import ResearchTask
+    from backend.models import Project, ResearchTask
 
     task_type = (body.task_type or "ad_hoc").lower()
     if task_type not in VALID_TASK_TYPES:
@@ -2807,10 +2810,16 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     try:
         selected = _normalize_selected_agents(
             body.selected_agents,
-            default_to_all=True,
+            default_to_all=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    project_id = (body.project_id or "").strip() or None
+    if project_id:
+        project_result = await db.execute(select(Project.id).where(Project.id == project_id))
+        if project_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=400, detail="Invalid project_id")
 
     task = ResearchTask(
         ticker=ticker,
@@ -2818,6 +2827,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
         title=title,
         priority=priority,
         selected_agents=json.dumps(selected),
+        project_id=project_id,
         parent_task_id=body.parent_task_id,
         owner_agent_id=body.owner_agent_id,
         assigned_agent_id=body.assigned_agent_id,
@@ -2836,6 +2846,7 @@ async def list_tasks(
     status: Optional[str] = None,
     ticker: Optional[str] = None,
     task_type: Optional[str] = None,
+    project_id: Optional[str] = None,
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
 ):
@@ -2854,6 +2865,8 @@ async def list_tasks(
         if task_type not in VALID_TASK_TYPES:
             raise HTTPException(status_code=400, detail="Invalid task_type filter")
         conditions.append(ResearchTask.task_type == task_type)
+    if project_id:
+        conditions.append(ResearchTask.project_id == project_id)
 
     stmt = select(ResearchTask)
     if conditions:
@@ -2881,7 +2894,7 @@ async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
 async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(get_db)):
     """Update a task's status / fields. Auto-stamps started_at and completed_at on status transitions."""
     from sqlalchemy import select
-    from backend.models import ResearchTask
+    from backend.models import Project, ResearchTask
 
     result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
     t = result.scalar_one_or_none()
@@ -2905,6 +2918,13 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
         t.title = body.title
     if body.notes is not None:
         t.notes = body.notes
+    if body.project_id is not None:
+        normalized_project_id = body.project_id.strip() or None
+        if normalized_project_id:
+            project_result = await db.execute(select(Project.id).where(Project.id == normalized_project_id))
+            if project_result.scalar_one_or_none() is None:
+                raise HTTPException(status_code=400, detail="Invalid project_id")
+        t.project_id = normalized_project_id
     if body.overall_sentiment is not None:
         t.overall_sentiment = body.overall_sentiment
     if body.owner_agent_id is not None:

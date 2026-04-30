@@ -97,6 +97,48 @@ async def test_create_task_normalizes_and_dedupes_selected_agents():
 
 
 @pytest.mark.asyncio
+async def test_create_task_without_selected_agents_remains_unstaffed():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/tasks",
+            json={"ticker": "AAPL"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["selected_agents"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_task_accepts_valid_project_id():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        project_response = await client.post(
+            "/projects",
+            json={"title": "Semis Coverage", "thesis": "Track the AI capex chain."},
+        )
+        project_id = project_response.json()["id"]
+
+        response = await client.post(
+            "/tasks",
+            json={"ticker": "NVDA", "project_id": project_id},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["project_id"] == project_id
+
+
+@pytest.mark.asyncio
+async def test_create_task_rejects_invalid_project_id():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/tasks",
+            json={"ticker": "AAPL", "project_id": "missing-project"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid project_id"
+
+
+@pytest.mark.asyncio
 async def test_create_task_rejects_invalid_ticker_format():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(

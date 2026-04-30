@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, BrainCircuit, Users } from 'lucide-react';
+import { BookOpen, FilePlus2, FileText, Trash2, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, BrainCircuit, Users, FolderOpen } from 'lucide-react';
 import { getSessions, deleteSession, getProjects } from '../api';
 import { SessionSummary, ProjectSummary } from '../types';
 
@@ -300,7 +300,7 @@ function Sidebar() {
   };
 
   const handleSelectSession = (id: string) => {
-    navigate(`/?session=${id}`);
+    navigate(`/chat?session=${id}`);
     setIsMobileOpen(false);
   };
 
@@ -319,13 +319,36 @@ function Sidebar() {
         className="flex-1 overflow-y-auto overflow-x-hidden"
         style={{ padding: isMobile ? '12px 10px' : (isCollapsed ? '12px 8px' : '12px 10px') }}
       >
+        {(isMobile || !isCollapsed) && (
+          <button
+            type="button"
+            onClick={() => {
+              navigate('/?new=1');
+              isMobile && setIsMobileOpen(false);
+            }}
+            className="mb-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            <FilePlus2 className="w-4 h-4" />
+            New Issue
+          </button>
+        )}
+
         {/* Primary nav links */}
         <div style={{ marginBottom: 4 }}>
+          <NavItem
+            to="/"
+            end
+            icon={<LayoutDashboard className="w-4 h-4" />}
+            label="Dashboard"
+            sub="Issue board · PM-first workflow"
+            isCollapsed={!isMobile && isCollapsed}
+            onClick={() => isMobile && setIsMobileOpen(false)}
+          />
           <NavItem
             to="/cio"
             icon={<BrainCircuit className="w-4 h-4" />}
             label="PM"
-            sub="Start here · staffing & delegation"
+            sub="Issue review · staffing & delegation"
             isCollapsed={!isMobile && isCollapsed}
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
@@ -338,6 +361,14 @@ function Sidebar() {
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
           <NavItem
+            to="/projects"
+            icon={<FolderOpen className="w-4 h-4" />}
+            label="Projects"
+            sub="Thesis workspaces & documents"
+            isCollapsed={!isMobile && isCollapsed}
+            onClick={() => isMobile && setIsMobileOpen(false)}
+          />
+          <NavItem
             to="/research"
             icon={<LayoutDashboard className="w-4 h-4" />}
             label="Research"
@@ -346,8 +377,7 @@ function Sidebar() {
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
           <NavItem
-            to="/"
-            end
+            to="/memo"
             icon={<FileText className="w-4 h-4" />}
             label="Investment Memo"
             sub="IC memo · 5 analysts"

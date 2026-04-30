@@ -714,6 +714,7 @@ export interface ResearchTask {
   findings: Record<string, AgentFinding>;
   pm_synthesis: PmSynthesis | null;
   overall_sentiment: 'bullish' | 'bearish' | 'neutral' | null;
+  project_id: string | null;
   parent_task_id: string | null;
   owner_agent_id: string | null;
   assigned_agent_id: string | null;
@@ -738,6 +739,7 @@ export interface CreateTaskBody {
   title?: string;
   priority?: TaskPriority;
   selected_agents?: string[];
+  project_id?: string;
   owner_agent_id?: string;
   assigned_agent_id?: string;
   source_heartbeat_run_id?: string;
@@ -749,6 +751,7 @@ export const listTasks = async (filters?: {
   status?: TaskStatus;
   ticker?: string;
   task_type?: TaskType;
+  project_id?: string;
   limit?: number;
 }): Promise<ResearchTask[]> => {
   const response = await api.get('/tasks', { params: filters });
@@ -772,6 +775,7 @@ export const updateTask = async (
     priority: TaskPriority;
     title: string;
     notes: string;
+    project_id: string | null;
   }>,
 ): Promise<ResearchTask> => {
   const response = await api.patch(`/tasks/${id}`, patch);
