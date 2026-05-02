@@ -183,11 +183,17 @@ function PickerButton({
 function NewIssueModal({
   agents,
   projects,
+  initialAssigneeId,
+  initialProjectId,
+  initialParentTaskId,
   onClose,
   onCreated,
 }: {
   agents: ScheduledAgent[];
   projects: ProjectSummary[];
+  initialAssigneeId?: string | null;
+  initialProjectId?: string | null;
+  initialParentTaskId?: string | null;
   onClose: () => void;
   onCreated: (task: ResearchTask, options?: { redirectToInbox?: boolean }) => void;
 }) {
@@ -206,7 +212,7 @@ function NewIssueModal({
     label: 'PM / CIO',
     subtitle: 'Route this issue to the PM for triage and delegation',
   });
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId || null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -252,6 +258,23 @@ function NewIssueModal({
 
   const selectedProject = activeProjects.find((project) => project.id === selectedProjectId) || null;
 
+  useEffect(() => {
+    if (!initialAssigneeId) return;
+    const matchedAgent = agents.find((agent) => agent.id === initialAssigneeId);
+    if (!matchedAgent) return;
+    setSelectedAssignee({
+      kind: 'agent',
+      id: matchedAgent.id,
+      label: matchedAgent.name,
+      subtitle: matchedAgent.role_title || matchedAgent.template.replace(/_/g, ' '),
+    });
+  }, [agents, initialAssigneeId]);
+
+  useEffect(() => {
+    if (!initialProjectId) return;
+    setSelectedProjectId(initialProjectId);
+  }, [initialProjectId]);
+
   const handleSubmit = async () => {
     if (!title.trim()) {
       setError('Issue title required.');
@@ -267,6 +290,7 @@ function NewIssueModal({
       task_type: taskType,
       priority,
       project_id: selectedProjectId || undefined,
+      parent_task_id: initialParentTaskId || undefined,
       notes: description.trim() || undefined,
       triggered_by:
         selectedAssignee.kind === 'agent'
@@ -529,6 +553,9 @@ export default function IssueDashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const showComposer = searchParams.get('new') === '1';
+  const preselectedAssigneeId = searchParams.get('assignee');
+  const preselectedProjectId = searchParams.get('project');
+  const parentTaskId = searchParams.get('parent');
 
   const load = async () => {
     setLoading(true);
@@ -683,12 +710,15 @@ export default function IssueDashboardPage() {
       </div>
 
       {showComposer && (
-        <NewIssueModal
-          agents={agents}
-          projects={projects}
-          onClose={closeComposer}
-          onCreated={handleCreated}
-        />
+            <NewIssueModal
+              agents={agents}
+              projects={projects}
+              initialAssigneeId={preselectedAssigneeId}
+              initialProjectId={preselectedProjectId}
+              initialParentTaskId={parentTaskId}
+              onClose={closeComposer}
+              onCreated={handleCreated}
+            />
       )}
     </div>
   );

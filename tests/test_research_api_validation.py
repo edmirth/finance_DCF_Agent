@@ -165,6 +165,135 @@ async def test_create_task_allows_missing_ticker_and_defaults_to_general():
 
 
 @pytest.mark.asyncio
+async def test_list_tasks_can_filter_by_agent_id():
+    agent_id = "agent-filter-test"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assigned = await client.post(
+            "/tasks",
+            json={
+                "title": "Assigned to agent",
+                "assigned_agent_id": agent_id,
+            },
+        )
+        owned = await client.post(
+            "/tasks",
+            json={
+                "title": "Owned by agent",
+                "owner_agent_id": agent_id,
+            },
+        )
+        unrelated = await client.post(
+            "/tasks",
+            json={
+                "title": "Unrelated task",
+                "assigned_agent_id": "someone-else",
+            },
+        )
+        response = await client.get("/tasks", params={"agent_id": agent_id, "limit": 50})
+
+    assert assigned.status_code == 201
+    assert owned.status_code == 201
+    assert unrelated.status_code == 201
+    assert response.status_code == 200
+    titles = {task["title"] for task in response.json()["tasks"]}
+    assert "Assigned to agent" in titles
+    assert "Owned by agent" in titles
+    assert "Unrelated task" not in titles
+
+
+@pytest.mark.asyncio
+async def test_task_chat_creates_issue_thread_messages(monkeypatch):
+    async def fake_reply(db, task, prompt, *, target_agent_id, thread_messages):
+        return {
+            "author_label": "CEO",
+            "author_agent_id": None,
+            "content": f"Replying to: {prompt}",
+            "action": None,
+        }
+
+    monkeypatch.setattr("backend.api_server._run_task_chat_reply", fake_reply)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post("/tasks", json={"title": "Analyze the AI stack"})
+        task_id = task_response.json()["id"]
+
+        response = await client.post(
+            f"/tasks/{task_id}/chat",
+            json={"content": "Go deeper on which names matter first."},
+        )
+        messages = await client.get(f"/tasks/{task_id}/messages", params={"kind": "chat"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assistant_message"]["author_label"] == "CEO"
+    assert "Go deeper" in body["assistant_message"]["content"]
+    assert messages.status_code == 200
+    assert len(messages.json()["messages"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_task_documents_round_trip():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post("/tasks", json={"title": "Draft semis overview"})
+        task_id = task_response.json()["id"]
+
+        created = await client.post(
+            f"/tasks/{task_id}/documents",
+            json={
+                "title": "Semis market map",
+                "content_md": "# Semis\n\nStart here.",
+                "document_type": "brief",
+            },
+        )
+        document_id = created.json()["id"]
+        updated = await client.patch(
+            f"/tasks/{task_id}/documents/{document_id}",
+            json={"content_md": "# Semis\n\nUpdated body."},
+        )
+        listed = await client.get(f"/tasks/{task_id}/documents")
+
+    assert created.status_code == 201
+    assert updated.status_code == 200
+    assert updated.json()["revision"] == 2
+    assert listed.status_code == 200
+    assert listed.json()["documents"][0]["title"] == "Semis market map"
+
+
+@pytest.mark.asyncio
+async def test_task_related_work_returns_parent_children_and_project_peers():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        project_response = await client.post(
+            "/projects",
+            json={"title": "AI Infra", "thesis": "Track the capex chain"},
+        )
+        project_id = project_response.json()["id"]
+
+        parent = await client.post(
+            "/tasks",
+            json={"title": "Parent issue", "project_id": project_id},
+        )
+        parent_id = parent.json()["id"]
+        child = await client.post(
+            "/tasks",
+            json={"title": "Child issue", "parent_task_id": parent_id, "project_id": project_id},
+        )
+        peer = await client.post(
+            "/tasks",
+            json={"title": "Peer issue", "project_id": project_id},
+        )
+
+        response = await client.get(f"/tasks/{parent_id}/related-work")
+
+    assert child.status_code == 201
+    assert peer.status_code == 201
+    assert response.status_code == 200
+    body = response.json()
+    assert {task["title"] for task in body["sub_issues"]} == {"Child issue"}
+    assert {task["title"] for task in body["same_project_issues"]} >= {"Child issue", "Peer issue"}
+
+
+@pytest.mark.asyncio
 async def test_create_task_rejects_explicit_empty_agent_list():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(

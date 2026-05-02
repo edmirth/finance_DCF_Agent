@@ -649,6 +649,34 @@ async def test_inbox_includes_pending_hire_proposals():
 
 
 @pytest.mark.asyncio
+async def test_inbox_includes_issue_workspace_events():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post("/tasks", json={"title": "Build AI watchlist"})
+        assert task_response.status_code == 201
+        task_id = task_response.json()["id"]
+
+        message_response = await client.post(
+            f"/tasks/{task_id}/messages",
+            json={
+                "kind": "chat",
+                "role": "assistant",
+                "author_label": "CEO",
+                "content": "Start with semis, infra software, and power beneficiaries.",
+            },
+        )
+        assert message_response.status_code == 201
+
+        inbox_response = await client.get("/inbox")
+
+    assert inbox_response.status_code == 200
+    items = inbox_response.json()["items"]
+    issue_items = [item for item in items if item["item_type"] == "task_message"]
+    assert issue_items
+    assert issue_items[0]["task_id"] == task_id
+    assert issue_items[0]["author_label"] == "CEO"
+
+
+@pytest.mark.asyncio
 async def test_manager_heartbeat_plans_task_and_delegated_run():
     manager_id = str(uuid4())
     report_id = str(uuid4())

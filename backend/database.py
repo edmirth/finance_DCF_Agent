@@ -383,6 +383,58 @@ async def init_db() -> None:
                 pass
             except Exception as e:
                 logger.error(f"Unexpected error creating research_tasks index: {e}")
+        # Idempotent migration: research_task_messages (issue-scoped thread + activity)
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS research_task_messages (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL DEFAULT 'chat',
+                role TEXT NOT NULL DEFAULT 'user',
+                author_label TEXT NOT NULL DEFAULT 'System',
+                author_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
+                content TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT,
+                created_at DATETIME NOT NULL
+            )
+        """))
+        for _idx in [
+            "CREATE INDEX IF NOT EXISTS ix_research_task_messages_task_id ON research_task_messages (task_id)",
+            "CREATE INDEX IF NOT EXISTS ix_research_task_messages_kind ON research_task_messages (kind)",
+            "CREATE INDEX IF NOT EXISTS ix_research_task_messages_created_at ON research_task_messages (created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_research_task_messages_author_agent_id ON research_task_messages (author_agent_id)",
+        ]:
+            try:
+                await conn.execute(text(_idx))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating research_task_messages index: {e}")
+        # Idempotent migration: research_task_documents (issue-scoped artifacts)
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS research_task_documents (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                document_type TEXT NOT NULL DEFAULT 'analysis',
+                status TEXT NOT NULL DEFAULT 'draft',
+                revision INTEGER NOT NULL DEFAULT 1,
+                content_md TEXT NOT NULL DEFAULT '',
+                created_by_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        for _idx in [
+            "CREATE INDEX IF NOT EXISTS ix_research_task_documents_task_id ON research_task_documents (task_id)",
+            "CREATE INDEX IF NOT EXISTS ix_research_task_documents_updated_at ON research_task_documents (updated_at)",
+            "CREATE INDEX IF NOT EXISTS ix_research_task_documents_created_by_agent_id ON research_task_documents (created_by_agent_id)",
+        ]:
+            try:
+                await conn.execute(text(_idx))
+            except OperationalError:
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error creating research_task_documents index: {e}")
         # Idempotent migration: investment_mandate singleton table
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS investment_mandate (

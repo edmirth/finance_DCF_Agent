@@ -418,6 +418,53 @@ class ResearchTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ResearchTaskMessage(Base):
+    __tablename__ = "research_task_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("research_tasks.id", ondelete="CASCADE"),
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(20), default="chat", index=True)  # chat | activity
+    role: Mapped[str] = mapped_column(String(20), default="user")               # user | assistant | system
+    author_label: Mapped[str] = mapped_column(String(255), default="System")
+    author_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    content: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ResearchTaskDocument(Base):
+    __tablename__ = "research_task_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("research_tasks.id", ondelete="CASCADE"),
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(255))
+    document_type: Mapped[str] = mapped_column(String(50), default="analysis")
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    content_md: Mapped[str] = mapped_column(Text, default="")
+    created_by_agent_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_agents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class InvestmentMandate(Base):
     """
     Singleton row (id='default') storing the firm's investment mandate.

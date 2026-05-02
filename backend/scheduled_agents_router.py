@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent_roles import infer_role_identity, resolve_role_definition, validate_role_key
@@ -39,7 +39,7 @@ from backend.heartbeat_service import (
     routine_to_dict,
     update_task_from_delegated_run,
 )
-from backend.models import ScheduledAgent, AgentRun, HeartbeatRun, HireProposal, ResearchTask
+from backend.models import ScheduledAgent, AgentRun, HeartbeatRun, HireProposal, ResearchTask, ResearchTaskMessage
 from backend.scheduler import (
     register_agent_job,
     remove_agent_job,
@@ -191,6 +191,7 @@ def _run_to_dict(run: AgentRun) -> dict:
 def _proposal_to_inbox_dict(proposal: HireProposal, source_task_title: Optional[str] = None) -> dict:
     return {
         "item_type": "hire_proposal",
+        "feed_type": "approval",
         "id": proposal.id,
         "status": proposal.status,
         "name": proposal.role_title or proposal.name,
@@ -210,6 +211,49 @@ def _proposal_to_inbox_dict(proposal: HireProposal, source_task_title: Optional[
         "delivery_inapp": proposal.delivery_inapp,
         "created_at": proposal.created_at.isoformat() if proposal.created_at else None,
         "updated_at": proposal.updated_at.isoformat() if proposal.updated_at else None,
+        "title": proposal.role_title or proposal.name,
+        "summary": proposal.rationale or proposal.description or "CEO proposed a new role for approval.",
+        "timestamp": proposal.created_at.isoformat() if proposal.created_at else None,
+        "requires_action": True,
+    }
+
+
+def _task_message_to_inbox_dict(message: ResearchTaskMessage, task_title: str) -> Optional[dict]:
+    try:
+        metadata = json.loads(message.metadata_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+
+    if message.kind == "activity":
+        event = metadata.get("event")
+        if event not in {"document_created", "document_updated", "document_deleted"}:
+            return None
+        feed_type = "deliverable"
+        title = task_title
+        summary = message.content
+    else:
+        if message.role != "assistant":
+            return None
+        feed_type = "issue_update"
+        title = task_title
+        summary = message.content
+
+    return {
+        "item_type": "task_message",
+        "feed_type": feed_type,
+        "id": message.id,
+        "task_id": message.task_id,
+        "task_title": task_title,
+        "author_label": message.author_label,
+        "author_agent_id": message.author_agent_id,
+        "kind": message.kind,
+        "role": message.role,
+        "summary": summary,
+        "title": title,
+        "timestamp": message.created_at.isoformat() if message.created_at else None,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "requires_action": False,
+        "metadata": metadata,
     }
 
 
@@ -520,7 +564,7 @@ async def get_inbox(
     alert_level: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Mixed inbox stream: agent runs plus in-app hire proposals."""
+    """Operational inbox stream: runs, pending approvals, and issue updates."""
     run_query = (
         select(
             AgentRun,
@@ -540,6 +584,21 @@ async def get_inbox(
     for run, agent_name, agent_role_title in run_rows:
         d = _run_to_dict(run)
         d["agent_name"] = agent_role_title or agent_name
+        d["feed_type"] = (
+            "failure"
+            if run.status == "failed"
+            else "issue_update" if run.status == "running"
+            else "deliverable"
+        )
+        d["title"] = (
+            f"Failed run — {d['agent_name']}"
+            if run.status == "failed"
+            else f"Running — {d['agent_name']}" if run.status == "running"
+            else d["agent_name"]
+        )
+        d["summary"] = run.findings_summary or run.error or "Run completed."
+        d["timestamp"] = run.started_at.isoformat() if run.started_at else None
+        d["requires_action"] = run.status == "failed"
         d["_sort_at"] = run.started_at.isoformat() if run.started_at else ""
         items.append(d)
 
@@ -555,6 +614,31 @@ async def get_inbox(
         for proposal, source_task_title in proposal_result.all():
             d = _proposal_to_inbox_dict(proposal, source_task_title)
             d["_sort_at"] = proposal.created_at.isoformat() if proposal.created_at else ""
+            items.append(d)
+
+        message_query = (
+            select(ResearchTaskMessage, ResearchTask.title.label("task_title"))
+            .join(ResearchTask, ResearchTaskMessage.task_id == ResearchTask.id)
+            .where(
+                or_(
+                    and_(
+                        ResearchTaskMessage.kind == "chat",
+                        ResearchTaskMessage.role == "assistant",
+                    ),
+                    and_(
+                        ResearchTaskMessage.kind == "activity",
+                    ),
+                )
+            )
+            .order_by(desc(ResearchTaskMessage.created_at))
+            .limit(limit * 2)
+        )
+        message_result = await db.execute(message_query)
+        for message, task_title in message_result.all():
+            d = _task_message_to_inbox_dict(message, task_title)
+            if not d:
+                continue
+            d["_sort_at"] = message.created_at.isoformat() if message.created_at else ""
             items.append(d)
 
     items.sort(key=lambda item: item.get("_sort_at") or "", reverse=True)

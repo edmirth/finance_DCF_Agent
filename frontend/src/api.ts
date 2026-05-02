@@ -844,6 +844,37 @@ export interface ResearchTask {
   updated_at: string | null;
 }
 
+export interface TaskMessage {
+  id: string;
+  task_id: string;
+  kind: 'chat' | 'activity';
+  role: 'user' | 'assistant' | 'system';
+  author_label: string;
+  author_agent_id: string | null;
+  content: string;
+  metadata: Record<string, any>;
+  created_at: string | null;
+}
+
+export interface TaskDocument {
+  id: string;
+  task_id: string;
+  title: string;
+  document_type: string;
+  status: 'draft' | 'published';
+  revision: number;
+  content_md: string;
+  created_by_agent_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TaskRelatedWork {
+  parent_task: ResearchTask | null;
+  sub_issues: ResearchTask[];
+  same_project_issues: ResearchTask[];
+}
+
 export interface CreateTaskBody {
   ticker?: string;
   task_type?: TaskType;
@@ -851,6 +882,7 @@ export interface CreateTaskBody {
   priority?: TaskPriority;
   selected_agents?: string[];
   project_id?: string;
+  parent_task_id?: string;
   owner_agent_id?: string;
   assigned_agent_id?: string;
   source_heartbeat_run_id?: string;
@@ -863,6 +895,7 @@ export const listTasks = async (filters?: {
   ticker?: string;
   task_type?: TaskType;
   project_id?: string;
+  agent_id?: string;
   limit?: number;
 }): Promise<ResearchTask[]> => {
   const response = await api.get('/tasks', { params: filters });
@@ -876,6 +909,79 @@ export const getTask = async (id: string): Promise<ResearchTask> => {
 
 export const createTask = async (body: CreateTaskBody): Promise<ResearchTask> => {
   const response = await api.post('/tasks', body);
+  return response.data;
+};
+
+export const listTaskMessages = async (
+  taskId: string,
+  kind?: 'chat' | 'activity',
+): Promise<TaskMessage[]> => {
+  const response = await api.get(`/tasks/${taskId}/messages`, { params: kind ? { kind } : undefined });
+  return response.data.messages;
+};
+
+export const createTaskChatTurn = async (
+  taskId: string,
+  body: { content: string; agent_id?: string | null },
+): Promise<{ user_message: TaskMessage; assistant_message: TaskMessage; action: any | null }> => {
+  const response = await api.post(`/tasks/${taskId}/chat`, body);
+  return response.data;
+};
+
+export const createTaskMessage = async (
+  taskId: string,
+  body: {
+    kind?: 'chat' | 'activity';
+    role?: 'user' | 'assistant' | 'system';
+    author_label?: string;
+    author_agent_id?: string | null;
+    content: string;
+    metadata?: Record<string, any>;
+  },
+): Promise<TaskMessage> => {
+  const response = await api.post(`/tasks/${taskId}/messages`, body);
+  return response.data;
+};
+
+export const listTaskDocuments = async (taskId: string): Promise<TaskDocument[]> => {
+  const response = await api.get(`/tasks/${taskId}/documents`);
+  return response.data.documents;
+};
+
+export const createTaskDocument = async (
+  taskId: string,
+  body: {
+    title: string;
+    content_md?: string;
+    document_type?: string;
+    status?: 'draft' | 'published';
+    created_by_agent_id?: string | null;
+  },
+): Promise<TaskDocument> => {
+  const response = await api.post(`/tasks/${taskId}/documents`, body);
+  return response.data;
+};
+
+export const updateTaskDocument = async (
+  taskId: string,
+  documentId: string,
+  body: Partial<{
+    title: string;
+    content_md: string;
+    document_type: string;
+    status: 'draft' | 'published';
+  }>,
+): Promise<TaskDocument> => {
+  const response = await api.patch(`/tasks/${taskId}/documents/${documentId}`, body);
+  return response.data;
+};
+
+export const deleteTaskDocument = async (taskId: string, documentId: string): Promise<void> => {
+  await api.delete(`/tasks/${taskId}/documents/${documentId}`);
+};
+
+export const getTaskRelatedWork = async (taskId: string): Promise<TaskRelatedWork> => {
+  const response = await api.get(`/tasks/${taskId}/related-work`);
   return response.data;
 };
 

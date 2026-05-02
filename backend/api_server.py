@@ -2691,6 +2691,9 @@ VALID_TASK_TYPES = {
     "sector_screen", "risk_review", "ad_hoc",
 }
 VALID_PRIORITIES = {"low", "medium", "high", "urgent"}
+VALID_TASK_MESSAGE_KINDS = {"chat", "activity"}
+VALID_TASK_MESSAGE_ROLES = {"user", "assistant", "system"}
+VALID_TASK_DOCUMENT_STATUSES = {"draft", "published"}
 
 TASK_TYPE_TITLES = {
     "initiate_coverage": "Initiate Coverage",
@@ -2735,6 +2738,35 @@ class TaskPatch(BaseModel):
     compliance_check: Optional[str] = None
     approval_status: Optional[str] = None
     error: Optional[str] = None
+
+
+class TaskMessageCreate(BaseModel):
+    kind: Optional[str] = "chat"
+    role: Optional[str] = "user"
+    author_label: Optional[str] = "You"
+    author_agent_id: Optional[str] = None
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class TaskChatRequest(BaseModel):
+    content: str
+    agent_id: Optional[str] = None
+
+
+class TaskDocumentCreate(BaseModel):
+    title: str
+    content_md: Optional[str] = ""
+    document_type: Optional[str] = "analysis"
+    status: Optional[str] = "draft"
+    created_by_agent_id: Optional[str] = None
+
+
+class TaskDocumentPatch(BaseModel):
+    title: Optional[str] = None
+    content_md: Optional[str] = None
+    document_type: Optional[str] = None
+    status: Optional[str] = None
 
 
 def _task_to_dict(t) -> dict:
@@ -2785,6 +2817,214 @@ def _task_to_dict(t) -> dict:
         "started_at": t.started_at.isoformat() if t.started_at else None,
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+def _task_message_to_dict(message) -> dict:
+    try:
+        metadata = json.loads(message.metadata_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+    return {
+        "id": message.id,
+        "task_id": message.task_id,
+        "kind": message.kind,
+        "role": message.role,
+        "author_label": message.author_label,
+        "author_agent_id": message.author_agent_id,
+        "content": message.content,
+        "metadata": metadata,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+    }
+
+
+def _task_document_to_dict(document) -> dict:
+    return {
+        "id": document.id,
+        "task_id": document.task_id,
+        "title": document.title,
+        "document_type": document.document_type,
+        "status": document.status,
+        "revision": document.revision,
+        "content_md": document.content_md,
+        "created_by_agent_id": document.created_by_agent_id,
+        "created_at": document.created_at.isoformat() if document.created_at else None,
+        "updated_at": document.updated_at.isoformat() if document.updated_at else None,
+    }
+
+
+async def _append_task_activity(
+    db: AsyncSession,
+    task_id: str,
+    content: str,
+    *,
+    author_label: str = "System",
+    author_agent_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    from backend.models import ResearchTaskMessage
+
+    db.add(
+        ResearchTaskMessage(
+            task_id=task_id,
+            kind="activity",
+            role="system",
+            author_label=author_label,
+            author_agent_id=author_agent_id,
+            content=content,
+            metadata_json=json.dumps(metadata or {}),
+        )
+    )
+
+
+def _anthropic_text_response_sync(model: str, system_prompt: str, messages: list[dict[str, str]]) -> str:
+    from anthropic import Anthropic as _Anthropic
+
+    client = _Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    response = client.messages.create(
+        model=model,
+        max_tokens=1200,
+        system=system_prompt,
+        messages=messages,
+    )
+    text_parts: list[str] = []
+    for block in getattr(response, "content", []) or []:
+        text = getattr(block, "text", None)
+        if text:
+            text_parts.append(text)
+    return "\n\n".join(text_parts).strip()
+
+
+def _task_thread_transcript(messages: list[Any]) -> str:
+    if not messages:
+        return "No prior conversation."
+    lines: list[str] = []
+    for message in messages[-10:]:
+        speaker = message.author_label or message.role.title()
+        lines.append(f"{speaker}: {message.content}")
+    return "\n".join(lines)
+
+
+async def _run_task_chat_reply(
+    db: AsyncSession,
+    task,
+    prompt: str,
+    *,
+    target_agent_id: Optional[str],
+    thread_messages: list[Any],
+) -> dict[str, Any]:
+    from backend.cio_router import _run_cio_response
+    from backend.models import Project, ScheduledAgent
+
+    project_title: Optional[str] = None
+    project_thesis: Optional[str] = None
+    if task.project_id:
+        project_result = await db.execute(
+            select(Project.title, Project.thesis).where(Project.id == task.project_id)
+        )
+        project_row = project_result.one_or_none()
+        if project_row is not None:
+            project_title, project_thesis = project_row
+
+    normalized_target_agent_id = (target_agent_id or "").strip() or None
+    is_ceo_route = (
+        normalized_target_agent_id in {None, "synthetic-ceo"}
+        and (
+            task.triggered_by == "manual_pm_review"
+            or (task.assigned_agent_id is None and task.owner_agent_id is None)
+        )
+    )
+
+    if is_ceo_route:
+        issue_prompt = (
+            f"Issue title: {task.title}\n"
+            f"Issue ticker: {task.ticker}\n"
+            f"Issue type: {task.task_type}\n"
+            f"Issue priority: {task.priority}\n"
+            f"Project: {project_title or 'None'}\n"
+            f"Project thesis: {project_thesis or 'None'}\n"
+            f"Issue brief: {task.notes or 'None'}\n\n"
+            f"Recent issue thread:\n{_task_thread_transcript(thread_messages)}\n\n"
+            f"Latest user follow-up:\n{prompt}"
+        )
+        response = await _run_cio_response(
+            db,
+            [{"role": "user", "content": issue_prompt}],
+            proposed_by=f"issue:{task.id}",
+            source_task_id=task.id,
+        )
+        return {
+            "author_label": "CEO",
+            "author_agent_id": None,
+            "content": response.message,
+            "action": response.action.dict() if response.action else None,
+        }
+
+    resolved_agent_id = normalized_target_agent_id or task.assigned_agent_id or task.owner_agent_id
+    if not resolved_agent_id:
+        return {
+            "author_label": "System",
+            "author_agent_id": None,
+            "content": "No agent is assigned to this issue yet.",
+            "action": None,
+        }
+
+    agent_result = await db.execute(select(ScheduledAgent).where(ScheduledAgent.id == resolved_agent_id))
+    agent = agent_result.scalar_one_or_none()
+    if agent is None:
+        return {
+            "author_label": "System",
+            "author_agent_id": None,
+            "content": "The assigned agent could not be found.",
+            "action": None,
+        }
+
+    role_title = agent.role_title or agent.name
+    instruction = (agent.instruction or "").strip() or "Answer as the analyst responsible for this issue."
+    tickers = json.loads(agent.tickers or "[]")
+    selected_agents = json.loads(task.selected_agents or "[]")
+
+    system_prompt = (
+        f"You are the {role_title} in a finance research firm.\n"
+        f"Your job is to respond inside one issue workspace.\n"
+        f"Stay focused on the specific issue and give concrete next-step guidance.\n"
+        f"Your current instruction:\n{instruction}\n\n"
+        f"Issue context:\n"
+        f"- Title: {task.title}\n"
+        f"- Ticker: {task.ticker}\n"
+        f"- Type: {task.task_type}\n"
+        f"- Priority: {task.priority}\n"
+        f"- Project: {project_title or 'None'}\n"
+        f"- Project thesis: {project_thesis or 'None'}\n"
+        f"- Assigned coverage: {', '.join(tickers) if tickers else 'General'}\n"
+        f"- Selected engines: {', '.join(selected_agents) if selected_agents else 'None'}\n"
+        f"- Issue brief: {task.notes or 'None'}\n\n"
+        f"Keep the answer concise, specific, and actionable. If the user asks for a document, draft it directly."
+    )
+    recent_prompt_messages = [
+        {"role": "assistant" if message.role == "assistant" else "user", "content": message.content}
+        for message in thread_messages[-8:]
+        if message.kind == "chat"
+    ]
+    if not recent_prompt_messages or recent_prompt_messages[-1]["role"] != "user":
+        recent_prompt_messages.append({"role": "user", "content": prompt})
+
+    try:
+        content = await run_in_threadpool(
+            _anthropic_text_response_sync,
+            CIO_MODEL,
+            system_prompt,
+            recent_prompt_messages,
+        )
+    except Exception:
+        logger.exception("task chat reply failed for agent %s", agent.id)
+        content = "I couldn't generate a live reply for this issue right now. Try again after the agent finishes another run."
+
+    return {
+        "author_label": role_title,
+        "author_agent_id": agent.id,
+        "content": content or "No reply generated.",
+        "action": None,
     }
 
 
@@ -2845,6 +3085,19 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
         notes=body.notes,
     )
     db.add(task)
+    await db.flush()
+    await _append_task_activity(
+        db,
+        task.id,
+        f"Issue created: {task.title}",
+        metadata={
+            "event": "task_created",
+            "status": task.status,
+            "priority": task.priority,
+            "assigned_agent_id": task.assigned_agent_id,
+            "owner_agent_id": task.owner_agent_id,
+        },
+    )
     await db.commit()
     await db.refresh(task)
     return _task_to_dict(task)
@@ -2856,11 +3109,12 @@ async def list_tasks(
     ticker: Optional[str] = None,
     task_type: Optional[str] = None,
     project_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
 ):
-    """List tasks. Optional filters: status, ticker, task_type."""
-    from sqlalchemy import select, and_, desc as _desc
+    """List tasks. Optional filters: status, ticker, task_type, project_id, agent_id."""
+    from sqlalchemy import select, and_, desc as _desc, or_
     from backend.models import ResearchTask
 
     conditions = []
@@ -2876,6 +3130,13 @@ async def list_tasks(
         conditions.append(ResearchTask.task_type == task_type)
     if project_id:
         conditions.append(ResearchTask.project_id == project_id)
+    if agent_id:
+        conditions.append(
+            or_(
+                ResearchTask.assigned_agent_id == agent_id,
+                ResearchTask.owner_agent_id == agent_id,
+            )
+        )
 
     stmt = select(ResearchTask)
     if conditions:
@@ -2899,6 +3160,348 @@ async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
     return _task_to_dict(t)
 
 
+@app.get("/tasks/{task_id}/messages")
+async def list_task_messages(
+    task_id: str,
+    kind: Optional[str] = None,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTask, ResearchTaskMessage
+
+    task_result = await db.execute(select(ResearchTask.id).where(ResearchTask.id == task_id))
+    if task_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if kind and kind not in VALID_TASK_MESSAGE_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid message kind")
+
+    stmt = select(ResearchTaskMessage).where(ResearchTaskMessage.task_id == task_id)
+    if kind:
+        stmt = stmt.where(ResearchTaskMessage.kind == kind)
+    stmt = stmt.order_by(ResearchTaskMessage.created_at.asc()).limit(min(max(limit, 1), 1000))
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return {"messages": [_task_message_to_dict(row) for row in rows]}
+
+
+@app.post("/tasks/{task_id}/messages", status_code=201)
+async def create_task_message(
+    task_id: str,
+    body: TaskMessageCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTask, ResearchTaskMessage
+
+    task_result = await db.execute(select(ResearchTask.id).where(ResearchTask.id == task_id))
+    if task_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    kind = (body.kind or "chat").strip().lower()
+    if kind not in VALID_TASK_MESSAGE_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid message kind")
+
+    role = (body.role or "user").strip().lower()
+    if role not in VALID_TASK_MESSAGE_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid message role")
+
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content required")
+
+    message = ResearchTaskMessage(
+        task_id=task_id,
+        kind=kind,
+        role=role,
+        author_label=(body.author_label or "You").strip() or "You",
+        author_agent_id=(body.author_agent_id or "").strip() or None,
+        content=content,
+        metadata_json=json.dumps(body.metadata or {}),
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+    return _task_message_to_dict(message)
+
+
+@app.post("/tasks/{task_id}/chat")
+async def create_task_chat_turn(
+    task_id: str,
+    body: TaskChatRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTask, ResearchTaskMessage
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    prompt = body.content.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Message content required")
+
+    user_message = ResearchTaskMessage(
+        task_id=task_id,
+        kind="chat",
+        role="user",
+        author_label="You",
+        content=prompt,
+    )
+    db.add(user_message)
+    await db.flush()
+
+    thread_result = await db.execute(
+        select(ResearchTaskMessage)
+        .where(
+            ResearchTaskMessage.task_id == task_id,
+            ResearchTaskMessage.kind == "chat",
+        )
+        .order_by(ResearchTaskMessage.created_at.asc())
+        .limit(50)
+    )
+    thread_messages = thread_result.scalars().all()
+    try:
+        reply = await _run_task_chat_reply(
+            db,
+            task,
+            prompt,
+            target_agent_id=body.agent_id,
+            thread_messages=thread_messages,
+        )
+    except Exception:
+        logger.exception("task chat reply failed for task %s", task_id)
+        reply = {
+            "author_label": "System",
+            "author_agent_id": None,
+            "content": "The issue reply path failed. Retry the message or run the assigned agent again.",
+            "action": None,
+        }
+
+    assistant_message = ResearchTaskMessage(
+        task_id=task_id,
+        kind="chat",
+        role="assistant",
+        author_label=reply["author_label"],
+        author_agent_id=reply["author_agent_id"],
+        content=reply["content"],
+        metadata_json=json.dumps({"action": reply["action"]} if reply["action"] else {}),
+    )
+    db.add(assistant_message)
+
+    if reply["action"]:
+        action_type = reply["action"].get("type")
+        activity_content = f"CEO action suggested: {action_type.replace('_', ' ')}"
+        await _append_task_activity(
+            db,
+            task_id,
+            activity_content,
+            author_label="CEO",
+            metadata={"event": "ceo_action", "action": reply["action"]},
+        )
+
+    await db.commit()
+    await db.refresh(user_message)
+    await db.refresh(assistant_message)
+    return {
+        "user_message": _task_message_to_dict(user_message),
+        "assistant_message": _task_message_to_dict(assistant_message),
+        "action": reply["action"],
+    }
+
+
+@app.get("/tasks/{task_id}/documents")
+async def list_task_documents(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTask, ResearchTaskDocument
+
+    task_result = await db.execute(select(ResearchTask.id).where(ResearchTask.id == task_id))
+    if task_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(ResearchTaskDocument)
+        .where(ResearchTaskDocument.task_id == task_id)
+        .order_by(ResearchTaskDocument.updated_at.desc(), ResearchTaskDocument.created_at.desc())
+    )
+    rows = result.scalars().all()
+    return {"documents": [_task_document_to_dict(row) for row in rows]}
+
+
+@app.post("/tasks/{task_id}/documents", status_code=201)
+async def create_task_document(
+    task_id: str,
+    body: TaskDocumentCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTask, ResearchTaskDocument
+
+    task_result = await db.execute(select(ResearchTask.id).where(ResearchTask.id == task_id))
+    if task_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Document title required")
+
+    status = (body.status or "draft").strip().lower()
+    if status not in VALID_TASK_DOCUMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid document status")
+
+    document = ResearchTaskDocument(
+        task_id=task_id,
+        title=title,
+        document_type=(body.document_type or "analysis").strip().lower() or "analysis",
+        status=status,
+        content_md=body.content_md or "",
+        created_by_agent_id=(body.created_by_agent_id or "").strip() or None,
+    )
+    db.add(document)
+    await db.flush()
+    await _append_task_activity(
+        db,
+        task_id,
+        f"Document created: {title}",
+        metadata={"event": "document_created", "document_id": document.id},
+    )
+    await db.commit()
+    await db.refresh(document)
+    return _task_document_to_dict(document)
+
+
+@app.patch("/tasks/{task_id}/documents/{document_id}")
+async def patch_task_document(
+    task_id: str,
+    document_id: str,
+    body: TaskDocumentPatch,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTaskDocument
+
+    result = await db.execute(
+        select(ResearchTaskDocument).where(
+            ResearchTaskDocument.id == document_id,
+            ResearchTaskDocument.task_id == task_id,
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    changed = False
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Document title required")
+        if document.title != title:
+            document.title = title
+            changed = True
+    if body.content_md is not None and document.content_md != body.content_md:
+        document.content_md = body.content_md
+        changed = True
+    if body.document_type is not None:
+        document_type = body.document_type.strip().lower() or "analysis"
+        if document.document_type != document_type:
+            document.document_type = document_type
+            changed = True
+    if body.status is not None:
+        status = body.status.strip().lower()
+        if status not in VALID_TASK_DOCUMENT_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid document status")
+        if document.status != status:
+            document.status = status
+            changed = True
+
+    if changed:
+        document.revision += 1
+        document.updated_at = datetime.utcnow()
+        await _append_task_activity(
+            db,
+            task_id,
+            f"Document updated: {document.title}",
+            metadata={"event": "document_updated", "document_id": document.id, "revision": document.revision},
+        )
+    await db.commit()
+    await db.refresh(document)
+    return _task_document_to_dict(document)
+
+
+@app.delete("/tasks/{task_id}/documents/{document_id}", status_code=204)
+async def delete_task_document(
+    task_id: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTaskDocument
+
+    result = await db.execute(
+        select(ResearchTaskDocument).where(
+            ResearchTaskDocument.id == document_id,
+            ResearchTaskDocument.task_id == task_id,
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    title = document.title
+    await db.delete(document)
+    await _append_task_activity(
+        db,
+        task_id,
+        f"Document deleted: {title}",
+        metadata={"event": "document_deleted", "document_id": document_id},
+    )
+    await db.commit()
+    return Response(status_code=204)
+
+
+@app.get("/tasks/{task_id}/related-work")
+async def get_task_related_work(task_id: str, db: AsyncSession = Depends(get_db)):
+    from backend.models import ResearchTask
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_task = None
+    if task.parent_task_id:
+        parent_result = await db.execute(select(ResearchTask).where(ResearchTask.id == task.parent_task_id))
+        parent_row = parent_result.scalar_one_or_none()
+        if parent_row is not None:
+            parent_task = _task_to_dict(parent_row)
+
+    child_result = await db.execute(
+        select(ResearchTask)
+        .where(ResearchTask.parent_task_id == task.id)
+        .order_by(ResearchTask.created_at.asc())
+    )
+    sub_issues = [_task_to_dict(row) for row in child_result.scalars().all()]
+
+    same_project_issues: list[dict[str, Any]] = []
+    if task.project_id:
+        project_result = await db.execute(
+            select(ResearchTask)
+            .where(
+                ResearchTask.project_id == task.project_id,
+                ResearchTask.id != task.id,
+            )
+            .order_by(ResearchTask.updated_at.desc())
+            .limit(20)
+        )
+        same_project_issues = [_task_to_dict(row) for row in project_result.scalars().all()]
+
+    return {
+        "parent_task": parent_task,
+        "sub_issues": sub_issues,
+        "same_project_issues": same_project_issues,
+    }
+
+
 @app.patch("/tasks/{task_id}")
 async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(get_db)):
     """Update a task's status / fields. Auto-stamps started_at and completed_at on status transitions."""
@@ -2910,6 +3513,8 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    activity_changes: list[str] = []
+
     if body.status is not None:
         if body.status not in VALID_TASK_STATUSES:
             raise HTTPException(status_code=400, detail="Invalid status")
@@ -2919,13 +3524,21 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
             t.started_at = datetime.utcnow()
         if body.status in ("done", "cancelled", "failed") and t.completed_at is None:
             t.completed_at = datetime.utcnow()
+        if prev != body.status:
+            activity_changes.append(f"Status changed from {prev} to {body.status}")
     if body.priority is not None:
         if body.priority not in VALID_PRIORITIES:
             raise HTTPException(status_code=400, detail="Invalid priority")
+        if t.priority != body.priority:
+            activity_changes.append(f"Priority changed from {t.priority} to {body.priority}")
         t.priority = body.priority
     if body.title is not None:
+        if t.title != body.title:
+            activity_changes.append(f"Title updated to {body.title}")
         t.title = body.title
     if body.notes is not None:
+        if (t.notes or "") != body.notes:
+            activity_changes.append("Issue brief updated")
         t.notes = body.notes
     if body.project_id is not None:
         normalized_project_id = body.project_id.strip() or None
@@ -2933,12 +3546,18 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
             project_result = await db.execute(select(Project.id).where(Project.id == normalized_project_id))
             if project_result.scalar_one_or_none() is None:
                 raise HTTPException(status_code=400, detail="Invalid project_id")
+        if t.project_id != normalized_project_id:
+            activity_changes.append("Project linkage updated")
         t.project_id = normalized_project_id
     if body.overall_sentiment is not None:
         t.overall_sentiment = body.overall_sentiment
     if body.owner_agent_id is not None:
+        if t.owner_agent_id != body.owner_agent_id:
+            activity_changes.append("Owner agent updated")
         t.owner_agent_id = body.owner_agent_id
     if body.assigned_agent_id is not None:
+        if t.assigned_agent_id != body.assigned_agent_id:
+            activity_changes.append("Assigned agent updated")
         t.assigned_agent_id = body.assigned_agent_id
     if body.source_heartbeat_run_id is not None:
         t.source_heartbeat_run_id = body.source_heartbeat_run_id
@@ -2960,6 +3579,13 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
         t.error = body.error
 
     t.updated_at = datetime.utcnow()
+    if activity_changes:
+        await _append_task_activity(
+            db,
+            t.id,
+            " · ".join(activity_changes),
+            metadata={"event": "task_updated"},
+        )
     await db.commit()
     await db.refresh(t)
     return _task_to_dict(t)

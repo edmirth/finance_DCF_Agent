@@ -447,4 +447,41 @@ export interface HireProposal {
   decided_at?: string | null;
 }
 
-export type InboxItem = (AgentRun & { item_type: 'agent_run'; agent_name: string }) | (HireProposal & { item_type: 'hire_proposal' });
+export interface TaskInboxItem {
+  item_type: 'task_message';
+  feed_type: 'issue_update' | 'deliverable';
+  id: string;
+  task_id: string;
+  task_title: string;
+  author_label: string;
+  author_agent_id: string | null;
+  kind: 'chat' | 'activity';
+  role: 'user' | 'assistant' | 'system';
+  title: string;
+  summary: string;
+  timestamp: string | null;
+  created_at: string | null;
+  requires_action: boolean;
+  metadata: Record<string, any>;
+}
+
+export type AgentRunInboxItem = AgentRun & {
+  item_type: 'agent_run';
+  agent_name: string;
+  feed_type: 'failure' | 'issue_update' | 'deliverable';
+  title: string;
+  summary: string;
+  timestamp: string | null;
+  requires_action: boolean;
+};
+
+export type HireProposalInboxItem = HireProposal & {
+  item_type: 'hire_proposal';
+  feed_type: 'approval';
+  title: string;
+  summary: string;
+  timestamp: string | null;
+  requires_action: boolean;
+};
+
+export type InboxItem = AgentRunInboxItem | HireProposalInboxItem | TaskInboxItem;
