@@ -35,8 +35,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent_roles import ROLE_CATALOG, infer_role_identity, resolve_role_definition, validate_role_key
 from backend.config import CIO_MODEL
-from backend.database import get_db
-from backend.heartbeat_service import create_heartbeat_run, ensure_agent_heartbeat_routine
+from backend.database import AsyncSessionLocal, get_db
+from backend.heartbeat_service import create_heartbeat_run, ensure_agent_heartbeat_routine, spawn_background
 from backend.models import ScheduledAgent, AgentRun, HireProposal, Project, ResearchTask
 from backend.scheduler import register_agent_job, next_run_time, SUPPORTED_SCHEDULE_LABELS
 from backend.scheduled_agent_config import (
@@ -174,6 +174,13 @@ def _ceo_issue_scope_clause():
             ResearchTask.owner_agent_id.is_(None),
             ResearchTask.assigned_agent_id.is_(None),
         ),
+    )
+
+
+def _task_needs_ceo_review(task: ResearchTask) -> bool:
+    return bool(
+        task.triggered_by == "manual_pm_review"
+        or (task.owner_agent_id is None and task.assigned_agent_id is None)
     )
 
 
@@ -513,6 +520,221 @@ async def _lookup_agent_name(db: AsyncSession, agent_id: Optional[str]) -> Optio
     return row[1] or row[0]
 
 
+async def _append_issue_activity(
+    db: AsyncSession,
+    task_id: str,
+    content: str,
+    *,
+    author_label: str = "System",
+    author_agent_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    from backend.models import ResearchTaskMessage
+
+    db.add(
+        ResearchTaskMessage(
+            task_id=task_id,
+            kind="activity",
+            role="system",
+            author_label=author_label,
+            author_agent_id=author_agent_id,
+            content=content,
+            metadata_json=json.dumps(metadata or {}),
+        )
+    )
+
+
+async def _record_cio_review_message(
+    db: AsyncSession,
+    task_id: str,
+    content: str,
+    *,
+    action: Optional[dict] = None,
+) -> None:
+    from backend.models import ResearchTaskMessage
+
+    message = (content or "").strip()
+    if not message:
+        return
+    db.add(
+        ResearchTaskMessage(
+            task_id=task_id,
+            kind="chat",
+            role="assistant",
+            author_label="CEO",
+            content=message,
+            metadata_json=json.dumps({"action": action} if action else {}),
+        )
+    )
+
+
+async def _run_cio_task_review(
+    db: AsyncSession,
+    task: ResearchTask,
+    *,
+    project_title: Optional[str] = None,
+    project_thesis: Optional[str] = None,
+) -> CioChatResponse:
+    if project_title is None and task.project_id:
+        project_result = await db.execute(
+            select(Project.title, Project.thesis).where(Project.id == task.project_id)
+        )
+        project_row = project_result.one_or_none()
+        if project_row is not None:
+            project_title, project_thesis = project_row
+
+    prompt = _build_task_review_prompt(task, project_title, project_thesis)
+    response = await _run_cio_response(
+        db,
+        [{"role": "user", "content": prompt}],
+        proposed_by=f"issue:{task.id}",
+        source_task_id=task.id,
+    )
+    await _record_cio_review_message(
+        db,
+        task.id,
+        response.message,
+        action=response.action.model_dump() if response.action else None,
+    )
+    if response.action and response.action.type == "propose_hire":
+        await _append_issue_activity(
+            db,
+            task.id,
+            f"CEO proposed hiring {response.action.role_title or response.action.name or 'a new role'}.",
+            author_label="CEO",
+            metadata={"event": "ceo_hire_proposed", "action": response.action.model_dump()},
+        )
+    return response
+
+
+async def _auto_review_task_with_cio(task_id: str) -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(
+                    ResearchTask,
+                    Project.title.label("project_title"),
+                    Project.thesis.label("project_thesis"),
+                )
+                .outerjoin(Project, ResearchTask.project_id == Project.id)
+                .where(ResearchTask.id == task_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                return
+
+            task, project_title, project_thesis = row
+            if not _task_needs_ceo_review(task):
+                return
+            if task.status not in CEO_OPEN_TASK_STATUSES:
+                return
+
+            await _run_cio_task_review(
+                db,
+                task,
+                project_title=project_title,
+                project_thesis=project_thesis,
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("Automatic CEO review failed for task %s", task_id)
+
+
+def queue_cio_review_for_task(task_id: str) -> None:
+    spawn_background(_auto_review_task_with_cio(task_id))
+
+
+async def _dispatch_agent_for_task(
+    db: AsyncSession,
+    task: ResearchTask,
+    agent: ScheduledAgent,
+    *,
+    trigger_type: str,
+    initiated_by: str,
+    note: Optional[str] = None,
+) -> dict:
+    from backend.scheduled_agents_router import _agent_to_dict, _execute_run_background
+
+    if not agent.is_active:
+        raise HTTPException(status_code=409, detail=f"{agent.role_title or agent.name} is paused")
+
+    if task.status in {"done", "cancelled"}:
+        return {"run_id": None, "reused": False, "skipped": True}
+
+    existing_run = None
+    if task.run_id:
+        existing_run_result = await db.execute(select(AgentRun).where(AgentRun.id == task.run_id))
+        existing_run = existing_run_result.scalar_one_or_none()
+    if (
+        existing_run is not None
+        and existing_run.status == "running"
+        and existing_run.scheduled_agent_id == agent.id
+    ):
+        task.assigned_agent_id = agent.id
+        task.updated_at = datetime.now(timezone.utc)
+        await _append_issue_activity(
+            db,
+            task.id,
+            f"{initiated_by} kept {agent.role_title or agent.name} on the active issue run.",
+            author_label=initiated_by,
+            metadata={"event": "issue_run_reused", "agent_id": agent.id, "run_id": existing_run.id},
+        )
+        await db.commit()
+        return {"run_id": existing_run.id, "reused": True, "skipped": False}
+
+    now = datetime.now(timezone.utc)
+    await ensure_agent_heartbeat_routine(db, agent)
+    run = AgentRun(
+        id=str(uuid.uuid4()),
+        scheduled_agent_id=agent.id,
+        status="running",
+        started_at=now,
+    )
+    db.add(run)
+    await db.flush()
+    heartbeat_run = await create_heartbeat_run(
+        db,
+        agent,
+        trigger_type=trigger_type,
+        agent_run_id=run.id,
+        started_at=now,
+    )
+
+    task.assigned_agent_id = agent.id
+    task.run_id = run.id
+    task.status = "running"
+    task.started_at = task.started_at or now
+    task.updated_at = now
+    task.error = None
+
+    activity_message = f"{initiated_by} dispatched {agent.role_title or agent.name} to work on this issue."
+    if note:
+        activity_message = f"{activity_message} {note}"
+    await _append_issue_activity(
+        db,
+        task.id,
+        activity_message,
+        author_label=initiated_by,
+        author_agent_id=agent.id,
+        metadata={"event": "issue_run_started", "agent_id": agent.id, "run_id": run.id},
+    )
+
+    config_data = _agent_to_dict(agent)
+    await db.commit()
+
+    spawn_background(
+        _execute_run_background(
+            run.id,
+            agent.id,
+            config_data,
+            heartbeat_run.id,
+            trigger_type,
+            task.id,
+        )
+    )
+    return {"run_id": run.id, "reused": False, "skipped": False}
+
+
 async def _validate_manager_agent_id(
     db: AsyncSession,
     manager_agent_id: Optional[str],
@@ -785,6 +1007,19 @@ async def _approve_hire_proposal(
     await db.refresh(proposal)
     await db.commit()
     register_agent_job(agent.id, agent.name, agent.schedule_label)
+
+    if proposal.source_task_id:
+        task_result = await db.execute(select(ResearchTask).where(ResearchTask.id == proposal.source_task_id))
+        source_task = task_result.scalar_one_or_none()
+        if source_task is not None and source_task.status not in {"done", "cancelled"}:
+            await _dispatch_agent_for_task(
+                db,
+                source_task,
+                agent,
+                trigger_type="delegated",
+                initiated_by="CEO",
+                note="Approved hire attached to the source issue.",
+            )
     return agent
 
 
@@ -819,6 +1054,29 @@ async def _run_cio_response(
                 logger.warning("Failed to persist CIO hire proposal: %s", exc.detail)
                 message = f"{message}\n\n{exc.detail}"
                 action = None
+        elif action and action.type == "delegate" and source_task_id and action.agent_id:
+            task_result = await db.execute(select(ResearchTask).where(ResearchTask.id == source_task_id))
+            task = task_result.scalar_one_or_none()
+            agent_result = await db.execute(select(ScheduledAgent).where(ScheduledAgent.id == action.agent_id))
+            agent = agent_result.scalar_one_or_none()
+            if task is None:
+                message = f"{message}\n\nThe issue no longer exists, so delegation was skipped."
+                action = None
+            elif agent is None:
+                message = f"{message}\n\nThe selected agent could not be found."
+                action = None
+            elif not agent.is_active:
+                message = f"{message}\n\n{agent.role_title or agent.name} is paused, so delegation was skipped."
+                action = None
+            else:
+                await _dispatch_agent_for_task(
+                    db,
+                    task,
+                    agent,
+                    trigger_type="delegated",
+                    initiated_by="CEO",
+                    note=action.reason,
+                )
 
         return CioChatResponse(message=message, action=action)
 
@@ -988,13 +1246,13 @@ async def run_cio_agent_heartbeat(
     )
     task, project_title, project_thesis = sorted_rows[0]
 
-    prompt = _build_task_review_prompt(task, project_title, project_thesis)
-    response = await _run_cio_response(
+    response = await _run_cio_task_review(
         db,
-        [{"role": "user", "content": prompt}],
-        proposed_by=f"issue:{task.id}",
-        source_task_id=task.id,
+        task,
+        project_title=project_title,
+        project_thesis=project_thesis,
     )
+    await db.commit()
 
     reviewed_at = datetime.now(timezone.utc).isoformat()
     updated_state = _save_ceo_runtime_state(
@@ -1011,7 +1269,7 @@ async def run_cio_agent_heartbeat(
         "message": response.message,
         "task_id": task.id,
         "task_title": task.title,
-        "action": response.action.dict() if response.action else None,
+        "action": response.action.model_dump() if response.action else None,
         "reviewed_at": reviewed_at,
     }
 
@@ -1047,23 +1305,8 @@ async def review_task_with_cio(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    project_title: Optional[str] = None
-    project_thesis: Optional[str] = None
-    if task.project_id:
-        project_result = await db.execute(
-            select(Project.title, Project.thesis).where(Project.id == task.project_id)
-        )
-        project_row = project_result.one_or_none()
-        if project_row is not None:
-            project_title, project_thesis = project_row
-
-    prompt = _build_task_review_prompt(task, project_title, project_thesis)
-    response = await _run_cio_response(
-        db,
-        [{"role": "user", "content": prompt}],
-        proposed_by=f"issue:{task.id}",
-        source_task_id=task.id,
-    )
+    response = await _run_cio_task_review(db, task)
+    await db.commit()
     return CioTaskReviewResponse(task_id=task.id, message=response.message, action=response.action)
 
 

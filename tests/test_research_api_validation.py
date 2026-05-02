@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+from uuid import uuid4
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.api_server import app, ResearchConnectionManager
 from backend.database import AsyncSessionLocal, SyncSessionLocal
-from backend.models import ResearchTask
+from backend.models import AgentRun, ResearchTask, ScheduledAgent
 from backend.research_orchestrator import ResearchOrchestrator, _create_minimal_state
 
 
@@ -109,6 +112,60 @@ async def test_create_task_without_selected_agents_remains_unstaffed():
 
 
 @pytest.mark.asyncio
+async def test_create_task_with_direct_assignee_dispatches_agent_run():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/tasks",
+                json={
+                    "ticker": "AAPL",
+                    "title": "Direct analyst assignment",
+                    "assigned_agent_id": agent_id,
+                    "triggered_by": "manual_assignment",
+                },
+            )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["assigned_agent_id"] == agent_id
+    assert body["status"] == "running"
+    assert body["run_id"]
+
+    async with AsyncSessionLocal() as db:
+        run = await db.get(AgentRun, body["run_id"])
+
+    assert run is not None
+    assert run.status == "running"
+    assert run.scheduled_agent_id == agent_id
+
+
+@pytest.mark.asyncio
 async def test_create_task_accepts_valid_project_id():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         project_response = await client.post(
@@ -166,7 +223,52 @@ async def test_create_task_allows_missing_ticker_and_defaults_to_general():
 
 @pytest.mark.asyncio
 async def test_list_tasks_can_filter_by_agent_id():
-    agent_id = "agent-filter-test"
+    agent_id = f"agent-filter-{uuid4()}"
+    other_agent_id = f"agent-filter-{uuid4()}"
+
+    async with AsyncSessionLocal() as db:
+        created_at = datetime.now(timezone.utc)
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover assigned issues.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ScheduledAgent(
+                id=other_agent_id,
+                name="Risk Manager",
+                description="Risk coverage",
+                template="risk_analyst",
+                role_key="risk_manager",
+                role_title="Risk Manager",
+                role_family="risk",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover assigned issues.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         assigned = await client.post(
@@ -187,7 +289,7 @@ async def test_list_tasks_can_filter_by_agent_id():
             "/tasks",
             json={
                 "title": "Unrelated task",
-                "assigned_agent_id": "someone-else",
+                "assigned_agent_id": other_agent_id,
             },
         )
         response = await client.get("/tasks", params={"agent_id": agent_id, "limit": 50})

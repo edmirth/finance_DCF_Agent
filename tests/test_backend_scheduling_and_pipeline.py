@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,15 @@ from backend import cio_router
 from backend.database import AsyncSessionLocal
 from backend.heartbeat_service import plan_manager_heartbeat_actions
 from backend.investment_pipeline import InvestmentPipeline
-from backend.models import AgentRun, ScheduledAgent, HireProposal, AgentRoutine, HeartbeatRun, ResearchTask
+from backend.models import (
+    AgentRun,
+    ScheduledAgent,
+    HireProposal,
+    AgentRoutine,
+    HeartbeatRun,
+    ResearchTask,
+    ResearchTaskMessage,
+)
 from backend.scheduled_agents_router import _execute_run_background
 from backend.scheduler import next_run_time
 
@@ -496,6 +505,71 @@ async def test_cio_review_task_reuses_matching_pending_hire_proposal():
     assert body["action"]["proposal_status"] == "pending"
 
 
+@pytest.mark.asyncio
+async def test_create_task_with_pm_review_auto_runs_ceo_review_in_background():
+    spawned: list[asyncio.Task] = []
+    review_ticker = _unique_test_ticker()
+
+    def run_now(coro):
+        task = asyncio.create_task(coro)
+        spawned.append(task)
+        return task
+
+    mocked_response = {
+        "message": "This issue needs dedicated semiconductor coverage.",
+        "action": {
+            "type": "propose_hire",
+            "role_key": "semis_analyst",
+            "role_title": "Semis Analyst",
+            "name": f"Semis {uuid4()}",
+            "description": "Own semiconductor coverage for the PM.",
+            "tickers": [review_ticker],
+            "topics": ["AI demand"],
+            "instruction": "Cover the AI semiconductor chain.",
+            "schedule_label": "weekly_monday",
+        },
+    }
+
+    with (
+        patch("backend.cio_router._cio_chat_sync", return_value=mocked_response),
+        patch("backend.cio_router.spawn_background", side_effect=run_now),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/tasks",
+                json={
+                    "ticker": review_ticker,
+                    "title": "Route this issue through the CEO",
+                    "notes": "Need PM staffing and delegation.",
+                    "triggered_by": "manual_pm_review",
+                },
+            )
+        if spawned:
+            await asyncio.gather(*spawned)
+
+    assert response.status_code == 201
+    task_id = response.json()["id"]
+
+    async with AsyncSessionLocal() as db:
+        proposal_result = await db.execute(
+            select(HireProposal).where(HireProposal.source_task_id == task_id)
+        )
+        proposal = proposal_result.scalar_one_or_none()
+        message_result = await db.execute(
+            select(ResearchTaskMessage).where(
+                ResearchTaskMessage.task_id == task_id,
+                ResearchTaskMessage.kind == "chat",
+                ResearchTaskMessage.author_label == "CEO",
+            )
+        )
+        messages = message_result.scalars().all()
+
+    assert proposal is not None
+    assert proposal.status == "pending"
+    assert proposal.role_key == "semis_analyst"
+    assert any("semiconductor coverage" in message.content.lower() for message in messages)
+
+
 def test_cio_system_prompt_loads_profile_docs():
     prompt = cio_router._build_system_prompt("## Your Research Team\n- Example seat")
 
@@ -575,6 +649,68 @@ async def test_hire_proposal_approve_creates_agent():
     assert proposal.approved_agent_id == body["agent"]["id"]
     assert agent is not None
     assert agent.role_key == "risk_manager"
+
+
+@pytest.mark.asyncio
+async def test_hire_proposal_approve_assigns_and_dispatches_source_task():
+    hire_ticker = _unique_test_ticker()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post(
+            "/tasks",
+            json={
+                "ticker": hire_ticker,
+                "title": "Coverage gap",
+                "triggered_by": "manual_pm_review",
+            },
+        )
+        task_id = task_response.json()["id"]
+
+    mocked_response = {
+        "message": "This issue needs a generalist analyst to own the follow-up.",
+        "action": {
+            "type": "propose_hire",
+            "role_key": "generalist_analyst",
+            "role_title": "Generalist Analyst",
+            "name": "Generalist Analyst",
+            "description": "Own broad follow-up coverage.",
+            "tickers": [hire_ticker],
+            "topics": ["coverage"],
+            "instruction": "Cover the company and return a concise brief.",
+            "schedule_label": "weekly_monday",
+        },
+    }
+
+    with patch("backend.cio_router._cio_chat_sync", return_value=mocked_response):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            review_response = await client.post(f"/cio/review-task/{task_id}")
+
+    proposal_id = review_response.json()["action"]["proposal_id"]
+
+    with (
+        patch("backend.cio_router.register_agent_job"),
+        patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            approve_response = await client.post(
+                f"/cio/hire-proposals/{proposal_id}/approve",
+                json={"decision_note": "Approved for this issue."},
+            )
+
+    assert approve_response.status_code == 200
+    body = approve_response.json()
+    agent_id = body["agent"]["id"]
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+        run = await db.get(AgentRun, task.run_id)
+
+    assert task is not None
+    assert task.assigned_agent_id == agent_id
+    assert task.status == "running"
+    assert task.run_id is not None
+    assert run is not None
+    assert run.status == "running"
+    assert run.scheduled_agent_id == agent_id
 
 
 @pytest.mark.asyncio
@@ -674,6 +810,78 @@ async def test_inbox_includes_issue_workspace_events():
     assert issue_items
     assert issue_items[0]["task_id"] == task_id
     assert issue_items[0]["author_label"] == "CEO"
+
+
+@pytest.mark.asyncio
+async def test_cio_review_task_delegate_dispatches_agent_run_and_updates_issue():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+    ticker = _unique_test_ticker()
+
+    async with AsyncSessionLocal() as db:
+        agent = ScheduledAgent(
+            id=agent_id,
+            name="Generalist Analyst",
+            description="General coverage",
+            template="fundamental_analyst",
+            role_key="generalist_analyst",
+            role_title="Generalist Analyst",
+            role_family="coverage",
+            tickers=json.dumps([ticker]),
+            topics="[]",
+            instruction="Cover the issue and return a concise brief.",
+            schedule_label="weekly_monday",
+            delivery_email=None,
+            delivery_inapp=True,
+            is_active=True,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        db.add(agent)
+        await db.commit()
+
+    mocked_response = {
+        "message": "This issue fits the existing Generalist Analyst.",
+        "action": {
+            "type": "delegate",
+            "agent_id": agent_id,
+            "agent_name": "Generalist Analyst",
+            "reason": "Existing broad coverage is enough for this issue.",
+        },
+    }
+
+    with (
+        patch("backend.cio_router._cio_chat_sync", return_value=mocked_response),
+        patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            task_response = await client.post(
+                "/tasks",
+                json={
+                    "ticker": ticker,
+                    "title": "Review broad coverage",
+                    "triggered_by": "manual_pm_review",
+                },
+            )
+            task_id = task_response.json()["id"]
+            response = await client.post(f"/cio/review-task/{task_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"]["type"] == "delegate"
+    assert body["action"]["agent_id"] == agent_id
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+        run = await db.get(AgentRun, task.run_id)
+
+    assert task is not None
+    assert task.assigned_agent_id == agent_id
+    assert task.status == "running"
+    assert task.run_id is not None
+    assert run is not None
+    assert run.status == "running"
+    assert run.scheduled_agent_id == agent_id
 
 
 @pytest.mark.asyncio

@@ -3031,7 +3031,8 @@ async def _run_task_chat_reply(
 @app.post("/tasks", status_code=201)
 async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     """Create a new research task. Used by manual creation and by routines."""
-    from backend.models import Project, ResearchTask
+    from backend.cio_router import _dispatch_agent_for_task, queue_cio_review_for_task
+    from backend.models import Project, ResearchTask, ScheduledAgent
 
     task_type = (body.task_type or "ad_hoc").lower()
     if task_type not in VALID_TASK_TYPES:
@@ -3070,6 +3071,30 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
         if project_result.scalar_one_or_none() is None:
             raise HTTPException(status_code=400, detail="Invalid project_id")
 
+    owner_agent_id = (body.owner_agent_id or "").strip() or None
+    if owner_agent_id:
+        owner_result = await db.execute(select(ScheduledAgent.id).where(ScheduledAgent.id == owner_agent_id))
+        if owner_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=400, detail="Invalid owner_agent_id")
+
+    triggered_by = (body.triggered_by or "manual").strip() or "manual"
+
+    assigned_agent_id = (body.assigned_agent_id or "").strip() or None
+    assigned_agent = None
+    if assigned_agent_id:
+        assigned_result = await db.execute(select(ScheduledAgent).where(ScheduledAgent.id == assigned_agent_id))
+        assigned_agent = assigned_result.scalar_one_or_none()
+        if assigned_agent is None:
+            raise HTTPException(status_code=400, detail="Invalid assigned_agent_id")
+        if not assigned_agent.is_active:
+            raise HTTPException(status_code=409, detail=f"{assigned_agent.role_title or assigned_agent.name} is paused")
+
+    should_queue_cio_review = (
+        triggered_by == "manual_pm_review"
+        and assigned_agent is None
+        and owner_agent_id is None
+    )
+
     task = ResearchTask(
         ticker=ticker,
         task_type=task_type,
@@ -3078,10 +3103,10 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
         selected_agents=json.dumps(selected),
         project_id=project_id,
         parent_task_id=body.parent_task_id,
-        owner_agent_id=body.owner_agent_id,
-        assigned_agent_id=body.assigned_agent_id,
+        owner_agent_id=owner_agent_id,
+        assigned_agent_id=assigned_agent_id,
         source_heartbeat_run_id=body.source_heartbeat_run_id,
-        triggered_by=body.triggered_by or "manual",
+        triggered_by=triggered_by,
         notes=body.notes,
     )
     db.add(task)
@@ -3098,8 +3123,29 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
             "owner_agent_id": task.owner_agent_id,
         },
     )
+    if should_queue_cio_review:
+        await _append_task_activity(
+            db,
+            task.id,
+            "CEO review queued for this issue.",
+            author_label="System",
+            metadata={"event": "ceo_review_queued"},
+        )
     await db.commit()
     await db.refresh(task)
+
+    if assigned_agent is not None:
+        await _dispatch_agent_for_task(
+            db,
+            task,
+            assigned_agent,
+            trigger_type="manual",
+            initiated_by="System",
+            note="Issue was assigned directly to this agent.",
+        )
+        await db.refresh(task)
+    elif should_queue_cio_review:
+        queue_cio_review_for_task(task.id)
     return _task_to_dict(task)
 
 
@@ -3506,7 +3552,8 @@ async def get_task_related_work(task_id: str, db: AsyncSession = Depends(get_db)
 async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(get_db)):
     """Update a task's status / fields. Auto-stamps started_at and completed_at on status transitions."""
     from sqlalchemy import select
-    from backend.models import Project, ResearchTask
+    from backend.cio_router import _dispatch_agent_for_task
+    from backend.models import Project, ResearchTask, ScheduledAgent
 
     result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
     t = result.scalar_one_or_none()
@@ -3514,6 +3561,8 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
         raise HTTPException(status_code=404, detail="Task not found")
 
     activity_changes: list[str] = []
+    assignment_changed = False
+    assigned_agent_to_dispatch = None
 
     if body.status is not None:
         if body.status not in VALID_TASK_STATUSES:
@@ -3552,13 +3601,33 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
     if body.overall_sentiment is not None:
         t.overall_sentiment = body.overall_sentiment
     if body.owner_agent_id is not None:
-        if t.owner_agent_id != body.owner_agent_id:
+        normalized_owner_agent_id = body.owner_agent_id.strip() or None
+        if normalized_owner_agent_id:
+            owner_result = await db.execute(
+                select(ScheduledAgent.id).where(ScheduledAgent.id == normalized_owner_agent_id)
+            )
+            if owner_result.scalar_one_or_none() is None:
+                raise HTTPException(status_code=400, detail="Invalid owner_agent_id")
+        if t.owner_agent_id != normalized_owner_agent_id:
             activity_changes.append("Owner agent updated")
-        t.owner_agent_id = body.owner_agent_id
+        t.owner_agent_id = normalized_owner_agent_id
     if body.assigned_agent_id is not None:
-        if t.assigned_agent_id != body.assigned_agent_id:
+        normalized_assigned_agent_id = body.assigned_agent_id.strip() or None
+        assigned_agent = None
+        if normalized_assigned_agent_id:
+            assigned_result = await db.execute(
+                select(ScheduledAgent).where(ScheduledAgent.id == normalized_assigned_agent_id)
+            )
+            assigned_agent = assigned_result.scalar_one_or_none()
+            if assigned_agent is None:
+                raise HTTPException(status_code=400, detail="Invalid assigned_agent_id")
+            if not assigned_agent.is_active:
+                raise HTTPException(status_code=409, detail=f"{assigned_agent.role_title or assigned_agent.name} is paused")
+        if t.assigned_agent_id != normalized_assigned_agent_id:
             activity_changes.append("Assigned agent updated")
-        t.assigned_agent_id = body.assigned_agent_id
+            assignment_changed = True
+        t.assigned_agent_id = normalized_assigned_agent_id
+        assigned_agent_to_dispatch = assigned_agent
     if body.source_heartbeat_run_id is not None:
         t.source_heartbeat_run_id = body.source_heartbeat_run_id
     if body.completed_agents is not None:
@@ -3588,6 +3657,17 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
         )
     await db.commit()
     await db.refresh(t)
+
+    if assignment_changed and assigned_agent_to_dispatch is not None and t.status in {"pending", "failed"}:
+        await _dispatch_agent_for_task(
+            db,
+            t,
+            assigned_agent_to_dispatch,
+            trigger_type="manual",
+            initiated_by="System",
+            note="Issue assignment was updated.",
+        )
+        await db.refresh(t)
     return _task_to_dict(t)
 
 

@@ -10,7 +10,6 @@ import {
   Loader2,
 } from 'lucide-react';
 import {
-  cioReviewTask,
   createTask,
   getProjects,
   getScheduledAgents,
@@ -303,16 +302,7 @@ function NewIssueModal({
 
     try {
       const task = await createTask(body);
-      let redirectToInbox = false;
-      if (selectedAssignee.kind === 'pm') {
-        try {
-          const review = await cioReviewTask(task.id);
-          redirectToInbox = Boolean(review.action?.type === 'propose_hire' && review.action.proposal_id);
-        } catch {
-          // Keep issue creation successful even if PM review fails.
-        }
-      }
-      onCreated(task, { redirectToInbox });
+      onCreated(task);
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Failed to create issue.');
       setCreating(false);
