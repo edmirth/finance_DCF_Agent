@@ -12,6 +12,7 @@ import AgentDetailPage from './pages/AgentDetailPage';
 import InboxPage from './pages/InboxPage';
 import RoutinesPage from './pages/RoutinesPage';
 import OrgChartPage from './pages/OrgChartPage';
+import CioPage from './pages/CioPage';
 
 function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
@@ -52,6 +53,7 @@ function App() {
           <Route path="/routines"                  element={<RoutinesPage />} />
           <Route path="/routines/new"              element={<AgentSetupPage />} />
           <Route path="/routines/:agentId"         element={<AgentDetailPage />} />
+          <Route path="/agents/ceo"                element={<CioPage />} />
           <Route path="/org"                       element={<OrgChartPage />} />
           <Route path="/research"                  element={<Navigate to="/" replace />} />
           <Route path="/earnings"                  element={<Navigate to="/" replace />} />
@@ -63,7 +65,7 @@ function App() {
           <Route path="/library"                   element={<Navigate to="/" replace />} />
           <Route path="/projects"                  element={<ProjectsListPage />} />
           <Route path="/projects/:projectId"       element={<ProjectWorkspace />} />
-          <Route path="/cio"                       element={<Navigate to="/issues" replace />} />
+          <Route path="/cio"                       element={<CioPage />} />
           <Route path="/team"                      element={<Navigate to="/" replace />} />
           <Route path="/scheduled-agents"          element={<Navigate to="/routines" replace />} />
           <Route path="/scheduled-agents/new"      element={<Navigate to="/routines/new" replace />} />

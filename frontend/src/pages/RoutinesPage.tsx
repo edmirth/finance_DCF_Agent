@@ -98,6 +98,7 @@ function RoutineCard({
   const navigate = useNavigate();
   const meta = roleMetaForAgent(agent);
   const [runningNow, setRunningNow] = useState(false);
+  const showSubtitle = meta.displayTitle !== agent.name;
 
   const handleRunNow = async (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -143,9 +144,11 @@ function RoutineCard({
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-sm font-medium" style={{ color: meta.color }}>
-                {meta.displayTitle}
-              </p>
+              {showSubtitle && (
+                <p className="mt-1 text-sm font-medium" style={{ color: meta.color }}>
+                  {meta.displayTitle}
+                </p>
+              )}
               <p className="mt-2 text-sm leading-relaxed text-slate-500">
                 {agent.description?.trim() || agent.instruction?.trim() || 'No routine brief yet.'}
               </p>

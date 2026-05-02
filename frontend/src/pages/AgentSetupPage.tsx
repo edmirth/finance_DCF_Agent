@@ -170,20 +170,22 @@ function Step2({
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
         Configure the routine
       </h2>
-      <p className="text-slate-500 text-sm mb-7">Name the workflow, set its scope, and define what it should own.</p>
+      <p className="text-slate-500 text-sm mb-7">Review the role, set its scope, and define what it should own.</p>
 
       <div className="space-y-5">
-        {/* Name */}
+        {/* Role */}
         <div>
           <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-            Agent name
+            Agent role
           </label>
           <input
-            value={state.name}
-            onChange={e => set({ name: e.target.value })}
-            placeholder={role.title}
-            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-slate-400 bg-white"
+            value={role.title}
+            readOnly
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-700 bg-slate-50"
           />
+          <p className="text-xs text-slate-400 mt-1.5">
+            Hired agents use their role title as the display name.
+          </p>
         </div>
 
         <div>
@@ -388,9 +390,8 @@ export default function AgentSetupPage() {
     if (step === 1) return !!state.role_key;
     if (step === 2) {
       const role = ROLE_OPTIONS.find(t => t.key === state.role_key)!;
-      const hasName = !!state.name.trim();
       const hasTickers = !role.requiresTickers || state.tickers.length > 0;
-      return hasName && hasTickers;
+      return hasTickers;
     }
     return true;
   };
@@ -399,8 +400,9 @@ export default function AgentSetupPage() {
     setSubmitting(true);
     setError('');
     try {
+      const role = ROLE_OPTIONS.find(t => t.key === state.role_key)!;
       const agent = await createScheduledAgent({
-        name: state.name,
+        name: role.title,
         role_key: state.role_key!,
         tickers: state.tickers,
         topics: state.topics,

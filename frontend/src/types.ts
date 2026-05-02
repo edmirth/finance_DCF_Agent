@@ -366,6 +366,7 @@ export interface ScheduledAgent {
 }
 
 export interface AgentRun {
+  item_type?: 'agent_run';
   id: string;
   scheduled_agent_id: string;
   status: 'running' | 'completed' | 'failed';
@@ -416,6 +417,7 @@ export interface HeartbeatRun {
 export type HireProposalStatus = 'pending' | 'approved' | 'rejected';
 
 export interface HireProposal {
+  item_type?: 'hire_proposal';
   id: string;
   proposed_by: string;
   status: HireProposalStatus;
@@ -428,7 +430,10 @@ export interface HireProposal {
   tickers: string[];
   topics: string[];
   instruction: string;
+  rationale?: string | null;
   schedule_label: ScheduleLabel;
+  source_task_id?: string | null;
+  source_task_title?: string | null;
   manager_agent_id?: string | null;
   manager_agent_name?: string | null;
   reports_to_label?: string;
@@ -441,3 +446,5 @@ export interface HireProposal {
   updated_at: string;
   decided_at?: string | null;
 }
+
+export type InboxItem = (AgentRun & { item_type: 'agent_run'; agent_name: string }) | (HireProposal & { item_type: 'hire_proposal' });

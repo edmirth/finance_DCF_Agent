@@ -488,7 +488,7 @@ export const getHeartbeatRuns = async (agentId: string, limit = 20) => {
 
 export const getInbox = async (limit = 30, alertLevel?: string) => {
   const response = await api.get('/inbox', { params: { limit, alert_level: alertLevel } });
-  return response.data.items as (import('./types').AgentRun & { agent_name: string })[];
+  return response.data.items as import('./types').InboxItem[];
 };
 
 // ============================================================
@@ -530,6 +530,69 @@ export interface CioTaskReviewResponse extends CioChatResponse {
   task_id: string;
 }
 
+export interface CeoInstructionDoc {
+  key: string;
+  filename: string;
+  title: string;
+  content: string;
+}
+
+export interface CeoRecentIssue {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  ticker: string;
+  notes: string | null;
+  project_id: string | null;
+  project_title: string | null;
+  selected_agents: string[];
+  assigned_agent_id: string | null;
+  owner_agent_id: string | null;
+  triggered_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+
+export interface CeoActiveTeamAgent {
+  id: string;
+  name: string;
+  role_key?: string | null;
+  role_title?: string | null;
+  role_family?: string | null;
+  template: string;
+  tickers: string[];
+  reports_to_label: string;
+  schedule_label: string;
+  last_run_at: string | null;
+  last_run_summary: string | null;
+}
+
+export interface CeoAgentPageData {
+  agent: {
+    id: string;
+    name: string;
+    title: string;
+    status: string;
+    aliases: string[];
+    model: string;
+    profile_path: string;
+    last_heartbeat_at: string | null;
+    last_heartbeat_message: string | null;
+    last_reviewed_task_id: string | null;
+  };
+  stats: {
+    recent_issue_count: number;
+    pending_hire_count: number;
+    active_team_count: number;
+  };
+  recent_issues: CeoRecentIssue[];
+  pending_hire_proposals: import('./types').HireProposal[];
+  active_team: CeoActiveTeamAgent[];
+  instructions: CeoInstructionDoc[];
+}
+
 export const cioChat = async (messages: CioMessage[]): Promise<CioChatResponse> => {
   const response = await api.post('/cio/chat', { messages });
   return response.data;
@@ -537,6 +600,45 @@ export const cioChat = async (messages: CioMessage[]): Promise<CioChatResponse> 
 
 export const cioReviewTask = async (taskId: string): Promise<CioTaskReviewResponse> => {
   const response = await api.post(`/cio/review-task/${taskId}`);
+  return response.data;
+};
+
+export const getCeoAgentPage = async (limit = 20): Promise<CeoAgentPageData> => {
+  const response = await api.get('/cio/agent', { params: { limit } });
+  return response.data;
+};
+
+export const updateCeoInstructionDoc = async (
+  docKey: string,
+  content: string,
+): Promise<CeoInstructionDoc> => {
+  const response = await api.put(`/cio/agent/instructions/${docKey}`, { content });
+  return response.data;
+};
+
+export interface CeoHeartbeatResponse {
+  status: string;
+  message: string;
+  task_id: string | null;
+  task_title: string | null;
+  action: CioAction | null;
+  reviewed_at: string | null;
+}
+
+export const runCeoHeartbeat = async (): Promise<CeoHeartbeatResponse> => {
+  const response = await api.post('/cio/agent/heartbeat');
+  return response.data;
+};
+
+export const updateCeoAgentStatus = async (
+  status: 'idle' | 'paused',
+): Promise<{
+  status: 'idle' | 'paused';
+  last_heartbeat_at: string | null;
+  last_heartbeat_message: string | null;
+  last_reviewed_task_id: string | null;
+}> => {
+  const response = await api.put('/cio/agent/status', { status });
   return response.data;
 };
 

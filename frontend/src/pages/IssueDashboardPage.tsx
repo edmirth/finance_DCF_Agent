@@ -10,6 +10,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import {
+  cioReviewTask,
   createTask,
   getProjects,
   getScheduledAgents,
@@ -188,7 +189,7 @@ function NewIssueModal({
   agents: ScheduledAgent[];
   projects: ProjectSummary[];
   onClose: () => void;
-  onCreated: (task: ResearchTask) => void;
+  onCreated: (task: ResearchTask, options?: { redirectToInbox?: boolean }) => void;
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -278,7 +279,16 @@ function NewIssueModal({
 
     try {
       const task = await createTask(body);
-      onCreated(task);
+      let redirectToInbox = false;
+      if (selectedAssignee.kind === 'pm') {
+        try {
+          const review = await cioReviewTask(task.id);
+          redirectToInbox = Boolean(review.action?.type === 'propose_hire' && review.action.proposal_id);
+        } catch {
+          // Keep issue creation successful even if PM review fails.
+        }
+      }
+      onCreated(task, { redirectToInbox });
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Failed to create issue.');
       setCreating(false);
@@ -561,9 +571,9 @@ export default function IssueDashboardPage() {
     setSearchParams({});
   };
 
-  const handleCreated = (task: ResearchTask) => {
+  const handleCreated = (task: ResearchTask, options?: { redirectToInbox?: boolean }) => {
     closeComposer();
-    navigate(`/issues/${task.id}`);
+    navigate(options?.redirectToInbox ? '/inbox' : `/issues/${task.id}`);
   };
 
   return (

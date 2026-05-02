@@ -8,7 +8,7 @@ import {
   Radar,
   ShieldCheck,
 } from 'lucide-react';
-import { getProjects, getScheduledAgents, getTask, runTaskPipeline, type ResearchTask } from '../api';
+import { cioReviewTask, getProjects, getScheduledAgents, getTask, runTaskPipeline, type ResearchTask } from '../api';
 import type { ProjectSummary, ScheduledAgent } from '../types';
 
 function displayTicker(ticker: string): string {
@@ -58,6 +58,7 @@ export default function IssueDetailPage() {
   const [agents, setAgents] = useState<ScheduledAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
@@ -101,6 +102,24 @@ export default function IssueDetailPage() {
       setError('Failed to start the issue pipeline.');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleCioReview = async () => {
+    if (!taskId) return;
+    setReviewing(true);
+    setError(null);
+    try {
+      const review = await cioReviewTask(taskId);
+      if (review.action?.type === 'propose_hire' && review.action.proposal_id) {
+        navigate('/inbox');
+        return;
+      }
+      await load();
+    } catch {
+      setError('Failed to request CEO review.');
+    } finally {
+      setReviewing(false);
     }
   };
 
@@ -154,6 +173,15 @@ export default function IssueDetailPage() {
             </div>
 
             <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleCioReview}
+                disabled={reviewing}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {reviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                Send to CEO
+              </button>
               <button
                 type="button"
                 onClick={handleRun}

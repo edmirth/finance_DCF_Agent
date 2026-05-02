@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -11,12 +13,17 @@ from sqlalchemy import select
 
 from backend.api_server import app
 from backend.agent_runner import AgentRunnerService
+from backend import cio_router
 from backend.database import AsyncSessionLocal
 from backend.heartbeat_service import plan_manager_heartbeat_actions
 from backend.investment_pipeline import InvestmentPipeline
 from backend.models import AgentRun, ScheduledAgent, HireProposal, AgentRoutine, HeartbeatRun, ResearchTask
 from backend.scheduled_agents_router import _execute_run_background
 from backend.scheduler import next_run_time
+
+
+def _unique_test_ticker() -> str:
+    return uuid4().hex[:4].upper()
 
 
 def test_next_run_time_market_open_uses_market_timezone():
@@ -132,11 +139,49 @@ async def test_create_specialist_agent_defaults_to_cio_manager():
     body = response.json()
     assert body["role_key"] == "semis_analyst"
     assert body["role_title"] == "Semis Analyst"
+    assert body["name"] == "Semis Analyst"
     assert body["template"] == "fundamental_analyst"
     assert body["reports_to_label"] == "CIO"
     assert body["manager_agent_id"] is None
     assert body["heartbeat_routine"]["routine_type"] == "heartbeat"
     assert body["heartbeat_routine"]["schedule_label"] == "weekly_monday"
+
+
+@pytest.mark.asyncio
+async def test_existing_agent_display_name_prefers_role_title_over_personal_name():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        agent = ScheduledAgent(
+            id=agent_id,
+            name="Alex Chen",
+            description="Broad coverage.",
+            template="fundamental_analyst",
+            role_key="generalist_analyst",
+            role_title="Generalist Analyst",
+            role_family="sector_coverage",
+            tickers='["GENERAL"]',
+            topics="[]",
+            instruction="Cover general work.",
+            schedule_label="weekly_monday",
+            manager_agent_id=None,
+            delivery_email=None,
+            delivery_inapp=True,
+            is_active=True,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        db.add(agent)
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/scheduled-agents/{agent_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Generalist Analyst"
+    assert body["role_title"] == "Generalist Analyst"
 
 
 @pytest.mark.asyncio
@@ -266,7 +311,85 @@ async def test_cio_chat_persists_hire_proposal():
 
 
 @pytest.mark.asyncio
+async def test_cio_agent_endpoint_returns_profile_docs_and_recent_issue():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post(
+            "/tasks",
+            json={
+                "title": f"CEO issue {uuid4()}",
+                "notes": "Need the CEO to route this issue.",
+                "triggered_by": "manual_pm_review",
+            },
+        )
+        task_id = task_response.json()["id"]
+
+        response = await client.get("/cio/agent")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent"]["name"] == "CEO"
+    assert body["agent"]["status"] in {"idle", "paused"}
+    assert {doc["key"] for doc in body["instructions"]} == {"system", "heartbeat", "soul", "tools"}
+    assert any(issue["id"] == task_id for issue in body["recent_issues"])
+
+
+@pytest.mark.asyncio
+async def test_cio_agent_heartbeat_reviews_open_issue_and_updates_state(tmp_path: Path):
+    system_doc = tmp_path / "SYSTEM.md"
+    heartbeat_doc = tmp_path / "HEARTBEAT.md"
+    soul_doc = tmp_path / "SOUL.md"
+    tools_doc = tmp_path / "TOOLS.md"
+    for path in (system_doc, heartbeat_doc, soul_doc, tools_doc):
+        path.write_text(f"{path.name} content", encoding="utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post(
+            "/tasks",
+            json={
+                "title": f"Heartbeat issue {uuid4()}",
+                "notes": "Need CEO review",
+                "priority": "high",
+                "triggered_by": "manual_pm_review",
+            },
+        )
+        task_id = task_response.json()["id"]
+
+        mocked_response = {"message": "Heartbeat reviewed the highest-priority issue.", "action": None}
+        with patch.object(cio_router, "CEO_PROFILE_DIR", tmp_path), patch(
+            "backend.cio_router._cio_chat_sync",
+            return_value=mocked_response,
+        ):
+            response = await client.post("/cio/agent/heartbeat")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_id"] == task_id
+    assert body["message"] == "Heartbeat reviewed the highest-priority issue."
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "idle"
+    assert state["last_reviewed_task_id"] == task_id
+
+
+@pytest.mark.asyncio
+async def test_cio_agent_heartbeat_rejects_when_paused(tmp_path: Path):
+    for name in ("SYSTEM.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"):
+        (tmp_path / name).write_text(f"{name} content", encoding="utf-8")
+
+    with patch.object(cio_router, "CEO_PROFILE_DIR", tmp_path):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            status_response = await client.put("/cio/agent/status", json={"status": "paused"})
+            assert status_response.status_code == 200
+
+            heartbeat_response = await client.post("/cio/agent/heartbeat")
+
+    assert heartbeat_response.status_code == 409
+    assert heartbeat_response.json()["detail"] == "CEO is paused"
+
+
+@pytest.mark.asyncio
 async def test_cio_review_task_persists_hire_proposal():
+    review_ticker = _unique_test_ticker()
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         project_response = await client.post(
             "/projects",
@@ -277,9 +400,9 @@ async def test_cio_review_task_persists_hire_proposal():
         task_response = await client.post(
             "/tasks",
             json={
-                "ticker": "NVDA",
+                "ticker": review_ticker,
                 "project_id": project_id,
-                "title": "Review NVDA staffing",
+                "title": "Review AMD staffing",
                 "notes": "Need the PM to decide coverage and staffing.",
             },
         )
@@ -293,9 +416,9 @@ async def test_cio_review_task_persists_hire_proposal():
             "role_title": "Semis Analyst",
             "name": f"Semis {uuid4()}",
             "description": "Own semiconductor coverage for the PM.",
-            "tickers": ["NVDA"],
+            "tickers": [review_ticker],
             "topics": ["AI demand"],
-            "instruction": "Cover NVDA and monitor AI demand, pricing power, and hyperscaler capex.",
+            "instruction": "Cover AMD and monitor AI demand, pricing power, and hyperscaler capex.",
             "schedule_label": "weekly_monday",
         },
     }
@@ -317,10 +440,98 @@ async def test_cio_review_task_persists_hire_proposal():
     assert proposal is not None
     assert proposal.status == "pending"
     assert proposal.proposed_by == f"issue:{task_id}"
+    assert proposal.source_task_id == task_id
+    assert proposal.rationale == "This issue needs dedicated semiconductor coverage."
+
+
+@pytest.mark.asyncio
+async def test_cio_review_task_reuses_matching_pending_hire_proposal():
+    proposal_payload = {
+        "action": {
+            "type": "propose_hire",
+            "role_key": "semis_analyst",
+            "role_title": "Semis Analyst",
+            "name": f"Semis {uuid4()}",
+            "description": "Own semiconductor coverage for the PM.",
+            "tickers": ["NVDA"],
+            "topics": ["AI demand"],
+            "instruction": "Cover NVDA and monitor AI demand.",
+            "schedule_label": "weekly_monday",
+        }
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        create_response = await client.post("/cio/hire-proposals", json=proposal_payload)
+        assert create_response.status_code == 201
+        existing_proposal_id = create_response.json()["id"]
+
+        task_response = await client.post(
+            "/tasks",
+            json={"ticker": "NVDA", "title": "Review semis staffing"},
+        )
+        task_id = task_response.json()["id"]
+
+    mocked_response = {
+        "message": "We already know we need dedicated semiconductor coverage.",
+        "action": {
+            "type": "propose_hire",
+            "role_key": "semis_analyst",
+            "role_title": "Semis Analyst",
+            "name": "Duplicate suggestion",
+            "description": "Own semiconductor coverage for the PM.",
+            "tickers": ["NVDA"],
+            "topics": ["AI demand"],
+            "instruction": "Cover NVDA and monitor AI demand.",
+            "schedule_label": "weekly_monday",
+        },
+    }
+
+    with patch("backend.cio_router._cio_chat_sync", return_value=mocked_response):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(f"/cio/review-task/{task_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"]["proposal_id"] == existing_proposal_id
+    assert body["action"]["proposal_status"] == "pending"
+
+
+def test_cio_system_prompt_loads_profile_docs():
+    prompt = cio_router._build_system_prompt("## Your Research Team\n- Example seat")
+
+    assert "## CEO Operating Profile" in prompt
+    assert "## CEO Heartbeat Checklist" in prompt
+    assert "## CEO Persona Reference" in prompt
+    assert "## CEO Tool Surface" in prompt
+    assert "Treat CEO and CIO labels as the same leader seat." in prompt
+    assert "This repo does not yet expose a full PARA memory runtime" in prompt
+    assert str(Path(cio_router.CEO_PROFILE_DIR)) in prompt
+
+
+@pytest.mark.asyncio
+async def test_cio_instruction_update_persists_doc(tmp_path: Path):
+    system_doc = tmp_path / "SYSTEM.md"
+    system_doc.write_text("Original system content", encoding="utf-8")
+
+    with patch.object(cio_router, "CEO_PROFILE_DIR", tmp_path):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.put(
+                "/cio/agent/instructions/system",
+                json={"content": "Updated system content"},
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["key"] == "system"
+    assert body["filename"] == "SYSTEM.md"
+    assert body["content"] == "Updated system content"
+    assert system_doc.read_text(encoding="utf-8") == "Updated system content"
 
 
 @pytest.mark.asyncio
 async def test_hire_proposal_approve_creates_agent():
+    hire_ticker = _unique_test_ticker()
+
     proposal_payload = {
         "action": {
             "type": "propose_hire",
@@ -328,7 +539,7 @@ async def test_hire_proposal_approve_creates_agent():
             "role_title": "Risk Manager",
             "name": f"Risk {uuid4()}",
             "description": "Own downside surveillance.",
-            "tickers": ["TSLA"],
+            "tickers": [hire_ticker],
             "topics": ["balance sheet"],
             "instruction": "Track downside scenarios, liquidity, and leverage.",
             "schedule_label": "weekly_monday",
@@ -405,6 +616,36 @@ async def test_hire_proposal_reject_marks_proposal_rejected():
     assert proposal is not None
     assert proposal.status == "rejected"
     assert proposal.approved_agent_id is None
+
+
+@pytest.mark.asyncio
+async def test_inbox_includes_pending_hire_proposals():
+    proposal_payload = {
+        "action": {
+            "type": "propose_hire",
+            "role_key": "macro_strategist",
+            "role_title": "Macro Strategist",
+            "name": f"Macro {uuid4()}",
+            "description": "Own the macro overlay.",
+            "tickers": [],
+            "topics": ["Fed"],
+            "instruction": "Track rates, policy, and macro regime shifts.",
+            "schedule_label": "weekly_monday",
+        }
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        create_response = await client.post("/cio/hire-proposals", json=proposal_payload)
+        assert create_response.status_code == 201
+
+        inbox_response = await client.get("/inbox")
+
+    assert inbox_response.status_code == 200
+    items = inbox_response.json()["items"]
+    proposal_items = [item for item in items if item["item_type"] == "hire_proposal"]
+    assert proposal_items
+    assert proposal_items[0]["status"] == "pending"
+    assert proposal_items[0]["role_key"] == "macro_strategist"
 
 
 @pytest.mark.asyncio

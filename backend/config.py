@@ -229,5 +229,9 @@ MARKET_SCHEDULE_TIMEZONE: str = _os.getenv("MARKET_SCHEDULE_TIMEZONE", "America/
 # Default LLM model for agents
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 
+# Top-level CEO / CIO orchestrator model. Keep this separate so the leader
+# seat can use a stronger model than ordinary specialists when needed.
+CIO_MODEL = _os.getenv("CIO_MODEL", "claude-sonnet-4-6")
+
 # Agent types and their available names
 AGENT_TYPES = ["analyst", "research", "market", "portfolio", "earnings"]

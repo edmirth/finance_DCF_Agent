@@ -1,10 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, CheckCircle, Loader2, ChevronDown, ChevronUp, Filter, XCircle } from 'lucide-react';
-import { getInbox } from '../api';
-import { AgentRun, AlertLevel } from '../types';
-
-type InboxItem = AgentRun & { agent_name: string };
+import { approveHireProposal, getInbox, rejectHireProposal } from '../api';
+import { AlertLevel, InboxItem } from '../types';
 
 const ALERT_CONFIG: Record<AlertLevel, { label: string; color: string; bg: string; Icon: any }> = {
   high:   { label: 'Alert',     color: '#EF4444', bg: '#FEE2E2', Icon: AlertTriangle },
@@ -27,6 +25,10 @@ function formatDate(iso?: string): string {
   });
 }
 
+function inboxTimestamp(item: InboxItem): string {
+  return item.item_type === 'hire_proposal' ? item.created_at : item.started_at;
+}
+
 function markdownToHtml(md: string): string {
   return md
     .replace(/^### (.+)$/gm, '<h3 style="font-size:13px;font-weight:700;color:#0F172A;margin:14px 0 5px">$1</h3>')
@@ -38,8 +40,105 @@ function markdownToHtml(md: string): string {
     .replace(/\n/g, '<br>');
 }
 
-function InboxCard({ item }: { item: InboxItem }) {
+function InboxCard({
+  item,
+  onProposalAction,
+}: {
+  item: InboxItem;
+  onProposalAction: () => Promise<void>;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const navigate = useNavigate();
+  const [proposalBusy, setProposalBusy] = useState<'approve' | 'reject' | null>(null);
+
+  if (item.item_type === 'hire_proposal') {
+    const roleLabel = item.role_title || item.name;
+
+    const handleApprove = async () => {
+      setProposalBusy('approve');
+      try {
+        await approveHireProposal(item.id);
+        await onProposalAction();
+      } finally {
+        setProposalBusy(null);
+      }
+    };
+
+    const handleReject = async () => {
+      setProposalBusy('reject');
+      try {
+        await rejectHireProposal(item.id);
+        await onProposalAction();
+      } finally {
+        setProposalBusy(null);
+      }
+    };
+
+    return (
+      <div className="bg-white border border-amber-200 rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-amber-100">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <span className="text-sm font-semibold text-slate-900">CEO Suggestion</span>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700">
+                  Pending approval
+                </span>
+              </div>
+              <p className="text-sm text-slate-600">{roleLabel}</p>
+            </div>
+            <span className="text-xs text-slate-400">{formatDate(item.created_at)}</span>
+          </div>
+        </div>
+
+        <div className="px-5 py-4">
+          <p className="text-sm font-medium text-slate-900">{item.name}</p>
+          <p className="mt-2 text-sm leading-relaxed text-slate-600">
+            {item.rationale || item.description || 'The CEO proposed a new seat for this workflow.'}
+          </p>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+            {item.source_task_id && (
+              <button
+                type="button"
+                onClick={() => navigate(`/issues/${item.source_task_id}`)}
+                className="rounded-full border border-slate-200 px-2.5 py-1 hover:border-slate-300 hover:text-slate-700"
+              >
+                {item.source_task_title || 'Open issue'}
+              </button>
+            )}
+            {item.tickers.map((ticker) => (
+              <span key={ticker} className="rounded-full border border-slate-200 px-2.5 py-1">
+                {ticker}
+              </span>
+            ))}
+            <span className="rounded-full border border-slate-200 px-2.5 py-1">
+              Reports to {item.reports_to_label || 'CIO'}
+            </span>
+          </div>
+
+          <div className="mt-4 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleApprove}
+              disabled={proposalBusy !== null}
+              className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {proposalBusy === 'approve' ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Approve'}
+            </button>
+            <button
+              type="button"
+              onClick={handleReject}
+              disabled={proposalBusy !== null}
+              className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {proposalBusy === 'reject' ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Decline'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Running state — show a minimal spinner card, not expandable yet
   if (item.status === 'running') {
@@ -174,7 +273,7 @@ function InboxCard({ item }: { item: InboxItem }) {
 function groupByDate(items: InboxItem[]): Record<string, InboxItem[]> {
   const groups: Record<string, InboxItem[]> = {};
   for (const item of items) {
-    const date = new Date(item.started_at).toLocaleDateString('en-US', {
+    const date = new Date(inboxTimestamp(item)).toLocaleDateString('en-US', {
       weekday: 'long', month: 'long', day: 'numeric',
     });
     if (!groups[date]) groups[date] = [];
@@ -257,7 +356,7 @@ export default function InboxPage() {
             <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center mb-4">
               <CheckCircle className="w-7 h-7 text-slate-300" />
             </div>
-            <p className="text-slate-500 text-sm">No reports yet.</p>
+            <p className="text-slate-500 text-sm">No inbox items yet.</p>
             <button onClick={() => navigate('/issues?new=1')} className="mt-4 text-sm text-emerald-600 hover:text-emerald-700 font-medium">
               Open a new issue →
             </button>
@@ -268,7 +367,13 @@ export default function InboxPage() {
               <div key={date}>
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">{date}</p>
                 <div className="space-y-3">
-                  {dateItems.map(item => <InboxCard key={item.id} item={item} />)}
+                  {dateItems.map(item => (
+                    <InboxCard
+                      key={`${item.item_type}:${item.id}`}
+                      item={item}
+                      onProposalAction={load}
+                    />
+                  ))}
                 </div>
               </div>
             ))}

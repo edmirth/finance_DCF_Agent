@@ -285,7 +285,9 @@ async def init_db() -> None:
                 tickers TEXT NOT NULL DEFAULT '[]',
                 topics TEXT NOT NULL DEFAULT '[]',
                 instruction TEXT NOT NULL DEFAULT '',
+                rationale TEXT,
                 schedule_label TEXT NOT NULL DEFAULT 'weekly_monday',
+                source_task_id TEXT REFERENCES research_tasks(id) ON DELETE SET NULL,
                 manager_agent_id TEXT REFERENCES scheduled_agents(id) ON DELETE SET NULL,
                 delivery_email TEXT,
                 delivery_inapp INTEGER NOT NULL DEFAULT 1,
@@ -296,6 +298,16 @@ async def init_db() -> None:
                 decided_at DATETIME
             )
         """))
+        for _col in ["rationale", "source_task_id"]:
+            try:
+                await conn.execute(text(f"ALTER TABLE hire_proposals ADD COLUMN {_col} TEXT"))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                    pass
+                else:
+                    logger.error(f"Unexpected OperationalError adding hire_proposals {_col} column: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error adding hire_proposals {_col} column: {e}")
         for _idx in [
             "CREATE INDEX IF NOT EXISTS ix_hire_proposals_status ON hire_proposals (status)",
             "CREATE INDEX IF NOT EXISTS ix_hire_proposals_role_key ON hire_proposals (role_key)",
@@ -303,6 +315,7 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_hire_proposals_created_at ON hire_proposals (created_at)",
             "CREATE INDEX IF NOT EXISTS ix_hire_proposals_manager_agent_id ON hire_proposals (manager_agent_id)",
             "CREATE INDEX IF NOT EXISTS ix_hire_proposals_approved_agent_id ON hire_proposals (approved_agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_hire_proposals_source_task_id ON hire_proposals (source_task_id)",
         ]:
             try:
                 await conn.execute(text(_idx))

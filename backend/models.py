@@ -327,7 +327,14 @@ class HireProposal(Base):
     tickers: Mapped[str] = mapped_column(Text, default="[]")
     topics: Mapped[str] = mapped_column(Text, default="[]")
     instruction: Mapped[str] = mapped_column(Text, default="")
+    rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     schedule_label: Mapped[str] = mapped_column(String(50), default="weekly_monday")
+    source_task_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("research_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     manager_agent_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         ForeignKey("scheduled_agents.id", ondelete="SET NULL"),

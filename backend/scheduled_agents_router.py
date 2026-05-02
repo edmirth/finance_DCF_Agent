@@ -39,7 +39,7 @@ from backend.heartbeat_service import (
     routine_to_dict,
     update_task_from_delegated_run,
 )
-from backend.models import ScheduledAgent, AgentRun, HeartbeatRun
+from backend.models import ScheduledAgent, AgentRun, HeartbeatRun, HireProposal, ResearchTask
 from backend.scheduler import (
     register_agent_job,
     remove_agent_job,
@@ -102,16 +102,17 @@ def _agent_to_dict(
     manager_name: Optional[str] = None,
     heartbeat_routine=None,
 ) -> dict:
-    reports_to_label = manager_name or ("Unknown manager" if agent.manager_agent_id else "CIO")
     role_identity = infer_role_identity(
         role_key=agent.role_key,
         role_title=agent.role_title,
         role_family=agent.role_family,
         template=agent.template,
     )
+    display_name = role_identity["role_title"] or agent.name
+    reports_to_label = manager_name or ("Unknown manager" if agent.manager_agent_id else "CIO")
     return {
         "id": agent.id,
-        "name": agent.name,
+        "name": display_name,
         "description": agent.description,
         "template": agent.template,
         "role_key": role_identity["role_key"],
@@ -142,9 +143,13 @@ async def _manager_name_map(db: AsyncSession, agents: list[ScheduledAgent]) -> d
     if not manager_ids:
         return {}
     result = await db.execute(
-        select(ScheduledAgent.id, ScheduledAgent.name).where(ScheduledAgent.id.in_(manager_ids))
+        select(
+            ScheduledAgent.id,
+            ScheduledAgent.name,
+            ScheduledAgent.role_title,
+        ).where(ScheduledAgent.id.in_(manager_ids))
     )
-    return {row[0]: row[1] for row in result.all()}
+    return {row[0]: (row[2] or row[1]) for row in result.all()}
 
 
 async def _validate_manager_agent(
@@ -166,6 +171,7 @@ async def _validate_manager_agent(
 
 def _run_to_dict(run: AgentRun) -> dict:
     return {
+        "item_type": "agent_run",
         "id": run.id,
         "scheduled_agent_id": run.scheduled_agent_id,
         "status": run.status,
@@ -179,6 +185,31 @@ def _run_to_dict(run: AgentRun) -> dict:
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "error": run.error,
+    }
+
+
+def _proposal_to_inbox_dict(proposal: HireProposal, source_task_title: Optional[str] = None) -> dict:
+    return {
+        "item_type": "hire_proposal",
+        "id": proposal.id,
+        "status": proposal.status,
+        "name": proposal.role_title or proposal.name,
+        "description": proposal.description,
+        "template": proposal.template,
+        "role_key": proposal.role_key,
+        "role_title": proposal.role_title,
+        "role_family": proposal.role_family,
+        "tickers": json.loads(proposal.tickers or "[]"),
+        "topics": json.loads(proposal.topics or "[]"),
+        "instruction": proposal.instruction,
+        "rationale": proposal.rationale,
+        "schedule_label": proposal.schedule_label,
+        "source_task_id": proposal.source_task_id,
+        "source_task_title": source_task_title,
+        "manager_agent_id": proposal.manager_agent_id,
+        "delivery_inapp": proposal.delivery_inapp,
+        "created_at": proposal.created_at.isoformat() if proposal.created_at else None,
+        "updated_at": proposal.updated_at.isoformat() if proposal.updated_at else None,
     }
 
 
@@ -229,7 +260,7 @@ async def create_scheduled_agent(
 
     agent = ScheduledAgent(
         id=str(uuid.uuid4()),
-        name=payload.name,
+        name=role_identity["role_title"] or payload.name,
         description=payload.description,
         template=template,
         role_key=role_identity["role_key"],
@@ -489,25 +520,50 @@ async def get_inbox(
     alert_level: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """All agent runs across all agents, newest first, with agent name included."""
-    query = (
-        select(AgentRun, ScheduledAgent.name.label("agent_name"))
+    """Mixed inbox stream: agent runs plus in-app hire proposals."""
+    run_query = (
+        select(
+            AgentRun,
+            ScheduledAgent.name.label("agent_name"),
+            ScheduledAgent.role_title.label("agent_role_title"),
+        )
         .join(ScheduledAgent, AgentRun.scheduled_agent_id == ScheduledAgent.id)
     )
     if alert_level:
-        query = query.where(AgentRun.alert_level == alert_level)
-    query = query.order_by(desc(AgentRun.started_at)).limit(limit)
+        run_query = run_query.where(AgentRun.alert_level == alert_level)
+    run_query = run_query.order_by(desc(AgentRun.started_at)).limit(limit)
 
-    result = await db.execute(query)
-    rows = result.all()
+    run_result = await db.execute(run_query)
+    run_rows = run_result.all()
 
     items = []
-    for run, agent_name in rows:
+    for run, agent_name, agent_role_title in run_rows:
         d = _run_to_dict(run)
-        d["agent_name"] = agent_name
+        d["agent_name"] = agent_role_title or agent_name
+        d["_sort_at"] = run.started_at.isoformat() if run.started_at else ""
         items.append(d)
 
-    return {"items": items}
+    if not alert_level:
+        proposal_query = (
+            select(HireProposal, ResearchTask.title.label("source_task_title"))
+            .outerjoin(ResearchTask, HireProposal.source_task_id == ResearchTask.id)
+            .where(HireProposal.status == "pending", HireProposal.delivery_inapp.is_(True))
+            .order_by(desc(HireProposal.created_at))
+            .limit(limit)
+        )
+        proposal_result = await db.execute(proposal_query)
+        for proposal, source_task_title in proposal_result.all():
+            d = _proposal_to_inbox_dict(proposal, source_task_title)
+            d["_sort_at"] = proposal.created_at.isoformat() if proposal.created_at else ""
+            items.append(d)
+
+    items.sort(key=lambda item: item.get("_sort_at") or "", reverse=True)
+    trimmed = []
+    for item in items[:limit]:
+        item.pop("_sort_at", None)
+        trimmed.append(item)
+
+    return {"items": trimmed}
 
 
 # ------------------------------------------------------------------

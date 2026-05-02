@@ -294,6 +294,7 @@ function Sidebar() {
 
   const visibleProjects = projects.slice(0, 6);
   const visibleAgents = agents.slice(0, 8);
+  const isLeaderAgentActive = location.pathname === '/agents/ceo' || location.pathname === '/cio';
 
   // Shared navigation content
   const NavContent = ({ isMobile = false }: { isMobile?: boolean }) => (
@@ -550,85 +551,144 @@ function Sidebar() {
 
             {agentsExpanded && (
               <div style={{ marginBottom: 4 }}>
-                {visibleAgents.length > 0 ? (
-                  visibleAgents.map((agent) => {
-                    const isAgentActive = location.pathname === `/routines/${agent.id}` || location.pathname === `/scheduled-agents/${agent.id}`;
-                    const meta = roleMetaForAgent(agent);
-                    return (
-                      <button
-                        key={agent.id}
-                        type="button"
-                        onClick={() => {
-                          navigate(`/routines/${agent.id}`, { state: { from: '/' } });
-                          isMobile && setIsMobileOpen(false);
-                        }}
-                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition"
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('/agents/ceo');
+                    isMobile && setIsMobileOpen(false);
+                  }}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition"
+                  style={{
+                    marginBottom: 2,
+                    background: isLeaderAgentActive ? '#F5F5F5' : 'transparent',
+                  }}
+                >
+                  <span
+                    style={{
+                      color: '#0F172A',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Briefcase className="h-4 w-4" />
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 500,
+                      color: '#1F2937',
+                      fontFamily: 'IBM Plex Sans, sans-serif',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      flex: 1,
+                    }}
+                  >
+                    CEO
+                  </span>
+                  <span
+                    className="inline-flex items-center gap-1"
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 500,
+                      color: '#2563EB',
+                      fontFamily: 'IBM Plex Sans, sans-serif',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '999px',
+                        background: '#2563EB',
+                      }}
+                    />
+                    Live
+                  </span>
+                </button>
+
+                {visibleAgents.map((agent) => {
+                  const isAgentActive = location.pathname === `/routines/${agent.id}` || location.pathname === `/scheduled-agents/${agent.id}`;
+                  const meta = roleMetaForAgent(agent);
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      onClick={() => {
+                        navigate(`/routines/${agent.id}`, { state: { from: '/' } });
+                        isMobile && setIsMobileOpen(false);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition"
+                      style={{
+                        marginBottom: 2,
+                        background: isAgentActive ? '#F5F5F5' : 'transparent',
+                      }}
+                    >
+                      <span
                         style={{
-                          marginBottom: 2,
-                          background: isAgentActive ? '#F5F5F5' : 'transparent',
+                          color: meta.color,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
                         }}
                       >
+                        {agentSidebarIcon(agent)}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 500,
+                          color: '#1F2937',
+                          fontFamily: 'IBM Plex Sans, sans-serif',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          flex: 1,
+                        }}
+                      >
+                        {agent.name}
+                      </span>
+                      {agent.is_active && (
                         <span
+                          className="inline-flex items-center gap-1"
                           style={{
-                            color: meta.color,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
+                            fontSize: 11,
+                            fontWeight: 500,
+                            color: '#2563EB',
+                            fontFamily: 'IBM Plex Sans, sans-serif',
                             flexShrink: 0,
                           }}
                         >
-                          {agentSidebarIcon(agent)}
-                        </span>
-                        <span
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 500,
-                            color: '#1F2937',
-                            fontFamily: 'IBM Plex Sans, sans-serif',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            flex: 1,
-                          }}
-                        >
-                          {agent.name}
-                        </span>
-                        {agent.is_active && (
                           <span
-                            className="inline-flex items-center gap-1"
                             style={{
-                              fontSize: 11,
-                              fontWeight: 500,
-                              color: '#2563EB',
-                              fontFamily: 'IBM Plex Sans, sans-serif',
-                              flexShrink: 0,
+                              width: 8,
+                              height: 8,
+                              borderRadius: '999px',
+                              background: '#2563EB',
                             }}
-                          >
-                            <span
-                              style={{
-                                width: 8,
-                                height: 8,
-                                borderRadius: '999px',
-                                background: '#2563EB',
-                              }}
-                            />
-                            Live
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })
-                ) : (
+                          />
+                          Live
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {visibleAgents.length === 0 && (
                   <button
                     type="button"
                     onClick={() => {
                       navigate('/routines/new');
                       isMobile && setIsMobileOpen(false);
                     }}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-slate-400 transition hover:bg-slate-50 hover:text-slate-600"
+                    className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-slate-400 transition hover:bg-slate-50 hover:text-slate-600"
                   >
                     <Bot className="h-4 w-4" />
-                    Hire first agent
+                    Hire first analyst
                   </button>
                 )}
               </div>

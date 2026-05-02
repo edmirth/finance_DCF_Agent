@@ -251,7 +251,7 @@ export default function AgentDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (!agent || !confirm(`Delete "${agent.name}"?`)) return;
+    if (!agent || !confirm(`Delete "${agent.role_title || agent.name}"?`)) return;
     await deleteScheduledAgent(agent.id);
     navigate('/routines');
   };
@@ -273,6 +273,7 @@ export default function AgentDetailPage() {
   }
 
   const meta = roleMetaForAgent(agent);
+  const showSubtitle = meta.displayTitle !== agent.name;
 
   return (
     <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
@@ -307,7 +308,9 @@ export default function AgentDetailPage() {
                     style={agent.is_active ? { boxShadow: '0 0 0 3px #D1FAE5' } : {}}
                   />
                 </div>
-                <span className="text-sm font-medium" style={{ color: meta.color }}>{meta.displayTitle}</span>
+                {showSubtitle && (
+                  <span className="text-sm font-medium" style={{ color: meta.color }}>{meta.displayTitle}</span>
+                )}
                 <p className="text-xs text-slate-400 mt-1">Reports to {agent.reports_to_label || 'CIO'}</p>
               </div>
             </div>

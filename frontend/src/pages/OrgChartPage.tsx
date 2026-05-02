@@ -129,6 +129,7 @@ function OrgNodeCard({
 }) {
   const meta = roleMetaForAgent(node);
   const isSynthetic = Boolean(node.synthetic);
+  const showSubtitle = !isSynthetic && meta.displayTitle !== node.name;
   const managerLabel = isSynthetic
     ? 'Top-level orchestrator'
     : node.manager_agent_id
@@ -163,7 +164,7 @@ function OrgNodeCard({
             />
           </div>
           <p className="mt-0.5 text-xs font-medium" style={{ color: isSynthetic ? '#475569' : meta.color }}>
-            {isSynthetic ? 'Firm lead' : meta.displayTitle}
+            {isSynthetic ? 'Firm lead' : showSubtitle ? meta.displayTitle : ''}
           </p>
           <p className={`mt-1 text-xs ${isSynthetic ? 'text-slate-500' : 'text-slate-400'}`}>{managerLabel}</p>
         </div>
