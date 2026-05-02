@@ -50,6 +50,7 @@ const PRIORITY_OPTIONS: TaskPriority[] = ['low', 'medium', 'high', 'urgent'];
 
 type AssigneeChoice =
   | { kind: 'none'; id: null; label: string; subtitle: string }
+  | { kind: 'pm'; id: null; label: string; subtitle: string }
   | { kind: 'agent'; id: string; label: string; subtitle: string };
 
 function formatRelativeTime(iso?: string | null): string {
@@ -74,6 +75,9 @@ function assigneeLabel(task: ResearchTask, agentsById: Map<string, ScheduledAgen
   }
   if (task.owner_agent_id && agentsById.has(task.owner_agent_id)) {
     return agentsById.get(task.owner_agent_id)!.name;
+  }
+  if (task.triggered_by === 'manual_pm_review') {
+    return 'PM / CIO';
   }
   return 'No assignee';
 }
@@ -162,13 +166,15 @@ function PickerButton({
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-3 text-left transition ${
-        active ? 'border-slate-400 bg-slate-100' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+      className={`inline-flex h-10 items-center gap-2 rounded-[14px] border px-3.5 text-left transition focus:outline-none focus-visible:outline-none ${
+        active
+          ? 'border-white/20 bg-[#1a1a1a]'
+          : 'border-white/10 bg-[#121212] hover:border-white/20 hover:bg-[#171717]'
       }`}
     >
-      <span className="text-sm text-slate-400">{label}</span>
-      <span className="text-sm font-medium text-slate-800">{value}</span>
-      <ChevronDown className="h-4 w-4 text-slate-400" />
+      <span className="text-[13px] text-slate-500">{label}</span>
+      <span className="text-[13px] font-medium text-slate-200">{value}</span>
+      <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
     </button>
   );
 }
@@ -194,10 +200,10 @@ function NewIssueModal({
   const [assigneeQuery, setAssigneeQuery] = useState('');
   const [projectQuery, setProjectQuery] = useState('');
   const [selectedAssignee, setSelectedAssignee] = useState<AssigneeChoice>({
-    kind: 'none',
+    kind: 'pm',
     id: null,
-    label: 'No assignee',
-    subtitle: 'Create the issue without assigning it yet',
+    label: 'PM / CIO',
+    subtitle: 'Route this issue to the PM for triage and delegation',
   });
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -211,6 +217,7 @@ function NewIssueModal({
   const assigneeOptions = useMemo<AssigneeChoice[]>(() => {
     const normalizedQuery = assigneeQuery.trim().toLowerCase();
     const baseOptions: AssigneeChoice[] = [
+      { kind: 'pm', id: null, label: 'PM / CIO', subtitle: 'Route this issue to the PM for triage and delegation' },
       { kind: 'none', id: null, label: 'No assignee', subtitle: 'Create the issue without routing it yet' },
       ...agents.map((agent) => ({
         kind: 'agent' as const,
@@ -254,13 +261,18 @@ function NewIssueModal({
     setError(null);
 
     const body: CreateTaskBody = {
-      ticker: ticker.trim() ? ticker.trim().toUpperCase() : 'GENERAL',
+      ticker: ticker.trim() ? ticker.trim().toUpperCase() : undefined,
       title: title.trim(),
       task_type: taskType,
       priority,
       project_id: selectedProjectId || undefined,
       notes: description.trim() || undefined,
-      triggered_by: selectedAssignee.kind === 'agent' ? 'manual_assignment' : 'manual',
+      triggered_by:
+        selectedAssignee.kind === 'agent'
+          ? 'manual_assignment'
+          : selectedAssignee.kind === 'pm'
+            ? 'manual_pm_review'
+            : 'manual',
       assigned_agent_id: selectedAssignee.kind === 'agent' ? selectedAssignee.id : undefined,
     };
 
@@ -275,33 +287,33 @@ function NewIssueModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-4xl overflow-hidden rounded-[28px] border border-slate-800/20 bg-[#0a0a0a] text-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+      <div className="w-full max-w-[690px] overflow-hidden rounded-[24px] border border-slate-800/20 bg-[#0a0a0a] text-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-white/10 px-3 py-1.5 font-mono text-xs font-semibold tracking-wide text-slate-200">
+            <div className="rounded-lg bg-white/10 px-2.5 py-1 font-mono text-[11px] font-semibold tracking-wide text-slate-200">
               PHR
             </div>
-            <span className="text-lg font-medium text-slate-200">New issue</span>
+            <span className="text-base font-medium text-slate-200">New issue</span>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"
+            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-white focus:outline-none focus-visible:outline-none"
           >
             <span className="sr-only">Close</span>
             ×
           </button>
         </div>
 
-        <div className="px-6 py-6">
+        <div className="px-5 py-4">
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="Issue title"
-            className="w-full border-none bg-transparent px-0 py-2 text-5xl font-semibold tracking-[-0.04em] text-white outline-none placeholder:text-slate-600"
+            className="w-full border-none bg-transparent px-0 py-0.5 text-[24px] font-semibold tracking-[-0.025em] text-white outline-none placeholder:text-slate-600 focus:outline-none focus-visible:outline-none"
           />
 
-          <div className="mt-6 flex flex-wrap items-center gap-3">
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
             <span className="text-sm text-slate-400">For</span>
             <div className="relative">
               <PickerButton
@@ -314,13 +326,13 @@ function NewIssueModal({
                 }}
               />
               {assigneeOpen && (
-                <div className="absolute left-0 top-[calc(100%+10px)] z-10 w-[320px] rounded-2xl border border-white/10 bg-[#151515] p-3 shadow-2xl">
+                <div className="absolute left-0 top-[calc(100%+8px)] z-10 w-[320px] rounded-2xl border border-white/10 bg-[#151515] p-3 shadow-2xl">
                   <input
                     autoFocus
                     value={assigneeQuery}
                     onChange={(event) => setAssigneeQuery(event.target.value)}
                     placeholder="Search assignees..."
-                    className="mb-3 w-full rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
+                    className="mb-3 w-full rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 focus:outline-none focus-visible:outline-none"
                   />
                   <div className="max-h-64 overflow-y-auto">
                     {assigneeOptions.map((option) => (
@@ -360,13 +372,13 @@ function NewIssueModal({
                 }}
               />
               {projectOpen && (
-                <div className="absolute left-0 top-[calc(100%+10px)] z-10 w-[360px] rounded-2xl border border-white/10 bg-[#151515] p-3 shadow-2xl">
+                <div className="absolute left-0 top-[calc(100%+8px)] z-10 w-[340px] rounded-2xl border border-white/10 bg-[#151515] p-3 shadow-2xl">
                   <input
                     autoFocus
                     value={projectQuery}
                     onChange={(event) => setProjectQuery(event.target.value)}
                     placeholder="Search projects..."
-                    className="mb-3 w-full rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
+                    className="mb-3 w-full rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 focus:outline-none focus-visible:outline-none"
                   />
                   <div className="max-h-64 overflow-y-auto">
                     {projectOptions.map((project) => (
@@ -393,23 +405,23 @@ function NewIssueModal({
             </div>
           </div>
 
-          <div className="mt-6 border-t border-white/10 pt-6">
+          <div className="mt-4 border-t border-white/10 pt-4">
             <textarea
               value={description}
               onChange={(event) => setDescription(event.target.value)}
               placeholder="Add description..."
-              rows={7}
-              className="w-full resize-none border-none bg-transparent text-lg leading-relaxed text-slate-200 outline-none placeholder:text-slate-600"
+              rows={3}
+              className="min-h-[116px] w-full resize-none border-none bg-transparent text-[15px] leading-7 text-slate-200 outline-none placeholder:text-slate-600 focus:outline-none focus-visible:outline-none"
             />
           </div>
 
-          <div className="mt-6 flex flex-wrap gap-3 border-t border-white/10 pt-4">
-            <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300">
-              <CircleDot className="h-4 w-4 text-blue-400" />
+          <div className="mt-4 flex flex-wrap gap-2.5 border-t border-white/10 pt-3.5">
+            <div className="flex h-10 items-center gap-2 rounded-[14px] border border-white/10 bg-white/5 px-3.5 text-sm text-slate-300">
+              <CircleDot className="h-3.5 w-3.5 text-blue-400" />
               <select
                 value={taskType}
                 onChange={(event) => setTaskType(event.target.value as TaskType)}
-                className="bg-transparent text-sm outline-none"
+                className="bg-transparent text-[13px] outline-none focus:outline-none focus-visible:outline-none"
               >
                 {TASK_TYPE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value} className="bg-slate-900">
@@ -419,12 +431,12 @@ function NewIssueModal({
               </select>
             </div>
 
-            <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300">
-              <Briefcase className="h-4 w-4 text-slate-400" />
+            <div className="flex h-10 items-center gap-2 rounded-[14px] border border-white/10 bg-white/5 px-3.5 text-sm text-slate-300">
+              <Briefcase className="h-3.5 w-3.5 text-slate-400" />
               <select
                 value={priority}
                 onChange={(event) => setPriority(event.target.value as TaskPriority)}
-                className="bg-transparent text-sm capitalize outline-none"
+                className="bg-transparent text-[13px] capitalize outline-none focus:outline-none focus-visible:outline-none"
               >
                 {PRIORITY_OPTIONS.map((option) => (
                   <option key={option} value={option} className="bg-slate-900 capitalize">
@@ -434,13 +446,13 @@ function NewIssueModal({
               </select>
             </div>
 
-            <div className="flex min-w-[220px] flex-1 items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2">
-              <FolderOpen className="h-4 w-4 text-slate-400" />
+            <div className="flex h-10 min-w-[200px] flex-1 items-center gap-2 rounded-[14px] border border-white/10 bg-white/5 px-3.5">
+              <FolderOpen className="h-3.5 w-3.5 text-slate-400" />
               <input
                 value={ticker}
                 onChange={(event) => setTicker(event.target.value)}
                 placeholder="Ticker / company (optional)"
-                className="w-full bg-transparent text-sm text-slate-200 outline-none placeholder:text-slate-500"
+                className="w-full bg-transparent text-[13px] text-slate-200 outline-none placeholder:text-slate-500 focus:outline-none focus-visible:outline-none"
               />
             </div>
           </div>
@@ -450,11 +462,11 @@ function NewIssueModal({
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-white/10 px-6 py-5">
+        <div className="flex items-center justify-between border-t border-white/10 px-5 py-3.5">
           <button
             type="button"
             onClick={onClose}
-            className="text-sm font-medium text-slate-500 transition hover:text-slate-300"
+            className="text-sm font-medium text-slate-500 transition hover:text-slate-300 focus:outline-none focus-visible:outline-none"
           >
             Discard draft
           </button>
@@ -462,7 +474,7 @@ function NewIssueModal({
             type="button"
             onClick={handleSubmit}
             disabled={creating}
-            className="inline-flex min-w-[220px] items-center justify-center rounded-2xl bg-white px-5 py-4 text-lg font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex min-w-[156px] items-center justify-center rounded-2xl bg-white px-5 py-2.5 text-base font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus-visible:outline-none"
           >
             {creating ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Create Issue'}
           </button>

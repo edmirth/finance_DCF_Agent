@@ -2703,7 +2703,7 @@ TASK_TYPE_TITLES = {
 
 
 class TaskCreate(BaseModel):
-    ticker: str
+    ticker: Optional[str] = None
     task_type: Optional[str] = "ad_hoc"
     title: Optional[str] = None
     priority: Optional[str] = "medium"
@@ -2801,12 +2801,21 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     if priority not in VALID_PRIORITIES:
         raise HTTPException(status_code=400, detail=f"Invalid priority. Must be one of: {sorted(VALID_PRIORITIES)}")
 
-    try:
-        ticker = _normalize_single_ticker(body.ticker, field_name="ticker")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    raw_ticker = (body.ticker or "").strip()
+    if raw_ticker:
+        try:
+            ticker = _normalize_single_ticker(raw_ticker, field_name="ticker")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        ticker = "GENERAL"
 
-    title = body.title or f"{TASK_TYPE_TITLES.get(task_type, 'Research')}: {ticker}"
+    if body.title:
+        title = body.title
+    elif ticker == "GENERAL":
+        title = TASK_TYPE_TITLES.get(task_type, "Research")
+    else:
+        title = f"{TASK_TYPE_TITLES.get(task_type, 'Research')}: {ticker}"
     try:
         selected = _normalize_selected_agents(
             body.selected_agents,

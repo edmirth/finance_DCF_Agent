@@ -151,6 +151,20 @@ async def test_create_task_rejects_invalid_ticker_format():
 
 
 @pytest.mark.asyncio
+async def test_create_task_allows_missing_ticker_and_defaults_to_general():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/tasks",
+            json={"title": "Analyze AI value chain"},
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["ticker"] == "GENERAL"
+    assert body["title"] == "Analyze AI value chain"
+
+
+@pytest.mark.asyncio
 async def test_create_task_rejects_explicit_empty_agent_list():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(

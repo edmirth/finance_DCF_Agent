@@ -208,8 +208,8 @@ export default function InboxPage() {
   const grouped = groupByDate(items);
 
   return (
-    <div className="min-h-screen bg-slate-50 pl-20" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
-      <div className="max-w-3xl mx-auto px-8 py-12">
+    <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+      <div className="mx-auto w-full max-w-3xl px-6 py-12 lg:px-10">
 
         <div className="flex items-center justify-between mb-8">
           <div>

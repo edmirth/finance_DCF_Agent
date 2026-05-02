@@ -1,6 +1,59 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BookOpen, FilePlus2, FileText, ChevronRight, ChevronLeft, BarChart2, Menu, X, LayoutDashboard, Inbox, CircleDot, FolderOpen } from 'lucide-react';
+import {
+  Bot,
+  Briefcase,
+  ChevronRight,
+  ChevronLeft,
+  CircleDot,
+  FilePlus2,
+  FolderOpen,
+  Globe,
+  Inbox,
+  LayoutDashboard,
+  Menu,
+  PenTool,
+  Repeat,
+  Shield,
+  Sparkles,
+  TrendingUp,
+  Workflow,
+  X,
+} from 'lucide-react';
+import { getProjects, getScheduledAgents } from '../api';
+import { roleMetaForAgent } from '../agentRoles';
+import type { ProjectSummary, ScheduledAgent } from '../types';
+
+const PROJECT_DOT_COLORS = ['#6366F1', '#8B5CF6', '#06B6D4', '#10B981', '#F59E0B', '#EC4899'];
+
+function projectAccent(project: Pick<ProjectSummary, 'id' | 'title'>): string {
+  const seed = `${project.id}:${project.title}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return PROJECT_DOT_COLORS[hash % PROJECT_DOT_COLORS.length];
+}
+
+function agentSidebarIcon(agent: Pick<ScheduledAgent, 'role_key' | 'role_family' | 'template'>) {
+  const meta = roleMetaForAgent(agent);
+  const iconProps = { className: 'h-4 w-4' };
+
+  switch (meta.family) {
+    case 'portfolio':
+      return <Briefcase {...iconProps} />;
+    case 'macro':
+      return <Globe {...iconProps} />;
+    case 'risk':
+      return <Shield {...iconProps} />;
+    case 'event_driven':
+      return <TrendingUp {...iconProps} />;
+    case 'central_research':
+      return <Sparkles {...iconProps} />;
+    case 'monitoring':
+      return <Bot {...iconProps} />;
+    default:
+      return <PenTool {...iconProps} />;
+  }
+}
 
 // Mobile header component with hamburger menu
 function MobileHeader({ onMenuClick }: { onMenuClick: () => void }) {
@@ -162,11 +215,58 @@ function Sidebar() {
     const stored = localStorage.getItem('sidebarCollapsed');
     return stored === 'true';
   });
+  const [projectsExpanded, setProjectsExpanded] = useState(() => {
+    const stored = localStorage.getItem('sidebarProjectsExpanded');
+    return stored !== 'false';
+  });
+  const [agentsExpanded, setAgentsExpanded] = useState(() => {
+    const stored = localStorage.getItem('sidebarAgentsExpanded');
+    return stored !== 'false';
+  });
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [agents, setAgents] = useState<ScheduledAgent[]>([]);
 
   // Close mobile drawer on route change
   useEffect(() => {
     setIsMobileOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSidebarData = async () => {
+      try {
+        const [projectRows, agentRows] = await Promise.all([
+          getProjects(),
+          getScheduledAgents(),
+        ]);
+        if (cancelled) return;
+        setProjects(
+          projectRows
+            .filter((project) => project.status === 'active')
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+        );
+        setAgents(
+          agentRows
+            .slice()
+            .sort((a, b) => {
+              if (a.is_active !== b.is_active) return Number(b.is_active) - Number(a.is_active);
+              return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+            }),
+        );
+      } catch {
+        if (!cancelled) {
+          setProjects([]);
+          setAgents([]);
+        }
+      }
+    };
+
+    loadSidebarData();
+    return () => {
+      cancelled = true;
+    };
   }, [location.pathname]);
 
   const toggleSidebar = () => {
@@ -175,6 +275,25 @@ function Sidebar() {
     localStorage.setItem('sidebarCollapsed', String(newState));
     window.dispatchEvent(new CustomEvent('sidebarToggle', { detail: { isCollapsed: newState } }));
   };
+
+  const toggleProjectsExpanded = () => {
+    setProjectsExpanded((current) => {
+      const next = !current;
+      localStorage.setItem('sidebarProjectsExpanded', String(next));
+      return next;
+    });
+  };
+
+  const toggleAgentsExpanded = () => {
+    setAgentsExpanded((current) => {
+      const next = !current;
+      localStorage.setItem('sidebarAgentsExpanded', String(next));
+      return next;
+    });
+  };
+
+  const visibleProjects = projects.slice(0, 6);
+  const visibleAgents = agents.slice(0, 8);
 
   // Shared navigation content
   const NavContent = ({ isMobile = false }: { isMobile?: boolean }) => (
@@ -247,46 +366,306 @@ function Sidebar() {
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
           <NavItem
-            to="/projects"
-            icon={<FolderOpen className="w-4 h-4" />}
-            label="Projects"
-            sub="Thesis workspaces & documents"
+            to="/routines"
+            icon={<Repeat className="w-4 h-4" />}
+            label="Routines"
+            sub="Recurring workflows and schedules"
             isCollapsed={!isMobile && isCollapsed}
             onClick={() => isMobile && setIsMobileOpen(false)}
           />
-          <NavItem
-            to="/research"
-            icon={<LayoutDashboard className="w-4 h-4" />}
-            label="Research"
-            sub="Parallel analyst workstation"
-            isCollapsed={!isMobile && isCollapsed}
-            onClick={() => isMobile && setIsMobileOpen(false)}
-          />
-          <NavItem
-            to="/memo"
-            icon={<FileText className="w-4 h-4" />}
-            label="Investment Memo"
-            sub="IC memo · 5 analysts"
-            isCollapsed={!isMobile && isCollapsed}
-            onClick={() => isMobile && setIsMobileOpen(false)}
-          />
-          <NavItem
-            to="/earnings"
-            icon={<BarChart2 className="w-4 h-4" />}
-            label="Earnings"
-            sub="Quarterly trends & transcript"
-            isCollapsed={!isMobile && isCollapsed}
-            onClick={() => isMobile && setIsMobileOpen(false)}
-          />
-          <NavItem
-            to="/library"
-            icon={<BookOpen className="w-4 h-4" />}
-            label="Library"
-            sub="Saved analyses"
-            isCollapsed={!isMobile && isCollapsed}
-            onClick={() => isMobile && setIsMobileOpen(false)}
-          />
+          {!isMobile && isCollapsed && (
+            <>
+              <NavItem
+                to="/projects"
+                icon={<FolderOpen className="w-4 h-4" />}
+                label="Projects"
+                sub="Project workspaces"
+                isCollapsed
+                onClick={() => setIsMobileOpen(false)}
+              />
+              <NavItem
+                to="/org"
+                icon={<Workflow className="w-4 h-4" />}
+                label="Org"
+                sub="Agent hierarchy"
+                isCollapsed
+                onClick={() => setIsMobileOpen(false)}
+              />
+            </>
+          )}
         </div>
+
+        {(isMobile || !isCollapsed) && (
+          <>
+            <div
+              className="flex items-center justify-between"
+              style={{
+                padding: '0 12px',
+                marginTop: 20,
+                marginBottom: 6,
+              }}
+            >
+              <button
+                type="button"
+                onClick={toggleProjectsExpanded}
+                className="flex items-center gap-1.5 text-slate-400 transition hover:text-slate-600"
+              >
+                <ChevronRight
+                  className="h-3.5 w-3.5 transition-transform duration-150"
+                  style={{ transform: projectsExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                />
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: 'inherit',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.08em',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                  }}
+                >
+                  Projects
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigate('/projects?new=1');
+                  isMobile && setIsMobileOpen(false);
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="New project"
+              >
+                <span className="text-base font-medium leading-none">+</span>
+              </button>
+            </div>
+
+            {projectsExpanded && (
+              <div style={{ marginBottom: 4 }}>
+                {visibleProjects.length > 0 ? (
+                  visibleProjects.map((project) => {
+                    const isProjectActive = location.pathname === `/projects/${project.id}`;
+                    const accent = projectAccent(project);
+                    return (
+                      <button
+                        key={project.id}
+                        type="button"
+                        onClick={() => {
+                          navigate(`/projects/${project.id}`);
+                          isMobile && setIsMobileOpen(false);
+                        }}
+                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition"
+                        style={{
+                          marginBottom: 2,
+                          background: isProjectActive ? '#F5F5F5' : 'transparent',
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 12,
+                            height: 12,
+                            borderRadius: '999px',
+                            background: accent,
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: '#1F2937',
+                            fontFamily: 'IBM Plex Sans, sans-serif',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {project.title}
+                        </span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate('/projects?new=1');
+                      isMobile && setIsMobileOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-slate-400 transition hover:bg-slate-50 hover:text-slate-600"
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    Create first project
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {(isMobile || !isCollapsed) && (
+          <>
+            <div
+              className="flex items-center justify-between"
+              style={{
+                padding: '0 12px',
+                marginTop: 20,
+                marginBottom: 6,
+              }}
+            >
+              <button
+                type="button"
+                onClick={toggleAgentsExpanded}
+                className="flex items-center gap-1.5 text-slate-400 transition hover:text-slate-600"
+              >
+                <ChevronRight
+                  className="h-3.5 w-3.5 transition-transform duration-150"
+                  style={{ transform: agentsExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                />
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: 'inherit',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.08em',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                  }}
+                >
+                  Agents
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigate('/routines/new');
+                  isMobile && setIsMobileOpen(false);
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="New agent"
+              >
+                <span className="text-base font-medium leading-none">+</span>
+              </button>
+            </div>
+
+            {agentsExpanded && (
+              <div style={{ marginBottom: 4 }}>
+                {visibleAgents.length > 0 ? (
+                  visibleAgents.map((agent) => {
+                    const isAgentActive = location.pathname === `/routines/${agent.id}` || location.pathname === `/scheduled-agents/${agent.id}`;
+                    const meta = roleMetaForAgent(agent);
+                    return (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        onClick={() => {
+                          navigate(`/routines/${agent.id}`, { state: { from: '/' } });
+                          isMobile && setIsMobileOpen(false);
+                        }}
+                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition"
+                        style={{
+                          marginBottom: 2,
+                          background: isAgentActive ? '#F5F5F5' : 'transparent',
+                        }}
+                      >
+                        <span
+                          style={{
+                            color: meta.color,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {agentSidebarIcon(agent)}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: '#1F2937',
+                            fontFamily: 'IBM Plex Sans, sans-serif',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            flex: 1,
+                          }}
+                        >
+                          {agent.name}
+                        </span>
+                        {agent.is_active && (
+                          <span
+                            className="inline-flex items-center gap-1"
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 500,
+                              color: '#2563EB',
+                              fontFamily: 'IBM Plex Sans, sans-serif',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: '999px',
+                                background: '#2563EB',
+                              }}
+                            />
+                            Live
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate('/routines/new');
+                      isMobile && setIsMobileOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-slate-400 transition hover:bg-slate-50 hover:text-slate-600"
+                  >
+                    <Bot className="h-4 w-4" />
+                    Hire first agent
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {(isMobile || !isCollapsed) && (
+          <>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: '#C4C4C4',
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                padding: '0 12px',
+                marginTop: 20,
+                marginBottom: 6,
+                fontFamily: 'IBM Plex Mono, monospace',
+              }}
+            >
+              Company
+            </div>
+
+            <div style={{ marginBottom: 4 }}>
+              <NavItem
+                to="/org"
+                icon={<Workflow className="w-4 h-4" />}
+                label="Org"
+                sub="Hierarchy and orchestration"
+                isCollapsed={!isMobile && isCollapsed}
+                onClick={() => isMobile && setIsMobileOpen(false)}
+              />
+            </div>
+          </>
+        )}
 
         {(isMobile || !isCollapsed) && (
           <div
@@ -307,7 +686,7 @@ function Sidebar() {
                 fontFamily: 'IBM Plex Sans, sans-serif',
               }}
             >
-              Create work from the Issues tab, review agents on the Dashboard, and use Inbox for their updates.
+              Create work from Issues, manage recurring workflows in Routines, keep project-specific work in Projects, and review hired agents from the sidebar.
             </p>
           </div>
         )}

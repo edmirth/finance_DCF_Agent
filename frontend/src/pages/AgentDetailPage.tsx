@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   ChevronLeft, Zap, Pause, Play, Trash2, Clock, AlertTriangle,
   CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp
@@ -189,6 +189,9 @@ function markdownToHtml(md: string): string {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const backTarget = ((location.state as { from?: string } | null)?.from) || '/routines';
+  const backLabel = backTarget === '/' ? 'Dashboard' : backTarget === '/routines' ? 'Routines' : 'Back';
 
   const [agent, setAgent] = useState<ScheduledAgent | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -250,12 +253,12 @@ export default function AgentDetailPage() {
   const handleDelete = async () => {
     if (!agent || !confirm(`Delete "${agent.name}"?`)) return;
     await deleteScheduledAgent(agent.id);
-    navigate('/team');
+    navigate('/routines');
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 pl-20 flex items-center justify-center">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="w-6 h-6 text-slate-400 animate-spin" />
       </div>
     );
@@ -263,7 +266,7 @@ export default function AgentDetailPage() {
 
   if (!agent) {
     return (
-      <div className="min-h-screen bg-slate-50 pl-20 flex items-center justify-center">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <p className="text-slate-500">{error || 'Agent not found.'}</p>
       </div>
     );
@@ -272,16 +275,16 @@ export default function AgentDetailPage() {
   const meta = roleMetaForAgent(agent);
 
   return (
-    <div className="min-h-screen bg-slate-50 pl-20" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
-      <div className="max-w-3xl mx-auto px-8 py-12">
+    <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+      <div className="mx-auto w-full max-w-3xl px-6 py-12 lg:px-10">
 
         {/* Back */}
         <button
-          onClick={() => navigate('/team')}
+          onClick={() => navigate(backTarget)}
           className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 mb-8 transition-colors duration-150"
         >
           <ChevronLeft className="w-4 h-4" />
-          Team
+          {backLabel}
         </button>
 
         {/* Agent header */}

@@ -591,7 +591,7 @@ function ProjectWorkspace() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen pl-20">
+      <div className="flex items-center justify-center h-screen">
         <div className="text-center">
           <div className="flex justify-center gap-2 mb-4">
             <span className="loading-dot" />
@@ -608,7 +608,7 @@ function ProjectWorkspace() {
 
   if (error || !project) {
     return (
-      <div className="flex items-center justify-center h-screen pl-20">
+      <div className="flex items-center justify-center h-screen">
         <div className="text-center max-w-md px-6">
           <p style={{ fontFamily: 'Inter, sans-serif', color: '#6B7280' }}>
             {error || 'Project not found'}
@@ -635,7 +635,7 @@ function ProjectWorkspace() {
   }
 
   return (
-    <div className="pl-20 min-h-screen flex flex-col" style={{ background: '#FFFFFF' }}>
+    <div className="min-h-screen flex flex-col" style={{ background: '#FFFFFF' }}>
       {/* Project header */}
       <div
         style={{

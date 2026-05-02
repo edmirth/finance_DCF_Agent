@@ -34,6 +34,9 @@ function assigneeLabel(task: ResearchTask, agentsById: Map<string, ScheduledAgen
   if (task.owner_agent_id && agentsById.has(task.owner_agent_id)) {
     return agentsById.get(task.owner_agent_id)!.name;
   }
+  if (task.triggered_by === 'manual_pm_review') {
+    return 'PM / CIO';
+  }
   return 'No assignee';
 }
 

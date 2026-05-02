@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Folder, Plus, Archive, ChevronRight, FileText, MessageSquare, Calendar } from 'lucide-react';
 import { getProjects, createProject, deleteProject } from '../api';
 import { ProjectSummary } from '../types';
@@ -395,9 +395,10 @@ function NewProjectForm({ onCancel, onCreated }: { onCancel: () => void; onCreat
 
 export default function ProjectsListPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  const showForm = searchParams.get('new') === '1';
 
   useEffect(() => {
     (async () => {
@@ -425,12 +426,23 @@ export default function ProjectsListPage() {
     navigate(`/projects/${id}`);
   };
 
+  const openForm = () => {
+    const next = new URLSearchParams(searchParams);
+    next.set('new', '1');
+    setSearchParams(next);
+  };
+
+  const closeForm = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('new');
+    setSearchParams(next);
+  };
+
   return (
     <div
       style={{
         minHeight: '100vh',
         background: '#FAFAFA',
-        paddingLeft: '80px',
       }}
     >
       <div style={{ maxWidth: '800px', margin: '0 auto', padding: '40px 24px' }}>
@@ -478,7 +490,7 @@ export default function ProjectsListPage() {
 
           {!showForm && (
             <button
-              onClick={() => setShowForm(true)}
+              onClick={openForm}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -503,7 +515,7 @@ export default function ProjectsListPage() {
         {/* New project form */}
         {showForm && (
           <NewProjectForm
-            onCancel={() => setShowForm(false)}
+            onCancel={closeForm}
             onCreated={handleCreated}
           />
         )}
@@ -549,7 +561,7 @@ export default function ProjectsListPage() {
             </p>
             {!showForm && (
               <button
-                onClick={() => setShowForm(true)}
+                onClick={openForm}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',

@@ -60,7 +60,7 @@ function AgentCard({
 
   return (
     <div
-      onClick={() => navigate(`/scheduled-agents/${agent.id}`)}
+      onClick={() => navigate(`/routines/${agent.id}`, { state: { from: '/' } })}
       className="group bg-white border border-slate-200 rounded-2xl p-5 cursor-pointer hover:border-slate-300 hover:shadow-md transition-all duration-200"
     >
       {/* Header row */}
@@ -343,14 +343,14 @@ export default function AgentsDashboard() {
   const pausedCount  = agents.filter(a => !a.is_active).length;
 
   return (
-    <div className="min-h-screen bg-slate-50 pl-20" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+    <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
       {/* Toast */}
       {toast && (
         <div className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-lg text-sm font-medium text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
           {toast.msg}
         </div>
       )}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="mx-auto w-full max-w-6xl px-6 py-12 lg:px-10">
 
         {/* Header */}
         <div className="flex items-center justify-between mb-10">

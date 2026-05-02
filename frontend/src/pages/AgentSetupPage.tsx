@@ -110,9 +110,9 @@ function Step1({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
   return (
     <div>
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
-        What seat are you hiring?
+        What routine should we create?
       </h2>
-      <p className="text-slate-500 text-sm mb-7">Pick a real firm role. The right analyst engine will run underneath.</p>
+      <p className="text-slate-500 text-sm mb-7">Pick the desk this recurring workflow belongs to. The right analyst engine will run underneath.</p>
 
       <div className="space-y-2.5">
         {ROLE_OPTIONS.map(t => {
@@ -168,9 +168,9 @@ function Step2({
   return (
     <div>
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
-        Configure the role
+        Configure the routine
       </h2>
-      <p className="text-slate-500 text-sm mb-7">Name the seat, set its scope, and define what it owns.</p>
+      <p className="text-slate-500 text-sm mb-7">Name the workflow, set its scope, and define what it should own.</p>
 
       <div className="space-y-5">
         {/* Name */}
@@ -203,7 +203,7 @@ function Step2({
             ))}
           </select>
           <p className="text-xs text-slate-400 mt-1.5">
-            New team members can report directly to the CIO or to an existing lead.
+            The routine can report to the top-level lead or to an existing manager.
           </p>
         </div>
 
@@ -269,7 +269,7 @@ function Step3({ state, set }: { state: WizardState; set: (p: Partial<WizardStat
       <h2 className="text-2xl font-bold text-slate-900 mb-1" style={{ letterSpacing: '-0.03em' }}>
         Schedule &amp; delivery
       </h2>
-        <p className="text-slate-500 text-sm mb-7">When should this seat wake up, and how should findings reach you?</p>
+        <p className="text-slate-500 text-sm mb-7">When should this workflow wake up, and how should findings reach you?</p>
 
       {/* Schedule */}
       <div className="mb-6">
@@ -415,9 +415,9 @@ export default function AgentSetupPage() {
         try { await triggerAgentRun(agent.id); } catch { /* non-fatal */ }
       }
 
-      navigate(`/scheduled-agents/${agent.id}`);
+      navigate(`/routines/${agent.id}`, { state: { from: '/routines' } });
     } catch {
-      setError('Failed to create agent. Please try again.');
+      setError('Failed to create routine. Please try again.');
       setSubmitting(false);
     }
   };
@@ -425,12 +425,12 @@ export default function AgentSetupPage() {
   const TOTAL_STEPS = 3;
 
   return (
-    <div className="min-h-screen bg-slate-50 pl-20 flex items-center justify-center py-12" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center py-12" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
       <div className="w-full max-w-lg px-6">
 
         {/* Back / cancel */}
         <button
-          onClick={() => step > 1 ? setStep(s => s - 1) : navigate('/team')}
+          onClick={() => step > 1 ? setStep(s => s - 1) : navigate('/routines')}
           className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 mb-8 transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -472,7 +472,7 @@ export default function AgentSetupPage() {
                 disabled={submitting}
                 className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 transition-colors disabled:opacity-50"
               >
-                {submitting ? 'Creating…' : state.run_after_create ? 'Create & run' : 'Create agent'}
+                {submitting ? 'Creating…' : state.run_after_create ? 'Create & run' : 'Create routine'}
                 {!submitting && (state.run_after_create ? <Zap className="w-4 h-4" /> : <Check className="w-4 h-4" />)}
               </button>
             )}
@@ -481,9 +481,9 @@ export default function AgentSetupPage() {
 
         {/* Step label */}
         <p className="text-center text-xs text-slate-400 mt-4">
-          {step === 1 && 'Choose the firm role you want to hire'}
-          {step === 2 && 'Define the seat clearly so the PM gets useful coverage'}
-          {step === 3 && 'You can change the schedule anytime from the agent page'}
+          {step === 1 && 'Choose the desk this routine belongs to'}
+          {step === 2 && 'Define the workflow clearly so the findings stay useful'}
+          {step === 3 && 'You can change the schedule anytime from the routine page'}
         </p>
       </div>
     </div>

@@ -743,7 +743,7 @@ export interface ResearchTask {
 }
 
 export interface CreateTaskBody {
-  ticker: string;
+  ticker?: string;
   task_type?: TaskType;
   title?: string;
   priority?: TaskPriority;
