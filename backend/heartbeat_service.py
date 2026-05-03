@@ -22,6 +22,8 @@ from backend.models import (
     HeartbeatRun,
     HireProposal,
     ResearchTask,
+    ResearchTaskDocument,
+    ResearchTaskMessage,
     ScheduledAgent,
 )
 
@@ -318,6 +320,184 @@ def report_config_snapshot(report: ScheduledAgent) -> dict:
     }
 
 
+def _issue_output_title(task: ResearchTask, agent: ScheduledAgent | None) -> str:
+    role_title = agent.role_title if agent and agent.role_title else (agent.name if agent else "Agent")
+    return f"{role_title} output"
+
+
+def _issue_scope_label(task: ResearchTask) -> str:
+    ticker = (task.ticker or "").strip()
+    if ticker and ticker.upper() != "GENERAL":
+        return ticker
+    return "Not explicitly specified"
+
+
+def _issue_output_content(task: ResearchTask, agent: ScheduledAgent | None, outcome: dict) -> str:
+    role_title = agent.role_title if agent and agent.role_title else (agent.name if agent else "Agent")
+    summary = (outcome.get("findings_summary") or "").strip()
+    report = (outcome.get("report") or "").strip()
+    key_findings = outcome.get("key_findings") or []
+    key_findings_block = "\n".join(f"- {item}" for item in key_findings if item) or "- None recorded"
+    parts = [
+        f"# {role_title} output",
+        "",
+        "## Issue",
+        f"- Title: {task.title}",
+        f"- Ticker / scope: {_issue_scope_label(task)}",
+        f"- Type: {task.task_type}",
+        f"- Priority: {task.priority}",
+        "",
+        "## Executive summary",
+        summary or "No summary was saved for this run.",
+        "",
+        "## Key findings",
+        key_findings_block,
+    ]
+    if report:
+        parts.extend(["", "## Full output", report])
+    elif outcome.get("error"):
+        parts.extend(["", "## Run failure", str(outcome.get("error"))])
+    return "\n".join(parts).strip() + "\n"
+
+
+def _render_issue_output_chat_summary(
+    *,
+    document_title: str,
+    outcome: dict,
+) -> str:
+    if outcome.get("error"):
+        return (
+            "The run finished, but it failed before a clean analyst output was produced.\n\n"
+            f"**What failed**\n"
+            f"{outcome.get('error')}\n\n"
+            f"**Saved**\n"
+            f"- Document: **{document_title}**\n"
+            f"- Status: failure details captured for review\n\n"
+            "Open the **Documents** tab for the saved failure output."
+        )
+
+    summary = (outcome.get("findings_summary") or "").strip() or (
+        "I completed the first pass and saved the issue output."
+    )
+    key_findings = [item.strip() for item in (outcome.get("key_findings") or []) if str(item).strip()]
+    findings_block = "\n".join(f"- {item}" for item in key_findings[:3])
+    parts = [
+        "I finished the first pass on this issue.",
+        "",
+        "**Bottom line**",
+        summary,
+    ]
+    if findings_block:
+        parts.extend(["", "**Top findings**", findings_block])
+    parts.extend(
+        [
+            "",
+            "**Saved**",
+            f"- Document: **{document_title}**",
+            "- Status: ready for review",
+            "",
+            "Open the **Documents** tab for the full output.",
+        ]
+    )
+    return "\n".join(parts)
+
+
+async def _upsert_task_output_document(
+    db: AsyncSession,
+    task: ResearchTask,
+    agent: ScheduledAgent | None,
+    outcome: dict,
+) -> tuple[ResearchTaskDocument, bool]:
+    title = _issue_output_title(task, agent)
+    content_md = _issue_output_content(task, agent, outcome)
+    status = "published" if not outcome.get("error") else "draft"
+    result = await db.execute(
+        select(ResearchTaskDocument).where(
+            ResearchTaskDocument.task_id == task.id,
+            ResearchTaskDocument.title == title,
+            ResearchTaskDocument.document_type == "analysis",
+        )
+    )
+    document = result.scalar_one_or_none()
+    now = datetime.utcnow()
+    if document is None:
+        document = ResearchTaskDocument(
+            task_id=task.id,
+            title=title,
+            document_type="analysis",
+            status=status,
+            revision=1,
+            content_md=content_md,
+            created_by_agent_id=agent.id if agent else None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(document)
+        await db.flush()
+        return document, True
+    changed = False
+    if document.content_md != content_md:
+        document.content_md = content_md
+        changed = True
+    if document.status != status:
+        document.status = status
+        changed = True
+    if document.created_by_agent_id != (agent.id if agent else None):
+        document.created_by_agent_id = agent.id if agent else None
+        changed = True
+    if changed:
+        document.revision += 1
+        document.updated_at = now
+    return document, False
+
+
+async def _append_task_assistant_message(
+    db: AsyncSession,
+    task_id: str,
+    *,
+    author_label: str,
+    author_agent_id: str | None,
+    content: str,
+    metadata: dict | None = None,
+) -> None:
+    message = (content or "").strip()
+    if not message:
+        return
+    db.add(
+        ResearchTaskMessage(
+            task_id=task_id,
+            kind="chat",
+            role="assistant",
+            author_label=author_label,
+            author_agent_id=author_agent_id,
+            content=message,
+            metadata_json=json.dumps(metadata or {}),
+        )
+    )
+
+
+async def _append_task_activity_message(
+    db: AsyncSession,
+    task_id: str,
+    content: str,
+    *,
+    author_label: str,
+    author_agent_id: str | None,
+    metadata: dict | None = None,
+) -> None:
+    db.add(
+        ResearchTaskMessage(
+            task_id=task_id,
+            kind="activity",
+            role="system",
+            author_label=author_label,
+            author_agent_id=author_agent_id,
+            content=content,
+            metadata_json=json.dumps(metadata or {}),
+        )
+    )
+
+
 async def update_task_from_delegated_run(
     db: AsyncSession,
     task_id: str | None,
@@ -358,9 +538,84 @@ async def update_task_from_delegated_run(
             completed.append(name)
     task.completed_agents = json.dumps(completed)
 
-    task.status = "failed" if outcome.get("error") else "in_review"
-    task.error = outcome.get("error")
-    task.updated_at = datetime.utcnow()
+    now = datetime.utcnow()
+    role_title = assigned_agent.role_title if assigned_agent and assigned_agent.role_title else (
+        assigned_agent.name if assigned_agent else "Agent"
+    )
+    document, created_document = await _upsert_task_output_document(db, task, assigned_agent, outcome)
+
+    if outcome.get("error"):
+        task.status = "failed"
+        task.error = outcome.get("error")
+        task.completed_at = None
+        await _append_task_assistant_message(
+            db,
+            task.id,
+            author_label=role_title,
+            author_agent_id=assigned_agent.id if assigned_agent else None,
+            content=_render_issue_output_chat_summary(
+                document_title=document.title,
+                outcome=outcome,
+            ),
+            metadata={
+                "event": "issue_run_failed",
+                "agent_run_id": run_id,
+                "document_id": document.id,
+                "document_title": document.title,
+                "document_type": document.document_type,
+            },
+        )
+        await _append_task_activity_message(
+            db,
+            task.id,
+            f"{role_title} run failed and saved the latest failure output on the issue.",
+            author_label=role_title,
+            author_agent_id=assigned_agent.id if assigned_agent else None,
+            metadata={
+                "event": "issue_output_saved",
+                "agent_run_id": run_id,
+                "document_id": document.id,
+                "document_created": created_document,
+                "status": "failed",
+            },
+        )
+    else:
+        task.status = "in_review"
+        task.error = None
+        task.completed_at = now
+        await _append_task_assistant_message(
+            db,
+            task.id,
+            author_label=role_title,
+            author_agent_id=assigned_agent.id if assigned_agent else None,
+            content=_render_issue_output_chat_summary(
+                document_title=document.title,
+                outcome=outcome,
+            ),
+            metadata={
+                "event": "issue_run_completed",
+                "agent_run_id": run_id,
+                "document_id": document.id,
+                "document_title": document.title,
+                "document_type": document.document_type,
+            },
+        )
+        await _append_task_activity_message(
+            db,
+            task.id,
+            f"{role_title} finished the issue run and saved the latest output on the issue.",
+            author_label=role_title,
+            author_agent_id=assigned_agent.id if assigned_agent else None,
+            metadata={
+                "event": "issue_output_saved",
+                "agent_run_id": run_id,
+                "document_id": document.id,
+                "document_created": created_document,
+                "status": "completed",
+            },
+        )
+
+    task.updated_at = now
 
 
 async def plan_manager_heartbeat_actions(

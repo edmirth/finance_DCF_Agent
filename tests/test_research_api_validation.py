@@ -7,11 +7,16 @@ from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from backend.api_server import app, ResearchConnectionManager
 from backend.database import AsyncSessionLocal, SyncSessionLocal
-from backend.models import AgentRun, ResearchTask, ScheduledAgent
-from backend.research_orchestrator import ResearchOrchestrator, _create_minimal_state
+from backend.models import AgentRun, ResearchTask, ResearchTaskDocument, ResearchTaskMessage, ScheduledAgent
+from backend.research_orchestrator import (
+    ResearchOrchestrator,
+    _create_minimal_state,
+    run_specialist_agent_once,
+)
 
 
 @pytest.mark.asyncio
@@ -159,10 +164,85 @@ async def test_create_task_with_direct_assignee_dispatches_agent_run():
 
     async with AsyncSessionLocal() as db:
         run = await db.get(AgentRun, body["run_id"])
+        docs_result = await db.execute(
+            select(ResearchTaskDocument).where(ResearchTaskDocument.task_id == body["id"])
+        )
+        plan_documents = docs_result.scalars().all()
+        chat_result = await db.execute(
+            select(ResearchTaskMessage).where(
+                ResearchTaskMessage.task_id == body["id"],
+                ResearchTaskMessage.kind == "chat",
+                ResearchTaskMessage.role == "assistant",
+            )
+        )
+        assistant_messages = chat_result.scalars().all()
 
     assert run is not None
     assert run.status == "running"
     assert run.scheduled_agent_id == agent_id
+    assert any(doc.document_type == "plan" for doc in plan_documents)
+    assert any("execution plan" in (doc.title or "").lower() for doc in plan_documents)
+    assert any("started the first pass on this issue" in message.content.lower() for message in assistant_messages)
+    assert any("documents" in message.content.lower() for message in assistant_messages)
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_direct_assignee_and_no_scope_stays_pending():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/tasks",
+            json={
+                "title": "Analyze the AI value chain",
+                "assigned_agent_id": agent_id,
+                "triggered_by": "manual_assignment",
+            },
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["ticker"] == "GENERAL"
+    assert body["assigned_agent_id"] == agent_id
+    assert body["status"] == "pending"
+    assert body["run_id"] is None
+    assert "explicit ticker or company scope" in (body["error"] or "").lower()
+
+    async with AsyncSessionLocal() as db:
+        chat_result = await db.execute(
+            select(ResearchTaskMessage).where(
+                ResearchTaskMessage.task_id == body["id"],
+                ResearchTaskMessage.kind == "chat",
+                ResearchTaskMessage.role == "assistant",
+            )
+        )
+        assistant_messages = chat_result.scalars().all()
+
+    assert any("explicit ticker or company scope" in message.content.lower() for message in assistant_messages)
 
 
 @pytest.mark.asyncio
@@ -219,6 +299,20 @@ async def test_create_task_allows_missing_ticker_and_defaults_to_general():
     body = response.json()
     assert body["ticker"] == "GENERAL"
     assert body["title"] == "Analyze AI value chain"
+
+
+def test_run_specialist_agent_once_blocks_when_shared_data_is_missing():
+    section = run_specialist_agent_once(
+        "fundamental",
+        "AAPL",
+        assignment_title="Fundamental coverage",
+        shared_data={},
+    )
+
+    assert section.error is not None
+    assert "critical financial data is missing" in section.error.lower()
+    assert section.content == ""
+    assert section.key_points == []
 
 
 @pytest.mark.asyncio
@@ -332,6 +426,124 @@ async def test_task_chat_creates_issue_thread_messages(monkeypatch):
     assert "Go deeper" in body["assistant_message"]["content"]
     assert messages.status_code == 200
     assert len(messages.json()["messages"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_task_chat_uses_issue_documents_when_live_agent_reply_fails():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover assigned issues.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            task_response = await client.post(
+                "/tasks",
+                json={
+                    "title": "Apple follow-up",
+                    "ticker": "AAPL",
+                    "assigned_agent_id": agent_id,
+                },
+            )
+            task_id = task_response.json()["id"]
+            await client.post(
+                f"/tasks/{task_id}/documents",
+                json={
+                    "title": "Apple report",
+                    "content_md": "# Apple report\n\nRevenue growth stayed resilient despite FX pressure.",
+                    "document_type": "brief",
+                },
+            )
+
+            with patch(
+                "backend.api_server._anthropic_text_response_sync",
+                side_effect=RuntimeError("provider offline"),
+            ):
+                response = await client.post(
+                    f"/tasks/{task_id}/chat",
+                    json={"content": "Any report made here on the apple stock?"},
+                )
+
+    assert response.status_code == 200
+    assistant_message = response.json()["assistant_message"]["content"]
+    assert "Apple report" in assistant_message
+    assert "Open the Documents tab" in assistant_message
+
+
+@pytest.mark.asyncio
+async def test_task_chat_answers_status_from_issue_state_without_live_model():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover assigned issues.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            task_response = await client.post(
+                "/tasks",
+                json={
+                    "title": "Apple status check",
+                    "ticker": "AAPL",
+                    "assigned_agent_id": agent_id,
+                },
+            )
+            task_id = task_response.json()["id"]
+
+            with patch(
+                "backend.api_server._anthropic_text_response_sync",
+                side_effect=AssertionError("live model should not be called for status query"),
+            ):
+                response = await client.post(
+                    f"/tasks/{task_id}/chat",
+                    json={"content": "status?"},
+                )
+
+    assert response.status_code == 200
+    assistant_message = response.json()["assistant_message"]["content"]
+    assert "Issue status: running." in assistant_message
+    assert "Linked run status: running." in assistant_message
 
 
 @pytest.mark.asyncio

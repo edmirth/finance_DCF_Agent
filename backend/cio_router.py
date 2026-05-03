@@ -568,6 +568,211 @@ async def _record_cio_review_message(
     )
 
 
+async def _record_issue_agent_message(
+    db: AsyncSession,
+    task_id: str,
+    *,
+    author_label: str,
+    author_agent_id: Optional[str],
+    content: str,
+    metadata: Optional[dict] = None,
+) -> None:
+    from backend.models import ResearchTaskMessage
+
+    message = (content or "").strip()
+    if not message:
+        return
+    db.add(
+        ResearchTaskMessage(
+            task_id=task_id,
+            kind="chat",
+            role="assistant",
+            author_label=author_label,
+            author_agent_id=author_agent_id,
+            content=message,
+            metadata_json=json.dumps(metadata or {}),
+        )
+    )
+
+
+async def _upsert_issue_document(
+    db: AsyncSession,
+    *,
+    task_id: str,
+    title: str,
+    document_type: str,
+    content_md: str,
+    created_by_agent_id: Optional[str],
+    status: str = "draft",
+):
+    from backend.models import ResearchTaskDocument
+
+    result = await db.execute(
+        select(ResearchTaskDocument).where(
+            ResearchTaskDocument.task_id == task_id,
+            ResearchTaskDocument.title == title,
+            ResearchTaskDocument.document_type == document_type,
+        )
+    )
+    document = result.scalar_one_or_none()
+    now = datetime.utcnow()
+    if document is None:
+        document = ResearchTaskDocument(
+            task_id=task_id,
+            title=title,
+            document_type=document_type,
+            status=status,
+            content_md=content_md,
+            created_by_agent_id=created_by_agent_id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(document)
+        await db.flush()
+        return document, True
+
+    changed = False
+    if document.content_md != content_md:
+        document.content_md = content_md
+        changed = True
+    if document.status != status:
+        document.status = status
+        changed = True
+    if document.created_by_agent_id != created_by_agent_id:
+        document.created_by_agent_id = created_by_agent_id
+        changed = True
+    if changed:
+        document.revision += 1
+        document.updated_at = now
+    return document, False
+
+
+def _issue_plan_steps_for_agent(task: ResearchTask, agent: ScheduledAgent) -> list[str]:
+    template = agent.template
+    scope_reference = _issue_scope_reference(task)
+    if template == "risk_analyst":
+        return [
+            f"Map the main downside scenarios and risk concentrations around {scope_reference}.",
+            "Stress the thesis against liquidity, leverage, and drawdown risk.",
+            "Flag the catalysts that could break the setup and what needs escalation.",
+            "Write a risk note with the key failure modes and monitoring points.",
+        ]
+    if template in {"macro_analyst", "market_pulse"}:
+        return [
+            f"Frame the macro and market context that matters for {scope_reference}.",
+            "Check rates, inflation, policy, and sector-rotation implications.",
+            "Separate broad market noise from the drivers that should change the thesis.",
+            "Write a macro brief with the implications for this issue and next watchpoints.",
+        ]
+    if template == "quant_analyst":
+        return [
+            f"Build the right factor and signal lens for {scope_reference}.",
+            "Check momentum, revisions, relative performance, and supporting quant evidence.",
+            "Highlight where the data confirms or conflicts with the working thesis.",
+            "Write a quant note with the strongest supporting and contradicting signals.",
+        ]
+    return [
+        "Clarify the exact research question and what a useful answer needs to contain.",
+        f"Gather the relevant company, industry, and financial context for {scope_reference}.",
+        "Review business quality, growth, margins, balance sheet, valuation, and key risks.",
+        "Separate primary findings from open questions and missing evidence.",
+        "Write a concise analyst output with the current take, supporting facts, and next actions.",
+    ]
+
+
+def _issue_scope_label(task: ResearchTask) -> str:
+    ticker = (task.ticker or "").strip()
+    if ticker and ticker.upper() != "GENERAL":
+        return ticker
+    return "Not explicitly specified"
+
+
+def _issue_scope_reference(task: ResearchTask) -> str:
+    ticker = (task.ticker or "").strip()
+    if ticker and ticker.upper() != "GENERAL":
+        return ticker
+    return "the assigned company or scope"
+
+
+def _coverage_universe_label(agent: ScheduledAgent) -> str:
+    try:
+        coverage = json.loads(agent.tickers or "[]") or []
+    except Exception:
+        coverage = []
+    cleaned = [value for value in coverage if value and str(value).upper() != "GENERAL"]
+    return ", ".join(cleaned) if cleaned else "Broad / general coverage"
+
+
+def _task_has_explicit_scope(task: ResearchTask) -> bool:
+    ticker = (task.ticker or "").strip()
+    return bool(ticker and ticker.upper() != "GENERAL")
+
+
+def _agent_requires_explicit_scope(agent: ScheduledAgent) -> bool:
+    role = resolve_role_definition(role_key=agent.role_key, template=agent.template)
+    if role is not None:
+        return role.requires_tickers
+    return agent.template != "market_pulse"
+
+
+def _issue_objective(task: ResearchTask) -> str:
+    if (task.notes or "").strip():
+        return (task.notes or "").strip()
+    return task.title
+
+
+def _issue_deliverable_for_agent(agent: ScheduledAgent) -> str:
+    template = agent.template
+    if template == "risk_analyst":
+        return "Risk note with downside scenarios, break conditions, and monitoring points."
+    if template in {"macro_analyst", "market_pulse"}:
+        return "Macro brief with the few market drivers that should change the issue view."
+    if template == "quant_analyst":
+        return "Quant note with the strongest confirming and contradicting signals."
+    return "Structured analyst brief with the current view, supporting evidence, risks, and next actions."
+
+
+def _render_issue_plan_chat_summary(task: ResearchTask, agent: ScheduledAgent, plan_title: str) -> str:
+    steps = _issue_plan_steps_for_agent(task, agent)[:3]
+    step_block = "\n".join(f"- {step}" for step in steps)
+    return (
+        "I've started the first pass on this issue.\n\n"
+        f"**Objective**\n"
+        f"{_issue_objective(task)}\n\n"
+        f"**How I'm approaching it**\n"
+        f"{step_block}\n\n"
+        f"**Expected output**\n"
+        f"{_issue_deliverable_for_agent(agent)}\n\n"
+        f"**Saved**\n"
+        f"- Document: **{plan_title}**\n"
+        f"- Next: open the **Documents** tab to review the full plan."
+    )
+
+
+def _render_issue_plan_document(task: ResearchTask, agent: ScheduledAgent) -> str:
+    role_title = agent.role_title or agent.name
+    coverage = _coverage_universe_label(agent)
+    steps = _issue_plan_steps_for_agent(task, agent)
+    bullet_block = "\n".join(f"{idx}. {step}" for idx, step in enumerate(steps, start=1))
+    return (
+        f"# {role_title} execution plan\n\n"
+        f"## Objective\n"
+        f"{_issue_objective(task)}\n\n"
+        f"## Issue metadata\n"
+        f"- Title: {task.title}\n"
+        f"- Ticker / scope: {_issue_scope_label(task)}\n"
+        f"- Type: {task.task_type}\n"
+        f"- Priority: {task.priority}\n"
+        f"- Agent: {role_title}\n"
+        f"- Coverage universe: {coverage}\n\n"
+        f"## Assigned coverage\n"
+        f"- Analyst lens: {role_title}\n"
+        f"- Expected deliverable: {_issue_deliverable_for_agent(agent)}\n\n"
+        f"## Planned approach\n"
+        f"{bullet_block}\n"
+    )
+
+
 async def _run_cio_task_review(
     db: AsyncSession,
     task: ResearchTask,
@@ -661,6 +866,36 @@ async def _dispatch_agent_for_task(
     if task.status in {"done", "cancelled"}:
         return {"run_id": None, "reused": False, "skipped": True}
 
+    if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task):
+        role_title = agent.role_title or agent.name
+        reason = (
+            f"{role_title} needs an explicit ticker or company scope before it can start. "
+            "Update the issue with a concrete company or symbol, then dispatch it again."
+        )
+        task.assigned_agent_id = agent.id
+        task.status = "pending"
+        task.run_id = None
+        task.error = reason
+        task.updated_at = datetime.now(timezone.utc)
+        await _record_issue_agent_message(
+            db,
+            task.id,
+            author_label=role_title,
+            author_agent_id=agent.id,
+            content=reason,
+            metadata={"event": "issue_scope_required"},
+        )
+        await _append_issue_activity(
+            db,
+            task.id,
+            reason,
+            author_label=role_title,
+            author_agent_id=agent.id,
+            metadata={"event": "issue_scope_required", "agent_id": agent.id},
+        )
+        await db.commit()
+        return {"run_id": None, "reused": False, "skipped": True, "reason": "scope_required"}
+
     existing_run = None
     if task.run_id:
         existing_run_result = await db.execute(select(AgentRun).where(AgentRun.id == task.run_id))
@@ -706,6 +941,32 @@ async def _dispatch_agent_for_task(
     task.started_at = task.started_at or now
     task.updated_at = now
     task.error = None
+    role_title = agent.role_title or agent.name
+    plan_title = f"{role_title} execution plan"
+    plan_content = _render_issue_plan_document(task, agent)
+    plan_document, created_plan = await _upsert_issue_document(
+        db,
+        task_id=task.id,
+        title=plan_title,
+        document_type="plan",
+        content_md=plan_content,
+        created_by_agent_id=agent.id,
+        status="published",
+    )
+    await _record_issue_agent_message(
+        db,
+        task.id,
+        author_label=role_title,
+        author_agent_id=agent.id,
+        content=_render_issue_plan_chat_summary(task, agent, plan_title),
+        metadata={
+            "event": "issue_plan_created",
+            "run_id": run.id,
+            "document_id": plan_document.id,
+            "document_title": plan_title,
+            "document_type": "plan",
+        },
+    )
 
     activity_message = f"{initiated_by} dispatched {agent.role_title or agent.name} to work on this issue."
     if note:
@@ -716,7 +977,13 @@ async def _dispatch_agent_for_task(
         activity_message,
         author_label=initiated_by,
         author_agent_id=agent.id,
-        metadata={"event": "issue_run_started", "agent_id": agent.id, "run_id": run.id},
+        metadata={
+            "event": "issue_run_started",
+            "agent_id": agent.id,
+            "run_id": run.id,
+            "plan_document_title": plan_title,
+            "plan_document_created": created_plan,
+        },
     )
 
     config_data = _agent_to_dict(agent)

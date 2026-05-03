@@ -229,7 +229,7 @@ class AgentRunnerService:
         specialist = SPECIALIST_TEMPLATE_TO_AGENT[template]
         outputs: dict[str, str] = {}
 
-        def _analyze(ticker: str) -> tuple[str, str]:
+        def _analyze(ticker: str) -> tuple[str, Optional[str]]:
             section = run_specialist_agent_once(
                 specialist,
                 ticker,
@@ -238,7 +238,13 @@ class AgentRunnerService:
             )
 
             if section.error and not section.content and not section.key_points:
-                return ticker, f"Analysis failed for {ticker}: {section.error}"
+                logger.warning(
+                    "Specialist analyst blocked for %s (%s): %s",
+                    ticker,
+                    template,
+                    section.error,
+                )
+                return ticker, None
 
             sentiment = section.sentiment.upper()
             confidence = f"{section.confidence:.0%}"
@@ -259,7 +265,8 @@ class AgentRunnerService:
             futures = {ex.submit(_analyze, t): t for t in tickers}
             for future in as_completed(futures):
                 ticker_sym, result = future.result()
-                outputs[ticker_sym] = result
+                if result:
+                    outputs[ticker_sym] = result
 
         return outputs, [specialist] if outputs else []
 

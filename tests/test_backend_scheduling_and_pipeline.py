@@ -25,6 +25,7 @@ from backend.models import (
     AgentRoutine,
     HeartbeatRun,
     ResearchTask,
+    ResearchTaskDocument,
     ResearchTaskMessage,
 )
 from backend.scheduled_agents_router import _execute_run_background
@@ -1058,11 +1059,27 @@ async def test_delegated_run_updates_assigned_research_task():
     async with AsyncSessionLocal() as db:
         refreshed_task = await db.get(ResearchTask, task_id)
         refreshed_heartbeat = await db.get(HeartbeatRun, heartbeat_id)
+        docs_result = await db.execute(
+            select(ResearchTaskDocument).where(ResearchTaskDocument.task_id == task_id)
+        )
+        task_documents = docs_result.scalars().all()
+        chat_result = await db.execute(
+            select(ResearchTaskMessage).where(
+                ResearchTaskMessage.task_id == task_id,
+                ResearchTaskMessage.kind == "chat",
+                ResearchTaskMessage.role == "assistant",
+            )
+        )
+        assistant_messages = chat_result.scalars().all()
 
     assert refreshed_task is not None
     assert refreshed_task.status == "in_review"
     assert refreshed_task.run_id == run_id
     assert "risk" in (refreshed_task.completed_agents or "")
+    assert any(doc.document_type == "analysis" for doc in task_documents)
+    assert any(doc.title == "Risk Manager output" for doc in task_documents)
+    assert any("finished the first pass on this issue" in message.content.lower() for message in assistant_messages)
+    assert any("documents" in message.content.lower() for message in assistant_messages)
     assert refreshed_heartbeat is not None
     assert refreshed_heartbeat.status == "completed"
 
@@ -1106,6 +1123,33 @@ def test_agent_runner_executes_specialist_template():
     assert outcome["agents_used"] == ["fundamental"]
     assert outcome["tickers_analyzed"] == ["AAPL"]
     assert outcome["findings_summary"] == "summary"
+
+
+def test_agent_runner_returns_error_when_specialist_has_no_usable_data():
+    runner = AgentRunnerService()
+    config = SimpleNamespace(
+        template="fundamental_analyst",
+        tickers='["AAPL"]',
+        topics="[]",
+        instruction="Own the core coverage.",
+        last_run_summary="",
+    )
+
+    blocked_section = SimpleNamespace(
+        title="Fundamental Analysis",
+        sentiment="neutral",
+        confidence=0.0,
+        key_points=[],
+        content="",
+        error="Critical financial data is missing for AAPL.",
+    )
+
+    with patch("backend.research_orchestrator.run_specialist_agent_once", return_value=blocked_section):
+        outcome = runner.execute(config)
+
+    assert outcome["error"] == "No agent outputs — all sub-agents failed"
+    assert outcome["report"] == ""
+    assert outcome["agents_used"] == []
 
 
 @pytest.mark.asyncio

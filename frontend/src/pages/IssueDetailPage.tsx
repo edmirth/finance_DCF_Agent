@@ -37,6 +37,7 @@ import {
 import type { ProjectSummary, ScheduledAgent } from '../types';
 
 type IssueTab = 'chat' | 'activity' | 'related' | 'documents';
+const LIVE_EXECUTION_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review'];
 
 function displayTicker(ticker: string): string {
   return ticker === 'GENERAL' ? 'General' : ticker;
@@ -87,6 +88,84 @@ function formatRelativeTime(iso?: string | null): string {
   if (mins < 60) return `${mins}m ago`;
   if (hours < 24) return `${hours}h ago`;
   return `${days}d ago`;
+}
+
+function executionProgressValue(status: ResearchTask['status']): number {
+  switch (status) {
+    case 'pending':
+      return 18;
+    case 'running':
+      return 62;
+    case 'in_review':
+      return 88;
+    case 'done':
+      return 100;
+    case 'failed':
+    case 'cancelled':
+      return 100;
+    default:
+      return 0;
+  }
+}
+
+function executionHeadline(task: ResearchTask, assignee: string): string {
+  switch (task.status) {
+    case 'pending':
+      return `${assignee} is queued to start this issue.`;
+    case 'running':
+      return `${assignee} is actively working this issue.`;
+    case 'in_review':
+      return `${assignee} finished a run and the issue is in review.`;
+    case 'done':
+      return `This issue is complete.`;
+    case 'failed':
+      return `${assignee} hit a failure on the last run.`;
+    case 'cancelled':
+      return `This issue has been cancelled.`;
+    default:
+      return `Current state is ${task.status}.`;
+  }
+}
+
+function executionSubline(task: ResearchTask): string {
+  if (task.status === 'running' && task.started_at) {
+    return `Run started ${formatRelativeTime(task.started_at)}.`;
+  }
+  if (task.status === 'in_review' && task.completed_at) {
+    return `Latest run finished ${formatRelativeTime(task.completed_at)}.`;
+  }
+  if (task.status === 'failed' && task.error) {
+    return task.error;
+  }
+  return `Last issue update ${formatRelativeTime(task.updated_at || task.created_at)}.`;
+}
+
+function eventTone(message: TaskMessage): string {
+  const event = String(message.metadata?.event || '');
+  if (event.includes('failed')) return 'bg-red-50 text-red-700 border-red-100';
+  if (event.includes('completed') || event.includes('saved')) return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+  if (event.includes('started') || event.includes('queued')) return 'bg-blue-50 text-blue-700 border-blue-100';
+  return 'bg-slate-100 text-slate-600 border-slate-200';
+}
+
+function isArtifactThreadMessage(message: TaskMessage): boolean {
+  const event = String(message.metadata?.event || '');
+  return ['issue_plan_created', 'issue_run_completed', 'issue_run_failed'].includes(event);
+}
+
+function artifactThreadLabel(message: TaskMessage): string {
+  const event = String(message.metadata?.event || '');
+  if (event === 'issue_plan_created') return 'Plan saved';
+  if (event === 'issue_run_completed') return 'Output ready';
+  if (event === 'issue_run_failed') return 'Run failed';
+  return 'Update';
+}
+
+function artifactThreadTone(message: TaskMessage): string {
+  const event = String(message.metadata?.event || '');
+  if (event === 'issue_run_failed') return 'border-red-200 bg-red-50';
+  if (event === 'issue_run_completed') return 'border-emerald-200 bg-emerald-50';
+  return 'border-blue-200 bg-blue-50';
 }
 
 function WorkspaceTabButton({
@@ -149,13 +228,55 @@ function RelatedIssueRow({
   );
 }
 
-function ThreadMessage({ message }: { message: TaskMessage }) {
+function ThreadMessage({
+  message,
+  onOpenDocument,
+}: {
+  message: TaskMessage;
+  onOpenDocument: (documentId?: string | null) => void;
+}) {
   const isUser = message.role === 'user';
+  const isArtifactMessage = !isUser && isArtifactThreadMessage(message);
   const bubbleClasses = isUser
     ? 'bg-slate-900 text-white'
     : message.role === 'assistant'
       ? 'bg-white text-slate-900 border border-slate-200'
       : 'bg-slate-100 text-slate-700 border border-slate-200';
+
+  if (isArtifactMessage) {
+    const documentId = String(message.metadata?.document_id || '') || null;
+    const documentTitle = String(message.metadata?.document_title || '') || null;
+    return (
+      <div className="flex justify-start">
+        <div className={`w-full max-w-[88%] rounded-[24px] border px-5 py-4 shadow-sm ${artifactThreadTone(message)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-xs font-semibold">
+                <span className="text-slate-900">{message.author_label}</span>
+                <span className="text-slate-400">{formatRelativeTime(message.created_at)}</span>
+              </div>
+              <div className="mt-2 inline-flex items-center rounded-full border border-white/70 bg-white/80 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">
+                {artifactThreadLabel(message)}
+              </div>
+            </div>
+            {documentTitle && (
+              <button
+                type="button"
+                onClick={() => onOpenDocument(documentId)}
+                className="inline-flex items-center gap-2 rounded-2xl border border-white bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Open {documentTitle}
+              </button>
+            )}
+          </div>
+          <div className="mt-4 prose prose-sm max-w-none prose-p:my-2 prose-p:leading-7 prose-ul:my-2 prose-ul:pl-5 prose-li:my-1 prose-li:text-slate-700 prose-strong:text-slate-900 prose-headings:text-slate-900">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -164,7 +285,7 @@ function ThreadMessage({ message }: { message: TaskMessage }) {
           <span>{message.author_label}</span>
           <span className={isUser ? 'text-white/60' : 'text-slate-400'}>{formatRelativeTime(message.created_at)}</span>
         </div>
-        <div className={`prose prose-sm max-w-none ${isUser ? 'prose-invert' : ''}`}>
+        <div className={`prose prose-sm max-w-none prose-p:my-2 prose-p:leading-7 prose-ul:my-2 prose-ul:pl-5 prose-li:my-1 ${isUser ? 'prose-invert' : 'prose-strong:text-slate-900 prose-headings:text-slate-900'}`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
         </div>
       </div>
@@ -197,9 +318,11 @@ export default function IssueDetailPage() {
   const [creatingDocument, setCreatingDocument] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = async (showSpinner = true) => {
     if (!taskId) return;
-    setLoading(true);
+    if (showSpinner) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [
@@ -230,13 +353,25 @@ export default function IssueDetailPage() {
     } catch {
       setError('Could not load this issue workspace.');
     } finally {
-      setLoading(false);
+      if (showSpinner) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     load();
   }, [taskId]);
+
+  useEffect(() => {
+    if (!taskId || !task || !LIVE_EXECUTION_STATUSES.includes(task.status)) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void load(false);
+    }, 5000);
+    return () => window.clearInterval(intervalId);
+  }, [taskId, task?.status]);
 
   const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
@@ -249,6 +384,16 @@ export default function IssueDetailPage() {
     ['pending', 'failed'].includes(task.status);
   const selectedDocument = documents.find((doc) => doc.id === selectedDocumentId) || null;
   const currentChatTargetLabel = task ? assigneeLabel(task, agentsById) : 'Agent';
+  const latestActivityMessage = activityMessages.length > 0 ? activityMessages[activityMessages.length - 1] : null;
+  const recentExecutionEvents = useMemo(() => activityMessages.slice(-5).reverse(), [activityMessages]);
+  const latestPlanDocument = useMemo(
+    () => documents.find((document) => document.document_type === 'plan') || null,
+    [documents],
+  );
+  const latestOutputDocument = useMemo(
+    () => documents.find((document) => document.document_type === 'analysis') || null,
+    [documents],
+  );
 
   useEffect(() => {
     if (!selectedDocument) {
@@ -530,7 +675,16 @@ export default function IssueDetailPage() {
                     </div>
                   ) : (
                     chatMessages.map((message) => (
-                      <ThreadMessage key={message.id} message={message} />
+                      <ThreadMessage
+                        key={message.id}
+                        message={message}
+                        onOpenDocument={(documentId) => {
+                          if (documentId) {
+                            setSelectedDocumentId(documentId);
+                          }
+                          setTab('documents');
+                        }}
+                      />
                     ))
                   )}
                 </div>
@@ -561,6 +715,87 @@ export default function IssueDetailPage() {
               </div>
 
               <div className="space-y-4">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Live execution</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">{executionHeadline(task!, currentChatTargetLabel)}</p>
+                      <p className="mt-1 text-sm text-slate-500">{executionSubline(task!)}</p>
+                    </div>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(task!.status)}`}>
+                      {task!.status.replace('_', ' ')}
+                    </span>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className={`h-full rounded-full ${
+                          task!.status === 'failed'
+                            ? 'bg-red-500'
+                            : task!.status === 'done'
+                              ? 'bg-emerald-500'
+                              : task!.status === 'in_review'
+                                ? 'bg-amber-500'
+                                : 'bg-blue-500'
+                        }`}
+                        style={{ width: `${executionProgressValue(task!.status)}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                      <span>Queued</span>
+                      <span>Running</span>
+                      <span>Review</span>
+                      <span>Done</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-3 border-t border-slate-100 pt-4 text-sm text-slate-600">
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Assignee</span>
+                      <span className="font-medium text-slate-900">{currentChatTargetLabel}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Run ID</span>
+                      <span className="max-w-[180px] truncate font-medium text-slate-900">{task!.run_id || 'Not started'}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Plan</span>
+                      <span className="max-w-[180px] truncate font-medium text-slate-900">
+                        {latestPlanDocument ? `rev ${latestPlanDocument.revision}` : 'Not saved'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Output</span>
+                      <span className="max-w-[180px] truncate font-medium text-slate-900">
+                        {latestOutputDocument ? `rev ${latestOutputDocument.revision}` : 'Not saved'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {(latestActivityMessage || recentExecutionEvents.length > 0) && (
+                    <div className="mt-4 border-t border-slate-100 pt-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">What it is doing</p>
+                      {latestActivityMessage && (
+                        <p className="mt-2 text-sm leading-relaxed text-slate-700">{latestActivityMessage.content}</p>
+                      )}
+                      <div className="mt-3 space-y-2">
+                        {recentExecutionEvents.map((message) => (
+                          <div key={message.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                            <div className="mb-1 flex items-center justify-between gap-3">
+                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${eventTone(message)}`}>
+                                {message.author_label}
+                              </span>
+                              <span className="text-[11px] text-slate-400">{formatRelativeTime(message.created_at)}</span>
+                            </div>
+                            <p className="line-clamp-2 text-xs leading-relaxed text-slate-600">{message.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="rounded-[28px] border border-slate-200 bg-white p-5">
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Current state</p>
                   <div className="mt-4 space-y-3 text-sm text-slate-600">

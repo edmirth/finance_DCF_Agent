@@ -2905,6 +2905,266 @@ def _task_thread_transcript(messages: list[Any]) -> str:
     return "\n".join(lines)
 
 
+def _markdown_to_excerpt(content_md: str, limit: int = 320) -> str:
+    text = re.sub(r"`([^`]*)`", r"\1", content_md or "")
+    text = re.sub(r"[*_#>\-\[\]\(\)\|]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _format_task_artifact_datetime(value: Optional[datetime]) -> str:
+    if value is None:
+        return "unknown time"
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - dt.astimezone(timezone.utc)
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    return f"{days}d ago"
+
+
+async def _load_task_artifact_context(
+    db: AsyncSession,
+    task_id: str,
+    linked_run_id: Optional[str],
+) -> dict[str, Any]:
+    from backend.models import AgentRun, ResearchTaskDocument
+
+    documents_result = await db.execute(
+        select(ResearchTaskDocument)
+        .where(ResearchTaskDocument.task_id == task_id)
+        .order_by(ResearchTaskDocument.updated_at.desc(), ResearchTaskDocument.created_at.desc())
+        .limit(3)
+    )
+    documents = documents_result.scalars().all()
+
+    linked_run = None
+    normalized_run_id = (linked_run_id or "").strip() or None
+    if normalized_run_id:
+        run_result = await db.execute(select(AgentRun).where(AgentRun.id == normalized_run_id))
+        linked_run = run_result.scalar_one_or_none()
+
+    return {
+        "documents": documents,
+        "linked_run": linked_run,
+    }
+
+
+def _parse_task_findings_blob(raw_findings: Any) -> dict[str, Any]:
+    if isinstance(raw_findings, dict):
+        return raw_findings
+    try:
+        parsed = json.loads(raw_findings or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_task_pm_synthesis(raw_synthesis: Any) -> Optional[dict[str, Any]]:
+    if isinstance(raw_synthesis, dict):
+        return raw_synthesis
+    try:
+        parsed = json.loads(raw_synthesis or "null")
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _task_artifact_summary_block(artifact_context: dict[str, Any]) -> str:
+    documents = artifact_context.get("documents") or []
+    linked_run = artifact_context.get("linked_run")
+
+    lines: list[str] = []
+    if documents:
+        lines.append("Existing issue documents:")
+        for document in documents:
+            excerpt = _markdown_to_excerpt(document.content_md or "", limit=220)
+            lines.append(
+                f"- {document.title} (type: {document.document_type}, rev {document.revision}, updated {_format_task_artifact_datetime(document.updated_at)})"
+            )
+            if excerpt:
+                lines.append(f"  Excerpt: {excerpt}")
+    else:
+        lines.append("Existing issue documents: none.")
+
+    if linked_run is not None:
+        run_status = linked_run.status or "unknown"
+        lines.append(f"Linked agent run status: {run_status}.")
+        if linked_run.findings_summary:
+            lines.append(f"Run summary: {_markdown_to_excerpt(linked_run.findings_summary, limit=220)}")
+        elif linked_run.report:
+            lines.append(f"Run report excerpt: {_markdown_to_excerpt(linked_run.report, limit=220)}")
+        elif linked_run.error:
+            lines.append(f"Run error: {linked_run.error}")
+    else:
+        lines.append("Linked agent run: none.")
+
+    return "\n".join(lines)
+
+
+def _build_task_chat_fallback(
+    *,
+    role_title: str,
+    artifact_context: dict[str, Any],
+) -> str:
+    documents = artifact_context.get("documents") or []
+    linked_run = artifact_context.get("linked_run")
+
+    if documents:
+        latest_document = documents[0]
+        lines = [
+            f"The live {role_title} reply failed, but this issue already has {len(documents)} saved document{'s' if len(documents) != 1 else ''}.",
+            (
+                f"Latest document: {latest_document.title} "
+                f"(rev {latest_document.revision}, updated {_format_task_artifact_datetime(latest_document.updated_at)})."
+            ),
+        ]
+        excerpt = _markdown_to_excerpt(latest_document.content_md or "", limit=320)
+        if excerpt:
+            lines.append(f"Latest document excerpt: {excerpt}")
+        if linked_run is not None and linked_run.status == "completed" and linked_run.findings_summary:
+            lines.append(f"Latest run summary: {_markdown_to_excerpt(linked_run.findings_summary, limit=220)}")
+        lines.append("Open the Documents tab for the full report.")
+        return "\n\n".join(lines)
+
+    if linked_run is not None:
+        if linked_run.status == "completed":
+            summary = linked_run.findings_summary or linked_run.report or "A completed run exists, but it has no saved summary yet."
+            return (
+                f"The live {role_title} reply failed, but this issue has a completed run.\n\n"
+                f"Latest run summary: {_markdown_to_excerpt(summary, limit=360)}"
+            )
+        if linked_run.status == "running":
+            return f"The assigned agent is still running on this issue. Wait for the current run to finish, then ask again."
+        if linked_run.status == "failed":
+            error_detail = linked_run.error or "No error detail was recorded."
+            return (
+                f"The live {role_title} reply failed, and the latest linked run also failed.\n\n"
+                f"Latest run error: {error_detail}"
+            )
+
+    return (
+        f"The live {role_title} reply failed, and this issue does not yet have a saved document or completed linked run."
+    )
+
+
+def _looks_like_status_query(prompt: str) -> bool:
+    normalized = prompt.lower()
+    return any(
+        token in normalized
+        for token in (
+            "status",
+            "progress",
+            "where are we",
+            "what's happening",
+            "what is happening",
+            "update",
+            "running",
+            "complete",
+            "completed",
+            "done",
+            "failed",
+            "blocked",
+        )
+    )
+
+
+def _looks_like_report_query(prompt: str) -> bool:
+    normalized = prompt.lower()
+    return any(
+        token in normalized
+        for token in (
+            "report",
+            "document",
+            "memo",
+            "writeup",
+            "write-up",
+            "analysis",
+            "brief",
+            "summary",
+        )
+    )
+
+
+def _build_issue_state_reply(
+    *,
+    prompt: str,
+    task: Any,
+    role_title: str,
+    artifact_context: dict[str, Any],
+) -> Optional[str]:
+    status_query = _looks_like_status_query(prompt)
+    report_query = _looks_like_report_query(prompt)
+    if not status_query and not report_query:
+        return None
+
+    documents = artifact_context.get("documents") or []
+    linked_run = artifact_context.get("linked_run")
+    findings = _parse_task_findings_blob(getattr(task, "findings", None))
+    synthesis = _parse_task_pm_synthesis(getattr(task, "pm_synthesis", None))
+
+    lines: list[str] = []
+    if status_query:
+        lines.append(f"Issue status: {task.status}.")
+        if linked_run is not None:
+            lines.append(f"Linked run status: {linked_run.status}.")
+            if linked_run.status == "running":
+                lines.append(
+                    f"The assigned {role_title} is still running on this issue."
+                )
+            if linked_run.error:
+                lines.append(f"Latest run error: {linked_run.error}")
+        elif task.assigned_agent_id:
+            lines.append(f"This issue is assigned to {role_title}, but there is no linked run record yet.")
+        else:
+            lines.append("No agent is currently assigned to this issue.")
+
+    if report_query:
+        if documents:
+            latest_document = documents[0]
+            lines.append(
+                f"Latest saved document: {latest_document.title} "
+                f"(rev {latest_document.revision}, updated {_format_task_artifact_datetime(latest_document.updated_at)})."
+            )
+            excerpt = _markdown_to_excerpt(latest_document.content_md or "", limit=320)
+            if excerpt:
+                lines.append(f"Document excerpt: {excerpt}")
+            if len(documents) > 1:
+                lines.append(f"There are {len(documents)} saved issue documents in total.")
+        elif synthesis:
+            summary = synthesis.get("summary") or synthesis.get("thesis") or json.dumps(synthesis)
+            lines.append(f"Saved synthesis: {_markdown_to_excerpt(str(summary), limit=320)}")
+        elif findings:
+            first_key = next(iter(findings.keys()))
+            finding_summary = findings[first_key].get("summary") if isinstance(findings[first_key], dict) else str(findings[first_key])
+            if finding_summary:
+                lines.append(f"Saved finding from {first_key}: {_markdown_to_excerpt(str(finding_summary), limit=320)}")
+        elif linked_run is not None and linked_run.status == "completed":
+            summary = linked_run.findings_summary or linked_run.report or ""
+            if summary:
+                lines.append(f"Latest run summary: {_markdown_to_excerpt(summary, limit=320)}")
+            else:
+                lines.append("There is a completed run, but it did not save a readable report summary.")
+        elif linked_run is not None and linked_run.status == "running":
+            lines.append("No finished report is saved yet. The current run is still in progress.")
+        else:
+            lines.append("No saved report or document exists on this issue yet.")
+
+    if not lines:
+        return None
+    if documents and report_query:
+        lines.append("Open the Documents tab for the full report.")
+    return "\n\n".join(lines)
+
+
 async def _run_task_chat_reply(
     db: AsyncSession,
     task,
@@ -2925,6 +3185,8 @@ async def _run_task_chat_reply(
         project_row = project_result.one_or_none()
         if project_row is not None:
             project_title, project_thesis = project_row
+    artifact_context = await _load_task_artifact_context(db, task.id, task.run_id)
+    artifact_context_block = _task_artifact_summary_block(artifact_context)
 
     normalized_target_agent_id = (target_agent_id or "").strip() or None
     is_ceo_route = (
@@ -2957,7 +3219,7 @@ async def _run_task_chat_reply(
             "author_label": "CEO",
             "author_agent_id": None,
             "content": response.message,
-            "action": response.action.dict() if response.action else None,
+            "action": response.action.model_dump() if response.action else None,
         }
 
     resolved_agent_id = normalized_target_agent_id or task.assigned_agent_id or task.owner_agent_id
@@ -2984,6 +3246,20 @@ async def _run_task_chat_reply(
     tickers = json.loads(agent.tickers or "[]")
     selected_agents = json.loads(task.selected_agents or "[]")
 
+    direct_issue_reply = _build_issue_state_reply(
+        prompt=prompt,
+        task=task,
+        role_title=role_title,
+        artifact_context=artifact_context,
+    )
+    if direct_issue_reply:
+        return {
+            "author_label": role_title,
+            "author_agent_id": agent.id,
+            "content": direct_issue_reply,
+            "action": None,
+        }
+
     system_prompt = (
         f"You are the {role_title} in a finance research firm.\n"
         f"Your job is to respond inside one issue workspace.\n"
@@ -2999,6 +3275,7 @@ async def _run_task_chat_reply(
         f"- Assigned coverage: {', '.join(tickers) if tickers else 'General'}\n"
         f"- Selected engines: {', '.join(selected_agents) if selected_agents else 'None'}\n"
         f"- Issue brief: {task.notes or 'None'}\n\n"
+        f"Saved issue artifacts:\n{artifact_context_block}\n\n"
         f"Keep the answer concise, specific, and actionable. If the user asks for a document, draft it directly."
     )
     recent_prompt_messages = [
@@ -3018,7 +3295,10 @@ async def _run_task_chat_reply(
         )
     except Exception:
         logger.exception("task chat reply failed for agent %s", agent.id)
-        content = "I couldn't generate a live reply for this issue right now. Try again after the agent finishes another run."
+        content = _build_task_chat_fallback(
+            role_title=role_title,
+            artifact_context=artifact_context,
+        )
 
     return {
         "author_label": role_title,

@@ -159,6 +159,50 @@ def _signal_to_sentiment(view: str) -> str:
     return "neutral"
 
 
+def _count_statement_rows(shared_data: dict, key: str) -> int:
+    statements = (shared_data.get("financial_statements") or {}).get(key) or []
+    if isinstance(statements, list):
+        return len(statements)
+    return 0
+
+
+def _shared_data_validation_error(agent_name: str, ticker: str, shared_data: dict) -> Optional[str]:
+    stock_info = shared_data.get("stock_info") or {}
+    key_metrics = shared_data.get("key_metrics") or {}
+    income_count = _count_statement_rows(shared_data, "income_statements")
+    balance_count = _count_statement_rows(shared_data, "balance_sheets")
+    cashflow_count = _count_statement_rows(shared_data, "cash_flow_statements")
+    price_history = shared_data.get("price_history") or []
+    spy_price_history = shared_data.get("spy_price_history") or []
+
+    missing: list[str] = []
+
+    if agent_name in {"fundamental", "risk"}:
+        if not stock_info:
+            missing.append("company profile")
+        if income_count == 0:
+            missing.append("income statements")
+        if balance_count == 0:
+            missing.append("balance sheets")
+        if cashflow_count == 0:
+            missing.append("cash flow statements")
+        if not key_metrics:
+            missing.append("key metrics")
+
+    if agent_name == "quant":
+        if len(price_history) < 60:
+            missing.append("price history")
+        if len(spy_price_history) < 60:
+            missing.append("SPY benchmark history")
+
+    if missing:
+        return (
+            f"Critical financial data is missing for {ticker}: {', '.join(missing)}. "
+            "The analyst run was blocked instead of using incomplete data."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Individual agent runner functions
 # ---------------------------------------------------------------------------
@@ -559,6 +603,17 @@ def run_specialist_agent_once(
     ticker_upper = ticker.strip().upper()
     if not ticker_upper:
         raise ValueError("Ticker is required")
+    if ticker_upper == "GENERAL":
+        return AgentSection(
+            agent=agent_name,
+            title=AGENT_META[agent_name]["title"],
+            sentiment="neutral",
+            confidence=0.0,
+            content="",
+            key_points=[],
+            duration_seconds=0.0,
+            error="Specialist analysis requires an explicit ticker or company scope.",
+        )
 
     effective_title = assignment_title.strip() or f"Analyze {ticker_upper}"
     effective_focus = assignment_focus.strip()
@@ -572,6 +627,19 @@ def run_specialist_agent_once(
         )
         fetch_result = data_fetch_node(minimal_state)
         payload = fetch_result.get("shared_data", {})
+
+    validation_error = _shared_data_validation_error(agent_name, ticker_upper, payload)
+    if validation_error:
+        return AgentSection(
+            agent=agent_name,
+            title=AGENT_META[agent_name]["title"],
+            sentiment="neutral",
+            confidence=0.0,
+            content="",
+            key_points=[],
+            duration_seconds=0.0,
+            error=validation_error,
+        )
 
     return runner(
         ticker_upper,

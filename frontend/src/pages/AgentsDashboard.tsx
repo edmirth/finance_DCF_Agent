@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
   Clock,
+  FileText,
   Loader2,
   Pause,
   Play,
@@ -38,6 +39,8 @@ const TASK_STATUS_TONE: Record<string, string> = {
   cancelled: '#64748B',
 };
 
+const ACTIVE_TASK_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review', 'failed'];
+
 function formatRelativeTime(iso?: string | null): string {
   if (!iso) return 'Never run';
   const diff = Date.now() - new Date(iso).getTime();
@@ -63,13 +66,165 @@ function agentInitials(name: string): string {
     .join('') || 'AG';
 }
 
+type AgentWorkload = {
+  openCount: number;
+  runningCount: number;
+  pendingCount: number;
+  reviewCount: number;
+  failedCount: number;
+  currentTasks: ResearchTask[];
+};
+
+function buildEmptyWorkload(): AgentWorkload {
+  return {
+    openCount: 0,
+    runningCount: 0,
+    pendingCount: 0,
+    reviewCount: 0,
+    failedCount: 0,
+    currentTasks: [],
+  };
+}
+
+function workloadLabel(workload: AgentWorkload): string {
+  if (workload.runningCount > 0) {
+    return workload.runningCount === 1 ? 'Working on 1 live issue' : `Working on ${workload.runningCount} live issues`;
+  }
+  if (workload.openCount > 0) {
+    return workload.openCount === 1 ? '1 open issue queued' : `${workload.openCount} open issues queued`;
+  }
+  return 'No active issues';
+}
+
+function statusChipTone(status: ResearchTask['status']): string {
+  switch (status) {
+    case 'running':
+      return 'bg-blue-50 text-blue-700';
+    case 'in_review':
+      return 'bg-violet-50 text-violet-700';
+    case 'failed':
+      return 'bg-red-50 text-red-700';
+    case 'pending':
+      return 'bg-slate-100 text-slate-600';
+    default:
+      return 'bg-slate-100 text-slate-600';
+  }
+}
+
+function taskPriorityOrder(status: ResearchTask['status']): number {
+  switch (status) {
+    case 'running':
+      return 0;
+    case 'failed':
+      return 1;
+    case 'in_review':
+      return 2;
+    case 'pending':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function WorkloadBar({ workload }: { workload: AgentWorkload }) {
+  const total = workload.openCount;
+  const segments =
+    total > 0
+      ? [
+          { key: 'running', count: workload.runningCount, color: '#3B82F6' },
+          { key: 'in_review', count: workload.reviewCount, color: '#8B5CF6' },
+          { key: 'pending', count: workload.pendingCount, color: '#94A3B8' },
+          { key: 'failed', count: workload.failedCount, color: '#EF4444' },
+        ].filter((segment) => segment.count > 0)
+      : [];
+
+  return (
+    <div className="mb-4 rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Live workload</p>
+          <p className="mt-1 text-sm font-medium text-slate-700">{workloadLabel(workload)}</p>
+        </div>
+        <div className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-500">
+          {total} open
+        </div>
+      </div>
+
+      <div className="h-2 overflow-hidden rounded-full bg-white">
+        {segments.length === 0 ? (
+          <div className="h-full w-full bg-slate-100" />
+        ) : (
+          <div className="flex h-full w-full">
+            {segments.map((segment) => (
+              <div
+                key={segment.key}
+                className="h-full"
+                style={{
+                  width: `${(segment.count / total) * 100}%`,
+                  backgroundColor: segment.color,
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {workload.runningCount > 0 && (
+          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+            {workload.runningCount} running
+          </span>
+        )}
+        {workload.reviewCount > 0 && (
+          <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+            {workload.reviewCount} in review
+          </span>
+        )}
+        {workload.pendingCount > 0 && (
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+            {workload.pendingCount} pending
+          </span>
+        )}
+        {workload.failedCount > 0 && (
+          <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700">
+            {workload.failedCount} failed
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        {workload.currentTasks.length === 0 ? (
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <FileText className="h-3.5 w-3.5" />
+            No issue is assigned right now.
+          </div>
+        ) : (
+          workload.currentTasks.slice(0, 2).map((task) => (
+            <div key={task.id} className="flex items-center justify-between gap-3 rounded-lg bg-white px-2.5 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-slate-700">{task.title}</p>
+                <p className="mt-0.5 text-[11px] text-slate-400">{displayTicker(task.ticker)}</p>
+              </div>
+              <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusChipTone(task.status)}`}>
+                {task.status.replace('_', ' ')}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AgentCard({
   agent,
+  workload,
   onDelete,
   onToggle,
   onRunNow,
 }: {
   agent: ScheduledAgent;
+  workload: AgentWorkload;
   onDelete: (id: string) => void;
   onToggle: (id: string, active: boolean) => void;
   onRunNow: (id: string) => void;
@@ -158,6 +313,8 @@ function AgentCard({
         <p className="mb-3 text-xs italic text-slate-400">No runs yet</p>
       )}
 
+      <WorkloadBar workload={workload} />
+
       <div className="flex items-center justify-between border-t border-slate-100 pt-3">
         <div className="flex items-center gap-1.5 text-slate-400">
           <Clock className="h-3.5 w-3.5" />
@@ -200,7 +357,7 @@ function AgentCard({
   );
 }
 
-function LeaderCard() {
+function LeaderCard({ workload }: { workload: AgentWorkload }) {
   const navigate = useNavigate();
 
   return (
@@ -231,6 +388,8 @@ function LeaderCard() {
       <p className="mb-3 text-xs leading-relaxed text-slate-500">
         Reviews new issues, decides whether to delegate existing work, and suggests new hires when the current team has a coverage gap.
       </p>
+
+      <WorkloadBar workload={workload} />
 
       <div className="flex items-center justify-between border-t border-slate-100 pt-3">
         <div className="flex items-center gap-1.5 text-slate-400">
@@ -319,7 +478,7 @@ function TaskRow({ task }: { task: ResearchTask }) {
 
 export default function AgentsDashboard() {
   const [agents, setAgents] = useState<ScheduledAgent[]>([]);
-  const [recentTasks, setRecentTasks] = useState<ResearchTask[]>([]);
+  const [allTasks, setAllTasks] = useState<ResearchTask[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ msg: string; type: 'error' | 'success' } | null>(null);
@@ -333,11 +492,11 @@ export default function AgentsDashboard() {
     try {
       const [agentData, taskData, inboxData] = await Promise.all([
         getScheduledAgents(),
-        listTasks({ limit: 12 }),
+        listTasks({ limit: 200 }),
         getInbox(12),
       ]);
       setAgents(agentData);
-      setRecentTasks(taskData);
+      setAllTasks(taskData);
       setInboxItems(inboxData);
     } catch {
       showToast('Could not load dashboard state — backend may be offline.');
@@ -410,6 +569,53 @@ export default function AgentsDashboard() {
 
   const activeCount = agents.filter((agent) => agent.is_active).length;
   const pausedCount = agents.filter((agent) => !agent.is_active).length;
+  const recentTasks = useMemo(() => allTasks.slice(0, 10), [allTasks]);
+  const agentWorkloads = useMemo(() => {
+    const workloads = new Map<string, AgentWorkload>();
+    agents.forEach((agent) => workloads.set(agent.id, buildEmptyWorkload()));
+    for (const task of allTasks) {
+      if (!ACTIVE_TASK_STATUSES.includes(task.status)) continue;
+      const agentId = task.assigned_agent_id || task.owner_agent_id;
+      if (!agentId || !workloads.has(agentId)) continue;
+      const workload = workloads.get(agentId)!;
+      workload.openCount += 1;
+      if (task.status === 'running') workload.runningCount += 1;
+      if (task.status === 'pending') workload.pendingCount += 1;
+      if (task.status === 'in_review') workload.reviewCount += 1;
+      if (task.status === 'failed') workload.failedCount += 1;
+      workload.currentTasks.push(task);
+    }
+    for (const workload of workloads.values()) {
+      workload.currentTasks.sort((left, right) => {
+        const byStatus = taskPriorityOrder(left.status) - taskPriorityOrder(right.status);
+        if (byStatus !== 0) return byStatus;
+        return new Date(right.updated_at || right.created_at || 0).getTime() - new Date(left.updated_at || left.created_at || 0).getTime();
+      });
+    }
+    return workloads;
+  }, [agents, allTasks]);
+  const ceoWorkload = useMemo(() => {
+    const workload = buildEmptyWorkload();
+    for (const task of allTasks) {
+      if (!ACTIVE_TASK_STATUSES.includes(task.status)) continue;
+      const isCeoTask =
+        task.triggered_by === 'manual_pm_review' &&
+        (task.assigned_agent_id === null || task.assigned_agent_id === undefined || task.assigned_agent_id === '');
+      if (!isCeoTask) continue;
+      workload.openCount += 1;
+      if (task.status === 'running') workload.runningCount += 1;
+      if (task.status === 'pending') workload.pendingCount += 1;
+      if (task.status === 'in_review') workload.reviewCount += 1;
+      if (task.status === 'failed') workload.failedCount += 1;
+      workload.currentTasks.push(task);
+    }
+    workload.currentTasks.sort((left, right) => {
+      const byStatus = taskPriorityOrder(left.status) - taskPriorityOrder(right.status);
+      if (byStatus !== 0) return byStatus;
+      return new Date(right.updated_at || right.created_at || 0).getTime() - new Date(left.updated_at || left.created_at || 0).getTime();
+    });
+    return workload;
+  }, [allTasks]);
 
   return (
     <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
@@ -442,11 +648,12 @@ export default function AgentsDashboard() {
         ) : (
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <LeaderCard />
+              <LeaderCard workload={ceoWorkload} />
               {agents.map((agent) => (
                 <AgentCard
                   key={agent.id}
                   agent={agent}
+                  workload={agentWorkloads.get(agent.id) || buildEmptyWorkload()}
                   onDelete={handleDelete}
                   onToggle={handleToggle}
                   onRunNow={handleRunNow}
