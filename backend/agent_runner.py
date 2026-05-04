@@ -116,7 +116,7 @@ class AgentRunnerService:
                 )
 
             elif template in SPECIALIST_TEMPLATE_TO_AGENT:
-                raw_outputs, agents_used = self._run_specialist_analyst(
+                raw_outputs, agents_used = self._run_instruction_driven_research(
                     tickers,
                     agent_config.instruction,
                     template,
@@ -269,6 +269,148 @@ class AgentRunnerService:
                     outputs[ticker_sym] = result
 
         return outputs, [specialist] if outputs else []
+
+    def _run_instruction_driven_research(
+        self,
+        tickers: list[str],
+        instruction: str,
+        template: str,
+    ) -> tuple[dict, list]:
+        """
+        Instruction-driven analysis for hired agents.
+        Fetches real financial data + current news per ticker, then runs a
+        focused LLM call shaped by the agent's own instruction — not generic
+        pillar math. This is what makes a hired analyst actually do its job.
+        """
+        from data.financial_data import FinancialDataFetcher
+        from shared.tavily_client import get_tavily_client
+
+        outputs: dict[str, str] = {}
+        fetcher = FinancialDataFetcher()
+        tavily = get_tavily_client()
+        template_label = TEMPLATE_LABELS.get(template, template)
+
+        def _analyze(ticker: str) -> tuple[str, Optional[str]]:
+            try:
+                ticker_upper = ticker.strip().upper()
+                stock_info = fetcher.get_stock_info(ticker_upper) or {}
+                financials = fetcher.get_financial_statements(ticker_upper) or {}
+                data_block = self._format_financial_data(ticker_upper, stock_info, financials)
+
+                # Current news / analyst sentiment via Tavily
+                news_block = ""
+                try:
+                    focus = instruction[:150] if instruction else "fundamentals and investment thesis"
+                    news_block = tavily.search_text(
+                        f"{ticker_upper} stock analysis {focus}",
+                        topic="finance",
+                        search_depth="advanced",
+                        max_results=4,
+                        time_range="month",
+                    )
+                except Exception as _e:
+                    logger.warning(f"Tavily search failed for {ticker_upper}: {_e}")
+
+                news_section = f"\nCURRENT CONTEXT:\n{news_block}" if news_block else ""
+
+                prompt = f"""You are a {template_label}. Your assignment:
+
+{instruction or f"Provide a comprehensive {template_label.lower()} analysis."}
+
+TICKER: {ticker_upper}
+COMPANY: {stock_info.get("company_name", ticker_upper)}
+SECTOR: {stock_info.get("sector", "Unknown")}
+
+HISTORICAL FINANCIALS:
+{data_block}{news_section}
+
+Write a focused research report that directly addresses the assignment above.
+- Lead with your investment signal (BULLISH / BEARISH / NEUTRAL) and the single most important reason
+- Support every claim with specific numbers from the data
+- Focus on what matters most for the stated assignment
+- Close with a concrete action or watch item
+
+Markdown format. 400-600 words. No filler."""
+
+                response = self._anthropic.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return ticker_upper, response.content[0].text.strip()
+
+            except Exception as exc:
+                logger.error(f"Instruction-driven research failed for {ticker}: {exc}")
+                return ticker.strip().upper(), f"Analysis failed for {ticker}: {exc}"
+
+        with ThreadPoolExecutor(max_workers=min(MAX_TICKER_WORKERS, len(tickers) or 1)) as ex:
+            futures = {ex.submit(_analyze, t): t for t in tickers}
+            for future in as_completed(futures):
+                ticker_sym, result = future.result()
+                if result:
+                    outputs[ticker_sym] = result
+
+        return outputs, [template] if outputs else []
+
+    @staticmethod
+    def _format_financial_data(ticker: str, stock_info: dict, financials: dict) -> str:
+        """Format raw financial data into a compact LLM-readable block."""
+        lines = []
+
+        market_cap = stock_info.get("market_cap") or 0
+        price = stock_info.get("current_price") or 0
+        if market_cap:
+            lines.append(f"Market Cap: ${market_cap / 1e9:.1f}B")
+        if price:
+            lines.append(f"Current Price: ${price:.2f}")
+
+        income = financials.get("income_statements", [])
+        if income:
+            lines.append("\nIncome Statement (annual, last 3 years):")
+            for stmt in income[:3]:
+                date = stmt.get("report_period") or stmt.get("date", "")
+                rev = stmt.get("revenue") or 0
+                gp = stmt.get("gross_profit") or 0
+                oi = stmt.get("operating_income") or 0
+                ni = stmt.get("net_income") or 0
+                eps = stmt.get("earnings_per_share") or 0
+                row = f"  {date}: Revenue ${rev / 1e9:.1f}B"
+                if rev and gp:
+                    row += f" | Gross Margin {gp / rev * 100:.0f}%"
+                if oi:
+                    row += f" | OpIncome ${oi / 1e9:.1f}B"
+                if ni:
+                    row += f" | Net Income ${ni / 1e9:.1f}B"
+                if eps:
+                    row += f" | EPS ${eps:.2f}"
+                lines.append(row)
+
+        balance = financials.get("balance_sheets", [])
+        if balance:
+            bs = balance[0]
+            cash = bs.get("cash_and_equivalents") or 0
+            debt = bs.get("total_debt") or 0
+            equity = bs.get("total_equity") or 0
+            lines.append("\nBalance Sheet (most recent):")
+            if cash:
+                lines.append(f"  Cash: ${cash / 1e9:.1f}B")
+            if debt:
+                lines.append(f"  Total Debt: ${debt / 1e9:.1f}B")
+            if equity:
+                lines.append(f"  Equity: ${equity / 1e9:.1f}B")
+
+        cf = financials.get("cash_flow_statements", [])
+        if cf:
+            lines.append("\nCash Flow (last 3 years):")
+            for stmt in cf[:3]:
+                date = stmt.get("report_period") or stmt.get("date", "")
+                ocf = stmt.get("operating_cash_flow") or 0
+                capex = stmt.get("capital_expenditures") or 0
+                fcf = stmt.get("free_cash_flow") or (ocf - abs(capex))
+                if ocf or fcf:
+                    lines.append(f"  {date}: OCF ${ocf / 1e9:.1f}B | FCF ${fcf / 1e9:.1f}B")
+
+        return "\n".join(lines) if lines else "No financial data available."
 
     # ------------------------------------------------------------------
     # firm_pipeline (Phase 4) — runs the full InvestmentPipeline per ticker.
