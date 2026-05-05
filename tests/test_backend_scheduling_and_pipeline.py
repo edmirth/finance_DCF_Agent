@@ -1147,6 +1147,37 @@ def test_agent_runner_returns_error_when_specialist_has_no_usable_data():
     assert outcome["agents_used"] == []
 
 
+def test_agent_runner_instruction_driven_research_fails_closed_when_financial_data_missing():
+    runner = AgentRunnerService()
+    config = SimpleNamespace(
+        template="fundamental_analyst",
+        tickers='["AAPL"]',
+        topics="[]",
+        instruction="Analyze the business quality.",
+        last_run_summary="",
+    )
+
+    class FakeFetcher:
+        def get_stock_info(self, _ticker):
+            return {}
+
+        def get_financial_statements(self, _ticker):
+            return {}
+
+        def get_key_metrics(self, _ticker):
+            return {}
+
+    with (
+        patch("data.financial_data.FinancialDataFetcher", return_value=FakeFetcher()),
+        patch("backend.agent_runner.FinancialDataFetcher", return_value=FakeFetcher(), create=True),
+    ):
+        outcome = runner.execute(config)
+
+    assert outcome["error"] == "No agent outputs — all sub-agents failed"
+    assert outcome["report"] == ""
+    assert outcome["agents_used"] == []
+
+
 @pytest.mark.asyncio
 async def test_create_scheduled_agent_rejects_removed_arena_template():
     payload = {

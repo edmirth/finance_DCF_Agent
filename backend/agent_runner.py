@@ -64,6 +64,11 @@ SPECIALIST_TEMPLATE_TO_AGENT = {
 }
 
 
+def _statement_row_count(financials: dict, key: str) -> int:
+    rows = (financials or {}).get(key) or []
+    return len(rows) if isinstance(rows, list) else 0
+
+
 class AgentRunnerService:
     """Executes a ScheduledAgent config and returns structured findings."""
 
@@ -290,12 +295,42 @@ class AgentRunnerService:
         tavily = get_tavily_client()
         template_label = TEMPLATE_LABELS.get(template, template)
 
+        def _validation_error(
+            ticker_upper: str,
+            stock_info: dict,
+            financials: dict,
+            key_metrics: dict,
+        ) -> Optional[str]:
+            missing: list[str] = []
+            if not stock_info:
+                missing.append("company profile")
+            if _statement_row_count(financials, "income_statements") == 0:
+                missing.append("income statements")
+            if _statement_row_count(financials, "balance_sheets") == 0:
+                missing.append("balance sheets")
+            if _statement_row_count(financials, "cash_flow_statements") == 0:
+                missing.append("cash flow statements")
+            if not key_metrics:
+                missing.append("key metrics")
+            if missing:
+                return (
+                    f"Critical financial data is missing for {ticker_upper}: {', '.join(missing)}. "
+                    "The analyst run was blocked instead of using incomplete data."
+                )
+            return None
+
         def _analyze(ticker: str) -> tuple[str, Optional[str]]:
             try:
                 ticker_upper = ticker.strip().upper()
                 stock_info = fetcher.get_stock_info(ticker_upper) or {}
                 financials = fetcher.get_financial_statements(ticker_upper) or {}
-                data_block = self._format_financial_data(ticker_upper, stock_info, financials)
+                key_metrics = fetcher.get_key_metrics(ticker_upper) or {}
+                validation_error = _validation_error(ticker_upper, stock_info, financials, key_metrics)
+                if validation_error:
+                    logger.warning("Instruction-driven research blocked for %s: %s", ticker_upper, validation_error)
+                    return ticker_upper, None
+
+                data_block = self._format_financial_data(ticker_upper, stock_info, financials, key_metrics)
 
                 # Current news / analyst sentiment via Tavily
                 news_block = ""
@@ -341,7 +376,7 @@ Markdown format. 400-600 words. No filler."""
 
             except Exception as exc:
                 logger.error(f"Instruction-driven research failed for {ticker}: {exc}")
-                return ticker.strip().upper(), f"Analysis failed for {ticker}: {exc}"
+                return ticker.strip().upper(), None
 
         with ThreadPoolExecutor(max_workers=min(MAX_TICKER_WORKERS, len(tickers) or 1)) as ex:
             futures = {ex.submit(_analyze, t): t for t in tickers}
@@ -353,7 +388,7 @@ Markdown format. 400-600 words. No filler."""
         return outputs, [template] if outputs else []
 
     @staticmethod
-    def _format_financial_data(ticker: str, stock_info: dict, financials: dict) -> str:
+    def _format_financial_data(ticker: str, stock_info: dict, financials: dict, key_metrics: Optional[dict] = None) -> str:
         """Format raw financial data into a compact LLM-readable block."""
         lines = []
 
@@ -363,6 +398,25 @@ Markdown format. 400-600 words. No filler."""
             lines.append(f"Market Cap: ${market_cap / 1e9:.1f}B")
         if price:
             lines.append(f"Current Price: ${price:.2f}")
+
+        key_metrics = key_metrics or {}
+        if key_metrics:
+            latest_revenue = key_metrics.get("latest_revenue") or 0
+            latest_ebit = key_metrics.get("latest_ebit") or 0
+            latest_net_income = key_metrics.get("latest_net_income") or 0
+            shares = key_metrics.get("shares_outstanding") or 0
+            tax_rate = key_metrics.get("effective_tax_rate")
+            lines.append("\nKey Metrics:")
+            if latest_revenue:
+                lines.append(f"  Latest Revenue: ${latest_revenue / 1e9:.1f}B")
+            if latest_ebit:
+                lines.append(f"  Latest EBIT: ${latest_ebit / 1e9:.1f}B")
+            if latest_net_income:
+                lines.append(f"  Latest Net Income: ${latest_net_income / 1e9:.1f}B")
+            if shares:
+                lines.append(f"  Shares Outstanding: {shares / 1e9:.2f}B")
+            if tax_rate is not None:
+                lines.append(f"  Effective Tax Rate: {float(tax_rate) * 100:.1f}%")
 
         income = financials.get("income_statements", [])
         if income:

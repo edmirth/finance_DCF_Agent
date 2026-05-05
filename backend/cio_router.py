@@ -704,6 +704,20 @@ def _coverage_universe_label(agent: ScheduledAgent) -> str:
     return ", ".join(cleaned) if cleaned else "Broad / general coverage"
 
 
+def _single_explicit_coverage_ticker(agent: ScheduledAgent) -> Optional[str]:
+    try:
+        coverage = json.loads(agent.tickers or "[]") or []
+    except Exception:
+        coverage = []
+    cleaned = [
+        str(value).strip().upper()
+        for value in coverage
+        if str(value).strip() and str(value).strip().upper() != "GENERAL"
+    ]
+    unique = list(dict.fromkeys(cleaned))
+    return unique[0] if len(unique) == 1 else None
+
+
 def _task_has_explicit_scope(task: ResearchTask) -> bool:
     ticker = (task.ticker or "").strip()
     return bool(ticker and ticker.upper() != "GENERAL")
@@ -867,8 +881,24 @@ async def _dispatch_agent_for_task(
     if task.status in {"done", "cancelled"}:
         return {"run_id": None, "reused": False, "skipped": True}
 
-    agent_has_own_tickers = bool(json.loads(agent.tickers or "[]"))
-    if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task) and not agent_has_own_tickers:
+    if not _task_has_explicit_scope(task):
+        inferred_ticker = _single_explicit_coverage_ticker(agent)
+        if inferred_ticker:
+            task.ticker = inferred_ticker
+            task.updated_at = datetime.now(timezone.utc)
+            await _append_issue_activity(
+                db,
+                task.id,
+                f"Resolved issue scope to {inferred_ticker} from {agent.role_title or agent.name} coverage.",
+                author_label="System",
+                metadata={
+                    "event": "issue_scope_inferred",
+                    "agent_id": agent.id,
+                    "ticker": inferred_ticker,
+                },
+            )
+
+    if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task):
         role_title = agent.role_title or agent.name
         reason = (
             f"{role_title} needs an explicit ticker or company scope before it can start. "

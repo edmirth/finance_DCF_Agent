@@ -188,9 +188,8 @@ async def test_create_task_with_direct_assignee_dispatches_agent_run():
 
 @pytest.mark.asyncio
 async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immediately():
-    # When an agent has its own configured tickers, the scope check is skipped
-    # and the task is dispatched immediately (status="running"), even if the task
-    # itself has no explicit ticker. The agent will research its own coverage universe.
+    # When an agent has exactly one configured coverage ticker, the task scope is
+    # resolved to that ticker and the task is dispatched immediately.
     agent_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
 
@@ -229,9 +228,10 @@ async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immed
 
     assert response.status_code == 201
     body = response.json()
-    assert body["ticker"] == "GENERAL"
+    assert body["ticker"] == "AAPL"
     assert body["assigned_agent_id"] == agent_id
-    # Agent has own tickers — dispatch proceeds, task goes running immediately
+    # Agent has a single explicit coverage ticker — dispatch proceeds and the
+    # issue is given a concrete scope instead of remaining GENERAL.
     assert body["status"] == "running"
     assert body["run_id"] is not None
     assert body["error"] is None
@@ -291,6 +291,19 @@ async def test_create_task_allows_missing_ticker_and_defaults_to_general():
     body = response.json()
     assert body["ticker"] == "GENERAL"
     assert body["title"] == "Analyze AI value chain"
+
+
+@pytest.mark.asyncio
+async def test_create_task_infers_ticker_from_title_when_missing():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/tasks",
+            json={"title": "Do an analysis on Palantir for me"},
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["ticker"] == "PLTR"
 
 
 def test_run_specialist_agent_once_blocks_when_shared_data_is_missing():

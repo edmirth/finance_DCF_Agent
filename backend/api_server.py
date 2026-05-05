@@ -317,6 +317,17 @@ def extract_ticker_from_query(query: str, is_followup: bool = False) -> Optional
     return _extract_ticker_shared(query, is_followup=is_followup)
 
 
+def _infer_issue_ticker(*parts: Any) -> Optional[str]:
+    for raw_part in parts:
+        text = str(raw_part or "").strip()
+        if not text:
+            continue
+        candidate = extract_ticker_from_query(text)
+        if candidate:
+            return candidate
+    return None
+
+
 class ChatMessage(BaseModel):
     """Chat message model"""
     message: str
@@ -3329,7 +3340,8 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     else:
-        ticker = "GENERAL"
+        inferred_ticker = _infer_issue_ticker(body.title, body.notes)
+        ticker = inferred_ticker or "GENERAL"
 
     if body.title:
         title = body.title
