@@ -371,8 +371,8 @@ def _render_issue_output_chat_summary(
             f"**What failed**\n"
             f"{outcome.get('error')}\n\n"
             f"**Saved**\n"
-            f"- Document: **{document_title}**\n"
-            f"- Status: failure details captured for review\n\n"
+            f"- **{document_title}**\n"
+            f"- Failure details captured for review\n\n"
             "Open the **Documents** tab for the saved failure output."
         )
 
@@ -393,13 +393,21 @@ def _render_issue_output_chat_summary(
         [
             "",
             "**Saved**",
-            f"- Document: **{document_title}**",
-            "- Status: ready for review",
+            f"- **{document_title}**",
+            "- Ready for review",
             "",
             "Open the **Documents** tab for the full output.",
         ]
     )
     return "\n".join(parts)
+
+
+def _issue_failure_next_action(task: ResearchTask, role_title: str) -> str:
+    scope = _issue_scope_label(task)
+    return (
+        f"Check the latest {role_title} run for missing data or provider errors, then rerun the issue"
+        f"{'' if scope == 'Not explicitly specified' else f' for {scope}'}."
+    )
 
 
 async def _upsert_task_output_document(
@@ -563,6 +571,10 @@ async def update_task_from_delegated_run(
                 "document_id": document.id,
                 "document_title": document.title,
                 "document_type": document.document_type,
+                "summary": None,
+                "key_findings": [],
+                "error": outcome.get("error"),
+                "next_action": _issue_failure_next_action(task, role_title),
             },
         )
         await _append_task_activity_message(
@@ -598,6 +610,9 @@ async def update_task_from_delegated_run(
                 "document_id": document.id,
                 "document_title": document.title,
                 "document_type": document.document_type,
+                "summary": outcome.get("findings_summary") or "",
+                "key_findings": [item for item in (outcome.get("key_findings") or []) if item][:5],
+                "error": None,
             },
         )
         await _append_task_activity_message(

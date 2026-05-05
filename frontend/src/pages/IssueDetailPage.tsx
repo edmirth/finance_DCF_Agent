@@ -38,6 +38,7 @@ import type { ProjectSummary, ScheduledAgent } from '../types';
 
 type IssueTab = 'chat' | 'activity' | 'related' | 'documents';
 const LIVE_EXECUTION_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review'];
+type ArtifactKind = 'plan' | 'output' | 'failure';
 
 function displayTicker(ticker: string): string {
   return ticker === 'GENERAL' ? 'General' : ticker;
@@ -149,23 +150,194 @@ function eventTone(message: TaskMessage): string {
 }
 
 function isArtifactThreadMessage(message: TaskMessage): boolean {
+  return getArtifactKind(message) !== null;
+}
+
+function getArtifactKind(message: TaskMessage): ArtifactKind | null {
   const event = String(message.metadata?.event || '');
-  return ['issue_plan_created', 'issue_run_completed', 'issue_run_failed'].includes(event);
+  if (event === 'issue_plan_created') return 'plan';
+  if (event === 'issue_run_completed') return 'output';
+  if (event === 'issue_run_failed') return 'failure';
+
+  const normalized = message.content.toLowerCase();
+  if (normalized.includes('execution plan') || normalized.includes('planned approach')) return 'plan';
+  if (normalized.includes('executive summary') || normalized.includes('key findings') || normalized.includes('full output')) return 'output';
+  if (normalized.includes('what failed') || normalized.includes('run failure') || normalized.includes('required action')) return 'failure';
+  return null;
 }
 
 function artifactThreadLabel(message: TaskMessage): string {
-  const event = String(message.metadata?.event || '');
-  if (event === 'issue_plan_created') return 'Plan saved';
-  if (event === 'issue_run_completed') return 'Output ready';
-  if (event === 'issue_run_failed') return 'Run failed';
+  const kind = getArtifactKind(message);
+  if (kind === 'plan') return 'Plan saved';
+  if (kind === 'output') return 'Output ready';
+  if (kind === 'failure') return 'Run failed';
   return 'Update';
 }
 
 function artifactThreadTone(message: TaskMessage): string {
-  const event = String(message.metadata?.event || '');
-  if (event === 'issue_run_failed') return 'border-red-200 bg-red-50';
-  if (event === 'issue_run_completed') return 'border-emerald-200 bg-emerald-50';
+  const kind = getArtifactKind(message);
+  if (kind === 'failure') return 'border-red-200 bg-red-50';
+  if (kind === 'output') return 'border-emerald-200 bg-emerald-50';
   return 'border-blue-200 bg-blue-50';
+}
+
+function cleanMarkdownText(text: string): string {
+  return text
+    .replace(/^#+\s*/gm, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function headingKey(line: string): string {
+  return line.trim().replace(/^#+\s*/, '').replace(/:$/, '').toLowerCase();
+}
+
+function extractSection(content: string, headings: string[], allHeadings: string[]): string[] {
+  const headingSet = new Set(headings.map((heading) => heading.toLowerCase()));
+  const allHeadingSet = new Set(allHeadings.map((heading) => heading.toLowerCase()));
+  const lines = content.split(/\r?\n/);
+  const collected: string[] = [];
+  let capture = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const normalized = headingKey(line);
+    if (headingSet.has(normalized)) {
+      capture = true;
+      continue;
+    }
+    if (capture && allHeadingSet.has(normalized)) {
+      break;
+    }
+    if (capture) {
+      collected.push(line);
+    }
+  }
+
+  return collected;
+}
+
+function extractBulletsFromSection(lines: string[]): string[] {
+  const bullets = lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter((line) => line.length > 0);
+  return bullets.slice(0, 4);
+}
+
+function extractFirstMeaningfulLine(lines: string[]): string | null {
+  for (const line of lines) {
+    const cleaned = cleanMarkdownText(line);
+    if (cleaned) return cleaned;
+  }
+  return null;
+}
+
+function artifactDocumentForMessage(
+  message: TaskMessage,
+  documentsById: Map<string, TaskDocument>,
+  documents: TaskDocument[],
+): TaskDocument | null {
+  const linkedId = String(message.metadata?.document_id || '').trim();
+  if (linkedId && documentsById.has(linkedId)) {
+    return documentsById.get(linkedId)!;
+  }
+
+  const kind = getArtifactKind(message);
+  if (kind === 'plan') {
+    return documents.find((document) => document.document_type === 'plan') || null;
+  }
+  if (kind === 'output' || kind === 'failure') {
+    return documents.find((document) => document.document_type === 'analysis') || null;
+  }
+  return null;
+}
+
+function buildArtifactPreview(
+  message: TaskMessage,
+  linkedDocument: TaskDocument | null,
+): {
+  title: string;
+  headline: string;
+  bullets: string[];
+  footer?: string;
+} {
+  const kind = getArtifactKind(message) || 'output';
+  const source = linkedDocument?.content_md || message.content || '';
+  const summaryFromMetadata = cleanMarkdownText(String(message.metadata?.summary || ''));
+  const errorFromMetadata = cleanMarkdownText(String(message.metadata?.error || ''));
+  const nextActionFromMetadata = cleanMarkdownText(String(message.metadata?.next_action || ''));
+  const stepsFromMetadata = Array.isArray(message.metadata?.steps)
+    ? (message.metadata?.steps as string[]).map((step) => cleanMarkdownText(String(step))).filter(Boolean)
+    : [];
+  const findingsFromMetadata = Array.isArray(message.metadata?.key_findings)
+    ? (message.metadata?.key_findings as string[]).map((item) => cleanMarkdownText(String(item))).filter(Boolean)
+    : [];
+  const objectiveFromMetadata = cleanMarkdownText(String(message.metadata?.objective || ''));
+  const deliverableFromMetadata = cleanMarkdownText(String(message.metadata?.deliverable || ''));
+
+  const allHeadings = [
+    'Objective',
+    'Issue metadata',
+    'Issue',
+    'Brief',
+    'Assigned coverage',
+    'Planned approach',
+    'Expected deliverable',
+    'Executive summary',
+    'Key findings',
+    'Full output',
+    'Run failure',
+    'What failed',
+    'Required action',
+    'Saved',
+  ];
+
+  if (kind === 'plan') {
+    const objective = objectiveFromMetadata
+      || extractFirstMeaningfulLine(extractSection(source, ['Objective'], allHeadings))
+      || cleanMarkdownText(source).slice(0, 220);
+    const steps = stepsFromMetadata.length > 0
+      ? stepsFromMetadata.slice(0, 4)
+      : extractBulletsFromSection(extractSection(source, ['Planned approach'], allHeadings));
+    return {
+      title: linkedDocument?.title || String(message.metadata?.document_title || 'Execution plan'),
+      headline: objective || 'The agent saved the execution plan for this issue.',
+      bullets: steps,
+      footer: deliverableFromMetadata || undefined,
+    };
+  }
+
+  if (kind === 'failure') {
+    const failure = errorFromMetadata
+      || extractFirstMeaningfulLine(extractSection(source, ['Run failure', 'What failed'], allHeadings))
+      || cleanMarkdownText(source).slice(0, 220);
+    const nextAction = nextActionFromMetadata
+      || extractFirstMeaningfulLine(extractSection(source, ['Required action'], allHeadings))
+      || undefined;
+    return {
+      title: linkedDocument?.title || String(message.metadata?.document_title || 'Run failure'),
+      headline: failure || 'The latest run failed before a clean output was produced.',
+      bullets: [],
+      footer: nextAction,
+    };
+  }
+
+  const summary = summaryFromMetadata
+    || extractFirstMeaningfulLine(extractSection(source, ['Executive summary'], allHeadings))
+    || cleanMarkdownText(source).slice(0, 220);
+  const findings = findingsFromMetadata.length > 0
+    ? findingsFromMetadata.slice(0, 4)
+    : extractBulletsFromSection(extractSection(source, ['Key findings'], allHeadings));
+  return {
+    title: linkedDocument?.title || String(message.metadata?.document_title || 'Analyst output'),
+    headline: summary || 'The latest issue output was saved.',
+    bullets: findings,
+  };
 }
 
 function WorkspaceTabButton({
@@ -231,9 +403,11 @@ function RelatedIssueRow({
 function ThreadMessage({
   message,
   onOpenDocument,
+  linkedDocument,
 }: {
   message: TaskMessage;
   onOpenDocument: (documentId?: string | null) => void;
+  linkedDocument: TaskDocument | null;
 }) {
   const isUser = message.role === 'user';
   const isArtifactMessage = !isUser && isArtifactThreadMessage(message);
@@ -245,7 +419,7 @@ function ThreadMessage({
 
   if (isArtifactMessage) {
     const documentId = String(message.metadata?.document_id || '') || null;
-    const documentTitle = String(message.metadata?.document_title || '') || null;
+    const preview = buildArtifactPreview(message, linkedDocument);
     return (
       <div className="flex justify-start">
         <div className={`w-full max-w-[88%] rounded-[24px] border px-5 py-4 shadow-sm ${artifactThreadTone(message)}`}>
@@ -259,19 +433,29 @@ function ThreadMessage({
                 {artifactThreadLabel(message)}
               </div>
             </div>
-            {documentTitle && (
+            {(documentId || linkedDocument) && (
               <button
                 type="button"
-                onClick={() => onOpenDocument(documentId)}
+                onClick={() => onOpenDocument(documentId || linkedDocument?.id || null)}
                 className="inline-flex items-center gap-2 rounded-2xl border border-white bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
               >
                 <FileText className="h-3.5 w-3.5" />
-                Open {documentTitle}
+                Open {preview.title}
               </button>
             )}
           </div>
-          <div className="mt-4 prose prose-sm max-w-none prose-p:my-2 prose-p:leading-7 prose-ul:my-2 prose-ul:pl-5 prose-li:my-1 prose-li:text-slate-700 prose-strong:text-slate-900 prose-headings:text-slate-900">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          <div className="mt-4">
+            <p className="text-sm font-semibold leading-7 text-slate-900">{preview.headline}</p>
+            {preview.bullets.length > 0 && (
+              <ul className="mt-3 space-y-2 pl-5 text-sm leading-7 text-slate-700">
+                {preview.bullets.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            )}
+            {preview.footer && (
+              <p className="mt-3 text-sm leading-7 text-slate-600">{preview.footer}</p>
+            )}
           </div>
         </div>
       </div>
@@ -375,6 +559,7 @@ export default function IssueDetailPage() {
 
   const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+  const documentsById = useMemo(() => new Map(documents.map((document) => [document.id, document])), [documents]);
   const project = task?.project_id ? projectsById.get(task.project_id) || null : null;
   const selectedAgentCount = task?.selected_agents.length || 0;
   const canRunPipeline =
@@ -678,6 +863,7 @@ export default function IssueDetailPage() {
                       <ThreadMessage
                         key={message.id}
                         message={message}
+                        linkedDocument={artifactDocumentForMessage(message, documentsById, documents)}
                         onOpenDocument={(documentId) => {
                           if (documentId) {
                             setSelectedDocumentId(documentId);

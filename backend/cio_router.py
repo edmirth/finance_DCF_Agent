@@ -754,13 +754,13 @@ def _render_issue_plan_chat_summary(task: ResearchTask, agent: ScheduledAgent, p
         "I've started the first pass on this issue.\n\n"
         f"**Objective**\n"
         f"{_issue_objective(task)}\n\n"
-        f"**How I'm approaching it**\n"
+        f"**Plan**\n"
         f"{step_block}\n\n"
         f"**Expected output**\n"
         f"{_issue_deliverable_for_agent(agent)}\n\n"
         f"**Saved**\n"
-        f"- Document: **{plan_title}**\n"
-        f"- Next: open the **Documents** tab to review the full plan."
+        f"- **{plan_title}**\n"
+        f"- Open the **Documents** tab to review the full plan."
     )
 
 
@@ -976,6 +976,7 @@ async def _dispatch_agent_for_task(
     role_title = agent.role_title or agent.name
     plan_title = f"{role_title} execution plan"
     plan_content = _render_issue_plan_document(task, agent)
+    plan_steps = _issue_plan_steps_for_agent(task, agent)[:5]
     plan_document, created_plan = await _upsert_issue_document(
         db,
         task_id=task.id,
@@ -997,6 +998,10 @@ async def _dispatch_agent_for_task(
             "document_id": plan_document.id,
             "document_title": plan_title,
             "document_type": "plan",
+            "objective": _issue_objective(task),
+            "scope": _issue_scope_label(task),
+            "steps": plan_steps,
+            "deliverable": _issue_deliverable_for_agent(agent),
         },
     )
 

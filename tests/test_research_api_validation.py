@@ -184,6 +184,13 @@ async def test_create_task_with_direct_assignee_dispatches_agent_run():
     assert any("execution plan" in (doc.title or "").lower() for doc in plan_documents)
     assert any("started the first pass on this issue" in message.content.lower() for message in assistant_messages)
     assert any("documents" in message.content.lower() for message in assistant_messages)
+    assert any(
+        message.metadata_json
+        and "issue_plan_created" in message.metadata_json
+        and "steps" in message.metadata_json
+        and "objective" in message.metadata_json
+        for message in assistant_messages
+    )
 
 
 @pytest.mark.asyncio

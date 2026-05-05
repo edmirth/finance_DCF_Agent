@@ -1080,6 +1080,13 @@ async def test_delegated_run_updates_assigned_research_task():
     assert any(doc.title == "Risk Manager output" for doc in task_documents)
     assert any("finished the first pass on this issue" in message.content.lower() for message in assistant_messages)
     assert any("documents" in message.content.lower() for message in assistant_messages)
+    assert any(
+        message.metadata_json
+        and "issue_run_completed" in message.metadata_json
+        and "key_findings" in message.metadata_json
+        and "summary" in message.metadata_json
+        for message in assistant_messages
+    )
     assert refreshed_heartbeat is not None
     assert refreshed_heartbeat.status == "completed"
 
