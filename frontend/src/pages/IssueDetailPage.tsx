@@ -689,13 +689,13 @@ export default function IssueDetailPage() {
                   )}
                 </div>
 
-                <div className="mt-6 rounded-[24px] border border-slate-200 bg-white p-4">
+                <div className="mt-6 rounded-[24px] border border-slate-200 bg-white p-4 focus-within:outline-none focus-within:ring-0">
                   <textarea
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
                     placeholder={`Ask ${currentChatTargetLabel} to go deeper on this issue...`}
                     rows={4}
-                    className="w-full resize-none border-none bg-transparent text-sm leading-7 text-slate-900 outline-none placeholder:text-slate-400"
+                    className="w-full resize-none border-none bg-transparent text-sm leading-7 text-slate-900 outline-none focus:outline-none focus:ring-0 placeholder:text-slate-400"
                   />
                   <div className="mt-4 flex items-center justify-between gap-4">
                     <div className="text-xs text-slate-400">

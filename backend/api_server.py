@@ -3370,8 +3370,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
             raise HTTPException(status_code=409, detail=f"{assigned_agent.role_title or assigned_agent.name} is paused")
 
     should_queue_cio_review = (
-        triggered_by == "manual_pm_review"
-        and assigned_agent is None
+        assigned_agent is None
         and owner_agent_id is None
     )
 
