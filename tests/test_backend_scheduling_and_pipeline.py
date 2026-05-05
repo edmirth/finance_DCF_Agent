@@ -1085,6 +1085,9 @@ async def test_delegated_run_updates_assigned_research_task():
 
 
 def test_agent_runner_executes_specialist_template():
+    # Specialist templates now route through _run_instruction_driven_research
+    # (fetches real financials + Tavily search + focused Claude call) rather than
+    # the arena sub-agent. Patch at that level.
     runner = AgentRunnerService()
     config = SimpleNamespace(
         template="fundamental_analyst",
@@ -1094,17 +1097,12 @@ def test_agent_runner_executes_specialist_template():
         last_run_summary="",
     )
 
-    fake_section = SimpleNamespace(
-        title="Fundamental Analysis",
-        sentiment="bullish",
-        confidence=0.76,
-        key_points=["Revenue growth remains healthy.", "Margins are stabilizing."],
-        content="Detailed fundamental write-up.",
-        error=None,
-    )
-
     with (
-        patch("backend.research_orchestrator.run_specialist_agent_once", return_value=fake_section),
+        patch.object(
+            AgentRunnerService,
+            "_run_instruction_driven_research",
+            return_value=({"AAPL": "## AAPL\n\nBULLISH. Revenue growth healthy, margins stabilizing."}, ["fundamental_analyst"]),
+        ),
         patch.object(
             AgentRunnerService,
             "_synthesize",
@@ -1120,12 +1118,14 @@ def test_agent_runner_executes_specialist_template():
         outcome = runner.execute(config)
 
     assert outcome["error"] is None
-    assert outcome["agents_used"] == ["fundamental"]
+    assert outcome["agents_used"] == ["fundamental_analyst"]
     assert outcome["tickers_analyzed"] == ["AAPL"]
     assert outcome["findings_summary"] == "summary"
 
 
 def test_agent_runner_returns_error_when_specialist_has_no_usable_data():
+    # When _run_instruction_driven_research returns empty outputs (all tickers
+    # failed), the runner should surface the "no outputs" error.
     runner = AgentRunnerService()
     config = SimpleNamespace(
         template="fundamental_analyst",
@@ -1135,16 +1135,11 @@ def test_agent_runner_returns_error_when_specialist_has_no_usable_data():
         last_run_summary="",
     )
 
-    blocked_section = SimpleNamespace(
-        title="Fundamental Analysis",
-        sentiment="neutral",
-        confidence=0.0,
-        key_points=[],
-        content="",
-        error="Critical financial data is missing for AAPL.",
-    )
-
-    with patch("backend.research_orchestrator.run_specialist_agent_once", return_value=blocked_section):
+    with patch.object(
+        AgentRunnerService,
+        "_run_instruction_driven_research",
+        return_value=({}, []),
+    ):
         outcome = runner.execute(config)
 
     assert outcome["error"] == "No agent outputs — all sub-agents failed"

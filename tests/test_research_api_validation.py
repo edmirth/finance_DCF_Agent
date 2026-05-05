@@ -187,7 +187,10 @@ async def test_create_task_with_direct_assignee_dispatches_agent_run():
 
 
 @pytest.mark.asyncio
-async def test_create_task_with_direct_assignee_and_no_scope_stays_pending():
+async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immediately():
+    # When an agent has its own configured tickers, the scope check is skipped
+    # and the task is dispatched immediately (status="running"), even if the task
+    # itself has no explicit ticker. The agent will research its own coverage universe.
     agent_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
 
@@ -228,21 +231,10 @@ async def test_create_task_with_direct_assignee_and_no_scope_stays_pending():
     body = response.json()
     assert body["ticker"] == "GENERAL"
     assert body["assigned_agent_id"] == agent_id
-    assert body["status"] == "pending"
-    assert body["run_id"] is None
-    assert "explicit ticker or company scope" in (body["error"] or "").lower()
-
-    async with AsyncSessionLocal() as db:
-        chat_result = await db.execute(
-            select(ResearchTaskMessage).where(
-                ResearchTaskMessage.task_id == body["id"],
-                ResearchTaskMessage.kind == "chat",
-                ResearchTaskMessage.role == "assistant",
-            )
-        )
-        assistant_messages = chat_result.scalars().all()
-
-    assert any("explicit ticker or company scope" in message.content.lower() for message in assistant_messages)
+    # Agent has own tickers — dispatch proceeds, task goes running immediately
+    assert body["status"] == "running"
+    assert body["run_id"] is not None
+    assert body["error"] is None
 
 
 @pytest.mark.asyncio
