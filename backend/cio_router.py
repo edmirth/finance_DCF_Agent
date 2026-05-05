@@ -247,7 +247,7 @@ async def _build_team_context(db: AsyncSession) -> str:
                 reports_to = (manager.role_title or manager.name) if manager else "Unknown manager"
             summary = f"\n   Latest finding: {a.last_run_summary}" if a.last_run_summary else ""
             lines.append(
-                f"- **{display_name}** | Reports to: {reports_to} | {status} | Watches: {ticker_str} | {last_run}{summary}"
+                f"- **{display_name}** [id:{a.id}] | Reports to: {reports_to} | {status} | Watches: {ticker_str} | {last_run}{summary}"
             )
 
     lines.append("\n## Recent Findings\n")
@@ -472,19 +472,20 @@ def _build_task_review_prompt(
         selected_agents = []
 
     lines = [
-        "Review this issue for the PM workflow.",
+        "A new issue has been filed and needs to be staffed. Review and act immediately.",
         f"Title: {task.title}",
-        f"Ticker: {task.ticker}",
+        f"Ticker: {task.ticker or 'Not specified'}",
         f"Task type: {task.task_type}",
         f"Priority: {task.priority}",
         f"Project: {project_title or 'No project'}",
         f"Project thesis: {project_thesis or 'No project thesis'}",
         f"Description: {task.notes or 'No description provided.'}",
-        f"Current staffing: {', '.join(selected_agents) if selected_agents else 'Unstaffed'}",
-        (
-            "Decide whether you should answer directly, delegate to an existing agent, "
-            "or propose a hire. If staffing is missing, propose the right hire or delegation."
-        ),
+        f"Current staffing: {', '.join(selected_agents) if selected_agents else 'Unstaffed — needs an agent'}",
+        "",
+        "Your job is to staff this issue RIGHT NOW. Decision rules:",
+        "1. If any active agent on your team can cover this issue, DELEGATE to them immediately. Use their exact [id:...] from the team list.",
+        "2. Only propose a hire if NO active agent can cover this. Do not propose a hire if an existing agent can do it.",
+        "3. Do NOT answer directly — this issue needs an agent to run research, not a chat response.",
     ]
     return "\n".join(lines)
 
@@ -866,7 +867,8 @@ async def _dispatch_agent_for_task(
     if task.status in {"done", "cancelled"}:
         return {"run_id": None, "reused": False, "skipped": True}
 
-    if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task):
+    agent_has_own_tickers = bool(json.loads(agent.tickers or "[]"))
+    if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task) and not agent_has_own_tickers:
         role_title = agent.role_title or agent.name
         reason = (
             f"{role_title} needs an explicit ticker or company scope before it can start. "
