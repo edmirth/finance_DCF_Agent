@@ -1015,6 +1015,21 @@ export const runTaskPipeline = async (
   return response.data;
 };
 
+export const refreshTaskWorkQueue = async (
+  limit = 100,
+): Promise<{
+  queued_for_ceo: number;
+  redispatched: number;
+  moved_to_review: number;
+  skipped: number;
+  scanned: number;
+}> => {
+  const response = await api.post('/tasks/refresh-work', undefined, {
+    params: { limit },
+  });
+  return response.data;
+};
+
 // ─── Firm Routines (Phase 4) ────────────────────────────────────────────────
 
 export interface FirmRoutineCatalogItem {

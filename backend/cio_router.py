@@ -704,20 +704,6 @@ def _coverage_universe_label(agent: ScheduledAgent) -> str:
     return ", ".join(cleaned) if cleaned else "Broad / general coverage"
 
 
-def _single_explicit_coverage_ticker(agent: ScheduledAgent) -> Optional[str]:
-    try:
-        coverage = json.loads(agent.tickers or "[]") or []
-    except Exception:
-        coverage = []
-    cleaned = [
-        str(value).strip().upper()
-        for value in coverage
-        if str(value).strip() and str(value).strip().upper() != "GENERAL"
-    ]
-    unique = list(dict.fromkeys(cleaned))
-    return unique[0] if len(unique) == 1 else None
-
-
 def _task_has_explicit_scope(task: ResearchTask) -> bool:
     ticker = (task.ticker or "").strip()
     return bool(ticker and ticker.upper() != "GENERAL")
@@ -856,8 +842,43 @@ async def _auto_review_task_with_cio(task_id: str) -> None:
                 project_thesis=project_thesis,
             )
             await db.commit()
-    except Exception:
+    except Exception as exc:
         logger.exception("Automatic CEO review failed for task %s", task_id)
+        async with AsyncSessionLocal() as db:
+            task = await db.get(ResearchTask, task_id)
+            if task is None:
+                return
+            task.status = "in_review"
+            task.error = (
+                "CEO routing failed before the issue could be assigned. "
+                "Review the issue and retry dispatch."
+            )
+            task.updated_at = datetime.now(timezone.utc)
+            await _record_issue_agent_message(
+                db,
+                task_id,
+                author_label="CEO",
+                author_agent_id=None,
+                content=(
+                    "I could not complete routing for this issue, so it has been moved to review. "
+                    "Retry the CEO review or assign the right analyst directly."
+                ),
+                metadata={
+                    "event": "ceo_review_failed",
+                    "error": str(exc),
+                },
+            )
+            await _append_issue_activity(
+                db,
+                task_id,
+                "CEO review failed before assignment. Manual review is required.",
+                author_label="System",
+                metadata={
+                    "event": "ceo_review_failed",
+                    "error": str(exc),
+                },
+            )
+            await db.commit()
 
 
 def queue_cio_review_for_task(task_id: str) -> None:
@@ -881,23 +902,6 @@ async def _dispatch_agent_for_task(
     if task.status in {"done", "cancelled"}:
         return {"run_id": None, "reused": False, "skipped": True}
 
-    if not _task_has_explicit_scope(task):
-        inferred_ticker = _single_explicit_coverage_ticker(agent)
-        if inferred_ticker:
-            task.ticker = inferred_ticker
-            task.updated_at = datetime.now(timezone.utc)
-            await _append_issue_activity(
-                db,
-                task.id,
-                f"Resolved issue scope to {inferred_ticker} from {agent.role_title or agent.name} coverage.",
-                author_label="System",
-                metadata={
-                    "event": "issue_scope_inferred",
-                    "agent_id": agent.id,
-                    "ticker": inferred_ticker,
-                },
-            )
-
     if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task):
         role_title = agent.role_title or agent.name
         reason = (
@@ -905,7 +909,7 @@ async def _dispatch_agent_for_task(
             "Update the issue with a concrete company or symbol, then dispatch it again."
         )
         task.assigned_agent_id = agent.id
-        task.status = "pending"
+        task.status = "in_review"
         task.run_id = None
         task.error = reason
         task.updated_at = datetime.now(timezone.utc)
@@ -923,7 +927,7 @@ async def _dispatch_agent_for_task(
             reason,
             author_label=role_title,
             author_agent_id=agent.id,
-            metadata={"event": "issue_scope_required", "agent_id": agent.id},
+            metadata={"event": "issue_scope_required", "agent_id": agent.id, "status": "in_review"},
         )
         await db.commit()
         return {"run_id": None, "reused": False, "skipped": True, "reason": "scope_required"}

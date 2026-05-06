@@ -195,8 +195,8 @@ async def test_create_task_with_direct_assignee_dispatches_agent_run():
 
 @pytest.mark.asyncio
 async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immediately():
-    # When an agent has exactly one configured coverage ticker, the task scope is
-    # resolved to that ticker and the task is dispatched immediately.
+    # An agent watchlist must not rewrite the issue scope. Broad asks stay in
+    # review until the issue names a concrete ticker or company.
     agent_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
 
@@ -235,13 +235,11 @@ async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immed
 
     assert response.status_code == 201
     body = response.json()
-    assert body["ticker"] == "AAPL"
+    assert body["ticker"] == "GENERAL"
     assert body["assigned_agent_id"] == agent_id
-    # Agent has a single explicit coverage ticker — dispatch proceeds and the
-    # issue is given a concrete scope instead of remaining GENERAL.
-    assert body["status"] == "running"
-    assert body["run_id"] is not None
-    assert body["error"] is None
+    assert body["status"] == "in_review"
+    assert body["run_id"] is None
+    assert "explicit ticker or company scope" in (body["error"] or "")
 
 
 @pytest.mark.asyncio
@@ -408,6 +406,92 @@ async def test_list_tasks_can_filter_by_agent_id():
     assert "Assigned to agent" in titles
     assert "Owned by agent" in titles
     assert "Unrelated task" not in titles
+
+
+@pytest.mark.asyncio
+async def test_refresh_task_work_queue_requeues_unassigned_pending_issue():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        create_response = await client.post(
+            "/tasks",
+            json={"title": "Route this issue through the CEO"},
+        )
+        task_id = create_response.json()["id"]
+
+        queued: list[str] = []
+
+        with patch("backend.cio_router.queue_cio_review_for_task", side_effect=lambda task_id: queued.append(task_id)):
+            response = await client.post("/tasks/refresh-work")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["queued_for_ceo"] >= 1
+    assert task_id in queued
+
+
+@pytest.mark.asyncio
+async def test_refresh_task_work_queue_redispatches_assigned_pending_issue():
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="AAPL",
+                task_type="ad_hoc",
+                title="Restart this analyst issue",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_assignment",
+                notes="Restart the work",
+                status="pending",
+                run_id=None,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post("/tasks/refresh-work")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["redispatched"] >= 1
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+
+    assert task is not None
+    assert task.status == "running"
+    assert task.run_id is not None
 
 
 @pytest.mark.asyncio

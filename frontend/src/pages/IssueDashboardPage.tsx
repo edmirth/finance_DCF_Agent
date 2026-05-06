@@ -8,6 +8,7 @@ import {
   FilePlus2,
   FolderOpen,
   Loader2,
+  RotateCw,
 } from 'lucide-react';
 import {
   createTask,
@@ -15,6 +16,7 @@ import {
   getScheduledAgents,
   getTaskBoardStats,
   listTasks,
+  refreshTaskWorkQueue,
   type CreateTaskBody,
   type ResearchTask,
   type TaskPriority,
@@ -541,6 +543,8 @@ export default function IssueDashboardPage() {
   const [agents, setAgents] = useState<ScheduledAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshingQueue, setRefreshingQueue] = useState(false);
+  const [refreshSummary, setRefreshSummary] = useState<string | null>(null);
 
   const showComposer = searchParams.get('new') === '1';
   const preselectedAssigneeId = searchParams.get('assignee');
@@ -591,6 +595,27 @@ export default function IssueDashboardPage() {
   const handleCreated = (task: ResearchTask, options?: { redirectToInbox?: boolean }) => {
     closeComposer();
     navigate(options?.redirectToInbox ? '/inbox' : `/issues/${task.id}`);
+  };
+
+  const handleRefreshQueue = async () => {
+    setRefreshingQueue(true);
+    setRefreshSummary(null);
+    try {
+      const result = await refreshTaskWorkQueue();
+      await load();
+      setRefreshSummary(
+        [
+          `${result.redispatched} restarted`,
+          `${result.queued_for_ceo} requeued`,
+          `${result.moved_to_review} moved to review`,
+          `${result.skipped} skipped`,
+        ].join(' · '),
+      );
+    } catch {
+      setRefreshSummary('Queue refresh failed.');
+    } finally {
+      setRefreshingQueue(false);
+    }
   };
 
   return (
@@ -650,7 +675,19 @@ export default function IssueDashboardPage() {
               <p className="mt-1 text-sm text-slate-500">
                 Each issue is the unit of work. Click through to review assignment, task state, and findings.
               </p>
+              {refreshSummary ? (
+                <p className="mt-2 text-xs font-medium text-slate-500">{refreshSummary}</p>
+              ) : null}
             </div>
+            <button
+              type="button"
+              onClick={handleRefreshQueue}
+              disabled={refreshingQueue}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RotateCw className={`h-4 w-4 ${refreshingQueue ? 'animate-spin' : ''}`} />
+              Refresh work
+            </button>
           </div>
 
           {loading ? (

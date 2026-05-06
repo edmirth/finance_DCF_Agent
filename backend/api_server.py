@@ -4039,6 +4039,114 @@ async def run_task_pipeline(task_id: str, db: AsyncSession = Depends(get_db)):
     return {"run_id": run_id, "task_id": task_id, "ticker": ticker}
 
 
+@app.post("/tasks/refresh-work")
+async def refresh_task_work_queue(
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually sweep pending issues and restart the routing/dispatch path.
+
+    - Unassigned pending issues are re-queued to the CEO.
+    - Agent-assigned pending issues are re-dispatched through the normal
+      agent runner path.
+    """
+    from backend.cio_router import _append_issue_activity, _dispatch_agent_for_task, queue_cio_review_for_task
+    from backend.models import ResearchTask, ScheduledAgent
+
+    normalized_limit = min(max(limit, 1), 500)
+    result = await db.execute(
+        select(ResearchTask)
+        .where(
+            ResearchTask.status == "pending",
+            ResearchTask.run_id.is_(None),
+        )
+        .order_by(ResearchTask.created_at.asc())
+        .limit(normalized_limit)
+    )
+    tasks = result.scalars().all()
+
+    queued_for_ceo = 0
+    redispatched = 0
+    moved_to_review = 0
+    skipped = 0
+    touched_task_ids: list[str] = []
+
+    for task in tasks:
+        touched_task_ids.append(task.id)
+        if task.assigned_agent_id:
+            agent = await db.get(ScheduledAgent, task.assigned_agent_id)
+            if agent is None:
+                task.status = "in_review"
+                task.error = "Assigned agent no longer exists. Reassign this issue."
+                task.updated_at = datetime.now(timezone.utc)
+                await _append_task_activity(
+                    db,
+                    task.id,
+                    "Assigned agent was missing during queue refresh. Issue moved to review.",
+                    metadata={"event": "queue_refresh_missing_agent"},
+                )
+                moved_to_review += 1
+                continue
+
+            dispatch_result = await _dispatch_agent_for_task(
+                db,
+                task,
+                agent,
+                trigger_type="manual",
+                initiated_by="System",
+                note="Manual queue refresh restarted this issue.",
+            )
+            if dispatch_result.get("run_id"):
+                redispatched += 1
+            elif dispatch_result.get("reason") == "scope_required":
+                moved_to_review += 1
+            else:
+                skipped += 1
+            continue
+
+        if task.owner_agent_id:
+            task.status = "in_review"
+            task.error = "Issue has an owner but no runnable assignee. Review assignment."
+            task.updated_at = datetime.now(timezone.utc)
+            await _append_task_activity(
+                db,
+                task.id,
+                "Queue refresh found an owner-only issue with no runnable assignee. Issue moved to review.",
+                metadata={"event": "queue_refresh_owner_only"},
+            )
+            moved_to_review += 1
+            continue
+
+        await _append_issue_activity(
+            db,
+            task.id,
+            "Manual queue refresh re-queued this issue for CEO routing.",
+            author_label="System",
+            metadata={"event": "queue_refresh_requeued"},
+        )
+        queued_for_ceo += 1
+
+    await db.commit()
+
+    for task_id in touched_task_ids:
+        # CEO reviews must be launched after commit so the background worker
+        # can observe the latest task state with a fresh session.
+        task = next((t for t in tasks if t.id == task_id), None)
+        if task is None:
+            continue
+        if task.assigned_agent_id is None and task.owner_agent_id is None:
+            queue_cio_review_for_task(task_id)
+
+    return {
+        "queued_for_ceo": queued_for_ceo,
+        "redispatched": redispatched,
+        "moved_to_review": moved_to_review,
+        "skipped": skipped,
+        "scanned": len(tasks),
+    }
+
+
 @app.get("/tasks/stats/board")
 async def task_board_stats(db: AsyncSession = Depends(get_db)):
     """Aggregated counts per status for the board header."""
