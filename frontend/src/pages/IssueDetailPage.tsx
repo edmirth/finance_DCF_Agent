@@ -39,6 +39,25 @@ import type { ProjectSummary, ScheduledAgent } from '../types';
 type IssueTab = 'chat' | 'activity' | 'related' | 'documents';
 const LIVE_EXECUTION_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review'];
 type ArtifactKind = 'plan' | 'output' | 'failure';
+const DOCUMENT_HEADINGS = [
+  'Objective',
+  'Issue metadata',
+  'Issue',
+  'Snapshot',
+  'Brief',
+  'Assigned coverage',
+  'Planned approach',
+  'Expected deliverable',
+  'Bottom line',
+  'Executive summary',
+  'Key findings',
+  'Detailed analysis',
+  'Full output',
+  'Run failure',
+  'What failed',
+  'Required action',
+  'Saved',
+];
 
 function displayTicker(ticker: string): string {
   return ticker === 'GENERAL' ? 'General' : ticker;
@@ -280,30 +299,13 @@ function buildArtifactPreview(
   const objectiveFromMetadata = cleanMarkdownText(String(message.metadata?.objective || ''));
   const deliverableFromMetadata = cleanMarkdownText(String(message.metadata?.deliverable || ''));
 
-  const allHeadings = [
-    'Objective',
-    'Issue metadata',
-    'Issue',
-    'Brief',
-    'Assigned coverage',
-    'Planned approach',
-    'Expected deliverable',
-    'Executive summary',
-    'Key findings',
-    'Full output',
-    'Run failure',
-    'What failed',
-    'Required action',
-    'Saved',
-  ];
-
   if (kind === 'plan') {
     const objective = objectiveFromMetadata
-      || extractFirstMeaningfulLine(extractSection(source, ['Objective'], allHeadings))
+      || extractFirstMeaningfulLine(extractSection(source, ['Objective'], DOCUMENT_HEADINGS))
       || cleanMarkdownText(source).slice(0, 220);
     const steps = stepsFromMetadata.length > 0
       ? stepsFromMetadata.slice(0, 4)
-      : extractBulletsFromSection(extractSection(source, ['Planned approach'], allHeadings));
+      : extractBulletsFromSection(extractSection(source, ['Planned approach'], DOCUMENT_HEADINGS));
     return {
       title: linkedDocument?.title || String(message.metadata?.document_title || 'Execution plan'),
       headline: objective || 'The agent saved the execution plan for this issue.',
@@ -314,10 +316,10 @@ function buildArtifactPreview(
 
   if (kind === 'failure') {
     const failure = errorFromMetadata
-      || extractFirstMeaningfulLine(extractSection(source, ['Run failure', 'What failed'], allHeadings))
+      || extractFirstMeaningfulLine(extractSection(source, ['Run failure', 'What failed'], DOCUMENT_HEADINGS))
       || cleanMarkdownText(source).slice(0, 220);
     const nextAction = nextActionFromMetadata
-      || extractFirstMeaningfulLine(extractSection(source, ['Required action'], allHeadings))
+      || extractFirstMeaningfulLine(extractSection(source, ['Required action'], DOCUMENT_HEADINGS))
       || undefined;
     return {
       title: linkedDocument?.title || String(message.metadata?.document_title || 'Run failure'),
@@ -328,17 +330,130 @@ function buildArtifactPreview(
   }
 
   const summary = summaryFromMetadata
-    || extractFirstMeaningfulLine(extractSection(source, ['Executive summary'], allHeadings))
+    || extractFirstMeaningfulLine(extractSection(source, ['Bottom line', 'Executive summary'], DOCUMENT_HEADINGS))
     || cleanMarkdownText(source).slice(0, 220);
   const findings = findingsFromMetadata.length > 0
     ? findingsFromMetadata.slice(0, 4)
-    : extractBulletsFromSection(extractSection(source, ['Key findings'], allHeadings));
+    : extractBulletsFromSection(extractSection(source, ['Key findings'], DOCUMENT_HEADINGS));
   return {
     title: linkedDocument?.title || String(message.metadata?.document_title || 'Analyst output'),
     headline: summary || 'The latest issue output was saved.',
     bullets: findings,
   };
 }
+
+function parseLabeledBulletRows(lines: string[]): Array<{ label: string; value: string }> {
+  return lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*]\s+/, '').trim())
+    .map((line) => {
+      const match = line.match(/^([^:]+):\s*(.+)$/);
+      if (!match) return null;
+      return {
+        label: cleanMarkdownText(match[1]),
+        value: cleanMarkdownText(match[2]),
+      };
+    })
+    .filter((item): item is { label: string; value: string } => Boolean(item));
+}
+
+function cleanDocumentReportMarkdown(text: string, scopeLabel?: string): string {
+  const lines = (text || '').split(/\r?\n/);
+  const cleanedLines: string[] = [];
+  let skipLeadingScope = Boolean(scopeLabel);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    const line = rawLine.trim();
+    if (!line) {
+      cleanedLines.push('');
+      continue;
+    }
+
+    if (skipLeadingScope && line.toUpperCase() === scopeLabel?.toUpperCase()) {
+      const next = (lines[index + 1] || '').trim();
+      if (next.startsWith('#') || next.toUpperCase().includes(scopeLabel!.toUpperCase())) {
+        skipLeadingScope = false;
+        continue;
+      }
+    }
+    skipLeadingScope = false;
+
+    const headingMatch = line.match(/^([A-Z][A-Z /&()\-]{4,}):\s*$/);
+    const inlineLabelMatch = line.match(/^([A-Z][A-Z /&()\-]{2,}):\s+(.+)$/);
+    if (headingMatch) {
+      cleanedLines.push(`### ${headingMatch[1].toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase())}`);
+      continue;
+    }
+    if (line.includes(' — ') && line === line.toUpperCase() && line.length <= 100) {
+      cleanedLines.push(`## ${line.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase())}`);
+      continue;
+    }
+    if (inlineLabelMatch) {
+      const label = inlineLabelMatch[1].toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
+      cleanedLines.push(`**${label}:** ${inlineLabelMatch[2].trim()}`);
+      continue;
+    }
+    cleanedLines.push(rawLine);
+  }
+
+  return cleanedLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function buildDocumentViewModel(document: TaskDocument, task: ResearchTask) {
+  const source = document.content_md || '';
+  const snapshotRows = parseLabeledBulletRows(
+    extractSection(source, ['Snapshot', 'Issue', 'Issue metadata'], DOCUMENT_HEADINGS),
+  );
+  const objective = extractFirstMeaningfulLine(extractSection(source, ['Objective'], DOCUMENT_HEADINGS));
+  const planSteps = extractBulletsFromSection(extractSection(source, ['Planned approach'], DOCUMENT_HEADINGS));
+  const deliverable = extractFirstMeaningfulLine(extractSection(source, ['Expected deliverable', 'Assigned coverage'], DOCUMENT_HEADINGS));
+  const summary = extractFirstMeaningfulLine(extractSection(source, ['Bottom line', 'Executive summary'], DOCUMENT_HEADINGS));
+  const findings = extractBulletsFromSection(extractSection(source, ['Key findings'], DOCUMENT_HEADINGS));
+  const failure = extractFirstMeaningfulLine(extractSection(source, ['Run failure', 'What failed'], DOCUMENT_HEADINGS));
+  const nextAction = extractFirstMeaningfulLine(extractSection(source, ['Required action'], DOCUMENT_HEADINGS));
+  const detailLines = extractSection(source, ['Detailed analysis', 'Full output'], DOCUMENT_HEADINGS);
+  const fallbackScope = task.ticker === 'GENERAL' ? undefined : task.ticker;
+  const detailMarkdown = cleanDocumentReportMarkdown(detailLines.join('\n').trim(), fallbackScope);
+  const derivedDetailSummary = extractFirstMeaningfulLine(detailMarkdown.split(/\r?\n/));
+  const summaryIsGeneric = !summary || summary === 'Research completed. See full report for details.';
+  const findingsAreGeneric = findings.length === 0 || findings.every((item) => item.toLowerCase() === 'none recorded');
+
+  return {
+    snapshotRows,
+    objective,
+    planSteps,
+    deliverable,
+    summary: summaryIsGeneric ? (derivedDetailSummary || summary) : summary,
+    findings: findingsAreGeneric ? extractBulletsFromSection(detailMarkdown.split(/\r?\n/)) : findings,
+    failure,
+    nextAction,
+    detailMarkdown,
+  };
+}
+
+const markdownComponents = {
+  h1: (props: any) => <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900" {...props} />,
+  h2: (props: any) => <h2 className="mt-8 border-t border-slate-100 pt-6 text-2xl font-semibold tracking-tight text-slate-900" {...props} />,
+  h3: (props: any) => <h3 className="mt-6 text-lg font-semibold text-slate-900" {...props} />,
+  p: (props: any) => <p className="mt-4 text-[15px] leading-8 text-slate-700" {...props} />,
+  ul: (props: any) => <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-7 text-slate-700" {...props} />,
+  ol: (props: any) => <ol className="mt-4 list-decimal space-y-2 pl-5 text-[15px] leading-7 text-slate-700" {...props} />,
+  li: (props: any) => <li className="marker:text-slate-400" {...props} />,
+  strong: (props: any) => <strong className="font-semibold text-slate-900" {...props} />,
+  code: ({ inline, ...props }: any) =>
+    inline ? (
+      <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[13px] text-slate-700" {...props} />
+    ) : (
+      <code className="block overflow-x-auto rounded-2xl bg-slate-950 p-4 font-mono text-[13px] text-slate-100" {...props} />
+    ),
+  table: (props: any) => <table className="mt-6 w-full border-collapse overflow-hidden rounded-2xl border border-slate-200 text-left text-sm" {...props} />,
+  thead: (props: any) => <thead className="bg-slate-50 text-slate-500" {...props} />,
+  th: (props: any) => <th className="border-b border-slate-200 px-4 py-3 font-semibold" {...props} />,
+  td: (props: any) => <td className="border-b border-slate-100 px-4 py-3 align-top text-slate-700" {...props} />,
+  blockquote: (props: any) => <blockquote className="mt-4 border-l-4 border-slate-200 pl-4 italic text-slate-600" {...props} />,
+};
 
 function WorkspaceTabButton({
   label,
@@ -568,6 +683,10 @@ export default function IssueDetailPage() {
     selectedAgentCount > 0 &&
     ['pending', 'failed'].includes(task.status);
   const selectedDocument = documents.find((doc) => doc.id === selectedDocumentId) || null;
+  const selectedDocumentView = useMemo(
+    () => (selectedDocument && task ? buildDocumentViewModel(selectedDocument, task) : null),
+    [selectedDocument, task],
+  );
   const currentChatTargetLabel = task ? assigneeLabel(task, agentsById) : 'Agent';
   const latestActivityMessage = activityMessages.length > 0 ? activityMessages[activityMessages.length - 1] : null;
   const recentExecutionEvents = useMemo(() => activityMessages.slice(-5).reverse(), [activityMessages]);
@@ -1225,10 +1344,115 @@ export default function IssueDetailPage() {
                           className="min-h-[640px] w-full resize-none rounded-[24px] border border-slate-200 bg-slate-50 p-5 font-mono text-sm leading-7 text-slate-900 outline-none"
                         />
                       ) : (
-                        <div className="prose prose-slate max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {selectedDocument.content_md || 'No document content yet.'}
-                          </ReactMarkdown>
+                        <div className="space-y-6">
+                          {selectedDocument.document_type === 'analysis' && selectedDocumentView ? (
+                            <>
+                              {selectedDocumentView.snapshotRows.length > 0 && (
+                                <div className="grid gap-3 md:grid-cols-4">
+                                  {selectedDocumentView.snapshotRows.map((row) => (
+                                    <div key={row.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                        {row.label}
+                                      </p>
+                                      <p className="mt-2 text-sm font-medium text-slate-900">{row.value}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Bottom line</p>
+                                <p className="mt-3 text-base leading-8 text-slate-900">
+                                  {selectedDocumentView.summary || 'No summary was saved for this analyst output.'}
+                                </p>
+                              </div>
+
+                              <div className="rounded-[24px] border border-slate-200 bg-white p-5">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Key findings</p>
+                                {selectedDocumentView.findings.length > 0 ? (
+                                  <ul className="mt-4 space-y-3">
+                                    {selectedDocumentView.findings.map((finding) => (
+                                      <li key={finding} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-700">
+                                        {finding}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="mt-3 text-sm text-slate-500">No structured findings were saved for this run.</p>
+                                )}
+                              </div>
+
+                              {selectedDocumentView.detailMarkdown ? (
+                                <div className="rounded-[24px] border border-slate-200 bg-white p-6">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Detailed analysis</p>
+                                  <div className="mt-4 max-w-none">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                                      {selectedDocumentView.detailMarkdown}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              ) : selectedDocumentView.failure ? (
+                                <div className="rounded-[24px] border border-red-200 bg-red-50 p-5">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-red-600">Run failure</p>
+                                  <p className="mt-3 text-sm leading-7 text-red-800">{selectedDocumentView.failure}</p>
+                                  {selectedDocumentView.nextAction && (
+                                    <p className="mt-3 text-sm font-medium text-red-900">Next action: {selectedDocumentView.nextAction}</p>
+                                  )}
+                                </div>
+                              ) : null}
+                            </>
+                          ) : selectedDocument.document_type === 'plan' && selectedDocumentView ? (
+                            <>
+                              {selectedDocumentView.snapshotRows.length > 0 && (
+                                <div className="grid gap-3 md:grid-cols-3">
+                                  {selectedDocumentView.snapshotRows.map((row) => (
+                                    <div key={row.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                        {row.label}
+                                      </p>
+                                      <p className="mt-2 text-sm font-medium text-slate-900">{row.value}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="rounded-[24px] border border-blue-200 bg-blue-50 p-5">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Objective</p>
+                                <p className="mt-3 text-base leading-8 text-blue-950">
+                                  {selectedDocumentView.objective || 'No clear objective was saved for this plan.'}
+                                </p>
+                              </div>
+
+                              <div className="rounded-[24px] border border-slate-200 bg-white p-5">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Planned approach</p>
+                                {selectedDocumentView.planSteps.length > 0 ? (
+                                  <ol className="mt-4 space-y-3">
+                                    {selectedDocumentView.planSteps.map((step, index) => (
+                                      <li key={`${index}-${step}`} className="flex items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                                        <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                                          {index + 1}
+                                        </span>
+                                        <span className="text-sm leading-7 text-slate-700">{step}</span>
+                                      </li>
+                                    ))}
+                                  </ol>
+                                ) : (
+                                  <p className="mt-3 text-sm text-slate-500">No plan steps were saved.</p>
+                                )}
+                                {selectedDocumentView.deliverable && (
+                                  <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                                    <span className="font-semibold text-slate-900">Expected deliverable:</span> {selectedDocumentView.deliverable}
+                                  </div>
+                                )}
+                              </div>
+                            </>
+                          ) : (
+                            <div className="max-w-none">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                                {selectedDocument.content_md || 'No document content yet.'}
+                              </ReactMarkdown>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

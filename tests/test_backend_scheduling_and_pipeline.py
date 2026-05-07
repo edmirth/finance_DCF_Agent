@@ -1185,6 +1185,146 @@ def test_agent_runner_instruction_driven_research_fails_closed_when_financial_da
     assert outcome["agents_used"] == []
 
 
+def test_agent_runner_synthesis_fallback_stays_structured():
+    runner = AgentRunnerService()
+    config = SimpleNamespace(
+        template="fundamental_analyst",
+        topics="[]",
+        instruction="Analyze the current setup.",
+        last_run_summary="",
+    )
+    raw_outputs = {
+        "PLTR": (
+            "PLTR\n"
+            "## PLTR — Fundamental Analysis (NEUTRAL, 45% confidence)\n\n"
+            "Palantir remains executionally strong, but the current valuation still demands high growth.\n\n"
+            "- Commercial growth remains healthy.\n"
+            "- Government demand is steady.\n"
+            "- Margin structure remains solid.\n"
+            "DATA OBSERVATIONS:\n"
+            "Revenue CAGR: 24%. FCF margin: 21%."
+        )
+    }
+
+    with patch.object(runner._anthropic.messages, "create", side_effect=RuntimeError("boom")):
+        synthesis = runner._synthesize(raw_outputs, config)
+
+    assert synthesis["summary"]
+    assert synthesis["summary"] != "Research completed. See full report for details."
+    assert synthesis["key_findings"]
+    assert "## PLTR\nPLTR" not in synthesis["full_report"]
+    assert "### Data Observations" in synthesis["full_report"]
+
+
+@pytest.mark.asyncio
+async def test_completed_issue_output_document_uses_inferred_scope_from_title():
+    agent_id = str(uuid4())
+    run_id = str(uuid4())
+    heartbeat_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["GENERAL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="GENERAL",
+                title="Do an analysis on Palantir for me",
+                status="running",
+                priority="medium",
+                task_type="ad_hoc",
+                assigned_agent_id=agent_id,
+                started_at=created_at,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            AgentRun(
+                id=run_id,
+                scheduled_agent_id=agent_id,
+                status="running",
+                tickers_analyzed='["GENERAL"]',
+                agents_used='["fundamental"]',
+                started_at=created_at,
+            )
+        )
+        db.add(
+            HeartbeatRun(
+                id=heartbeat_id,
+                scheduled_agent_id=agent_id,
+                trigger_type="delegated",
+                status="running",
+                started_at=created_at,
+            )
+        )
+        await db.commit()
+
+    class FakeRunner:
+        def execute(self, _config):
+            return {
+                "report": "Palantir remains executionally strong with durable government demand.\n\n- Revenue growth remains solid.\n- FCF conversion is healthy.",
+                "findings_summary": "Palantir still screens as operationally strong, but valuation discipline matters.",
+                "key_findings": ["Revenue growth remains solid.", "FCF conversion is healthy."],
+                "material_change": False,
+                "alert_level": "low",
+                "tickers_analyzed": ["GENERAL"],
+                "agents_used": ["fundamental"],
+                "error": None,
+            }
+
+    config_data = {
+        "id": agent_id,
+        "name": "Generalist Analyst",
+        "template": "fundamental_analyst",
+        "tickers": ["GENERAL"],
+        "topics": [],
+        "instruction": "Cover the issue and return a concise brief.",
+        "schedule_label": "weekly_monday",
+        "delivery_email": None,
+        "last_run_summary": None,
+    }
+
+    with patch("backend.agent_runner.get_runner", return_value=FakeRunner()):
+        await _execute_run_background(
+            run_id,
+            agent_id,
+            config_data,
+            heartbeat_id,
+            "delegated",
+            task_id,
+        )
+
+    async with AsyncSessionLocal() as db:
+        docs_result = await db.execute(
+            select(ResearchTaskDocument).where(ResearchTaskDocument.task_id == task_id)
+        )
+        task_documents = docs_result.scalars().all()
+
+    output_doc = next(doc for doc in task_documents if doc.document_type == "analysis")
+    assert "- Scope: PLTR" in output_doc.content_md
+
+
 @pytest.mark.asyncio
 async def test_create_scheduled_agent_rejects_removed_arena_template():
     payload = {

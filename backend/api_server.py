@@ -41,7 +41,7 @@ from backend.config import (
 )
 from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 from backend.callbacks.streaming import StreamingCallbackHandler
-from backend.database import init_db, get_db, SyncSessionLocal
+from backend.database import init_db, get_db, SyncSessionLocal, AsyncSessionLocal
 from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
 from backend.project_config import normalize_project_config
 from backend.scheduled_agent_config import normalize_tickers, validate_ticker_requirement
@@ -57,11 +57,28 @@ from arena.output import extract_structured_memo
 # Load environment variables from parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
+STALE_RUN_RECOVERY_AGE = timedelta(
+    minutes=max(1, int(os.getenv("STALE_RUN_RECOVERY_MINUTES", "20")))
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources on startup."""
     await init_db()
     logger.info("Database initialized")
+    try:
+        async with AsyncSessionLocal() as db:
+            recovery = await _recover_stale_issue_work(db)
+            await db.commit()
+        if recovery["stale_runs_recovered"] > 0:
+            logger.warning(
+                "Recovered %s stale runs on startup (%s tasks returned to queue, %s moved to review)",
+                recovery["stale_runs_recovered"],
+                recovery["tasks_returned_to_queue"],
+                recovery["tasks_moved_to_review"],
+            )
+    except Exception as _e:
+        logger.warning(f"Stale issue-work recovery failed on startup (non-fatal): {_e}")
     # Pre-load Chroma embedding model so the ~90MB download happens before first request
     try:
         from data.chroma_client import ProjectChromaClient
@@ -2888,6 +2905,166 @@ async def _append_task_activity(
     )
 
 
+async def _recover_stale_issue_work(
+    db: AsyncSession,
+    *,
+    max_age: timedelta | None = None,
+    limit: int = 500,
+) -> Dict[str, int]:
+    from backend.cio_router import _task_has_explicit_scope
+    from backend.models import AgentRun, HeartbeatRun, ResearchTask, ScheduledAgent
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - (max_age or STALE_RUN_RECOVERY_AGE)
+    normalized_limit = min(max(limit, 1), 2000)
+
+    result = await db.execute(
+        select(AgentRun)
+        .where(
+            AgentRun.status == "running",
+            AgentRun.started_at < cutoff,
+        )
+        .order_by(AgentRun.started_at.asc())
+        .limit(normalized_limit)
+    )
+    stale_runs = result.scalars().all()
+
+    recovered = 0
+    returned_to_queue = 0
+    moved_to_review = 0
+
+    for run in stale_runs:
+        recovered += 1
+        stale_error = (
+            "Run was marked stale during recovery. The background worker stopped "
+            "before reporting a final result."
+        )
+        run.status = "failed"
+        run.completed_at = now
+        run.error = stale_error
+
+        heartbeat_result = await db.execute(
+            select(HeartbeatRun).where(
+                HeartbeatRun.agent_run_id == run.id,
+                HeartbeatRun.status == "running",
+            )
+        )
+        for heartbeat in heartbeat_result.scalars().all():
+            heartbeat.status = "failed"
+            heartbeat.completed_at = now
+            heartbeat.error = stale_error
+            heartbeat.summary = heartbeat.summary or "Marked stale during recovery."
+            heartbeat.outcome_json = json.dumps(
+                {
+                    "event": "stale_run_recovered",
+                    "agent_run_id": run.id,
+                    "recovered_at": now.isoformat(),
+                }
+            )
+
+        task_result = await db.execute(
+            select(ResearchTask).where(ResearchTask.run_id == run.id)
+        )
+        for task in task_result.scalars().all():
+            task.run_id = None
+            task.updated_at = now
+
+            if task.assigned_agent_id:
+                agent = await db.get(ScheduledAgent, task.assigned_agent_id)
+                if agent is None:
+                    task.status = "in_review"
+                    task.error = "Assigned agent no longer exists. Reassign this issue."
+                    moved_to_review += 1
+                    await _append_task_activity(
+                        db,
+                        task.id,
+                        "Recovered a stale run, but the assigned agent no longer exists. Issue moved to review.",
+                        metadata={
+                            "event": "stale_run_missing_agent",
+                            "run_id": run.id,
+                        },
+                    )
+                    continue
+
+                if _task_has_explicit_scope(task):
+                    task.status = "pending"
+                    task.error = (
+                        "Previous run went stale and the issue was returned to the queue "
+                        "for redispatch."
+                    )
+                    returned_to_queue += 1
+                    await _append_task_activity(
+                        db,
+                        task.id,
+                        f"Recovered a stale {agent.role_title or agent.name} run and returned the issue to the queue.",
+                        author_label="System",
+                        author_agent_id=agent.id,
+                        metadata={
+                            "event": "stale_run_requeued",
+                            "run_id": run.id,
+                            "agent_id": agent.id,
+                        },
+                    )
+                else:
+                    role_title = agent.role_title or agent.name
+                    task.status = "in_review"
+                    task.error = (
+                        f"{role_title} needs an explicit ticker or company scope before it can start. "
+                        "Update the issue with a concrete company or symbol, then dispatch it again."
+                    )
+                    moved_to_review += 1
+                    await _append_task_activity(
+                        db,
+                        task.id,
+                        f"Recovered a stale run, but {role_title} still needs explicit ticker or company scope. Issue moved to review.",
+                        author_label="System",
+                        author_agent_id=agent.id,
+                        metadata={
+                            "event": "stale_run_scope_required",
+                            "run_id": run.id,
+                            "agent_id": agent.id,
+                        },
+                    )
+                continue
+
+            if task.owner_agent_id:
+                task.status = "in_review"
+                task.error = (
+                    "Recovered a stale run, but this issue has an owner and no runnable assignee. "
+                    "Review assignment before retrying."
+                )
+                moved_to_review += 1
+                await _append_task_activity(
+                    db,
+                    task.id,
+                    "Recovered a stale run, but the issue has an owner and no runnable assignee. Issue moved to review.",
+                    metadata={
+                        "event": "stale_run_owner_only",
+                        "run_id": run.id,
+                    },
+                )
+                continue
+
+            task.status = "pending"
+            task.error = "Previous run went stale and the issue was returned to the CEO queue."
+            returned_to_queue += 1
+            await _append_task_activity(
+                db,
+                task.id,
+                "Recovered a stale run and returned the issue to the CEO queue.",
+                metadata={
+                    "event": "stale_run_returned_to_ceo",
+                    "run_id": run.id,
+                },
+            )
+
+    return {
+        "stale_runs_recovered": recovered,
+        "tasks_returned_to_queue": returned_to_queue,
+        "tasks_moved_to_review": moved_to_review,
+    }
+
+
 def _anthropic_text_response_sync(model: str, system_prompt: str, messages: list[dict[str, str]]) -> str:
     from anthropic import Anthropic as _Anthropic
 
@@ -4055,6 +4232,8 @@ async def refresh_task_work_queue(
     from backend.models import ResearchTask, ScheduledAgent
 
     normalized_limit = min(max(limit, 1), 500)
+    recovery = await _recover_stale_issue_work(db, limit=normalized_limit)
+    await db.flush()
     result = await db.execute(
         select(ResearchTask)
         .where(
@@ -4139,6 +4318,9 @@ async def refresh_task_work_queue(
             queue_cio_review_for_task(task_id)
 
     return {
+        "stale_runs_recovered": recovery["stale_runs_recovered"],
+        "tasks_returned_to_queue": recovery["tasks_returned_to_queue"],
+        "tasks_moved_to_review": recovery["tasks_moved_to_review"],
         "queued_for_ceo": queued_for_ceo,
         "redispatched": redispatched,
         "moved_to_review": moved_to_review,

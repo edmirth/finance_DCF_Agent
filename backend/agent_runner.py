@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -62,6 +63,127 @@ SPECIALIST_TEMPLATE_TO_AGENT = {
     "macro_analyst": "macro",
     "sentiment_analyst": "sentiment",
 }
+
+
+def _strip_markdown_fences(text: str) -> str:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        parts = cleaned.split("```")
+        if len(parts) >= 3:
+            cleaned = parts[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+    return cleaned.strip()
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    cleaned = _strip_markdown_fences(text)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        return json.loads(cleaned[start : end + 1])
+    except Exception:
+        return None
+
+
+def _dedupe_preserve_order(values: list[str], limit: int = 5) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _clean_report_for_display(text: str, section_key: str) -> str:
+    lines = [line.rstrip() for line in (text or "").strip().splitlines()]
+    if len(lines) >= 2 and lines[0].strip().upper() == section_key.upper():
+        second = lines[1].strip()
+        if second.startswith("#") or second.upper().startswith(section_key.upper()):
+            lines = lines[1:]
+
+    cleaned_lines: list[str] = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            cleaned_lines.append("")
+            continue
+
+        upper = line.upper()
+        heading_match = re.match(r"^([A-Z][A-Z /&()\-]{4,}):\s*$", line)
+        inline_label_match = re.match(r"^([A-Z][A-Z /&()\-]{2,}):\s+(.+)$", line)
+        if heading_match:
+            cleaned_lines.append(f"### {heading_match.group(1).title()}")
+            continue
+        if " — " in line and upper == line and len(line) <= 90:
+            cleaned_lines.append(f"## {line.title()}")
+            continue
+        if inline_label_match:
+            label = inline_label_match.group(1).title()
+            value = inline_label_match.group(2).strip()
+            cleaned_lines.append(f"**{label}:** {value}")
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _extract_summary_from_report(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    lines = [line.strip() for line in cleaned.splitlines()]
+    for line in lines:
+        if not line or line.startswith("#") or line.startswith("- ") or re.match(r"^\d+[.)]\s", line):
+            continue
+        if len(line) < 25:
+            continue
+        return line
+    compact = re.sub(r"\s+", " ", cleaned)
+    sentences = re.split(r"(?<=[.!?])\s+", compact)
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if len(sentence) >= 25:
+            return sentence
+    return compact[:220].strip()
+
+
+def _extract_key_findings_from_report(text: str) -> list[str]:
+    lines = [line.strip() for line in (text or "").splitlines()]
+    findings: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith(("- ", "* ", "• ")):
+            findings.append(line[2:].strip())
+        elif re.match(r"^\d+[.)]\s+", line):
+            findings.append(re.sub(r"^\d+[.)]\s+", "", line).strip())
+        if len(findings) >= 5:
+            break
+    if findings:
+        return _dedupe_preserve_order(findings, limit=5)
+
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    sentences = re.split(r"(?<=[.!?])\s+", compact)
+    extracted = [sentence.strip() for sentence in sentences if len(sentence.strip()) >= 30]
+    return _dedupe_preserve_order(extracted, limit=4)
 
 
 def _statement_row_count(financials: dict, key: str) -> int:
@@ -607,21 +729,41 @@ Return ONLY the JSON object — no preamble, no explanation."""
                 messages=[{"role": "user", "content": prompt}],
             )
             text = response.content[0].text.strip()
-            # Strip markdown code fences if present
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            return json.loads(text)
+            parsed = _extract_json_object(text)
+            if parsed is None:
+                raise ValueError("Synthesis response did not contain valid JSON")
+            return parsed
         except Exception as exc:
             logger.error(f"Synthesis Haiku call failed: {exc}")
-            # Fallback: return raw concatenation
-            fallback_report = "\n\n".join(
-                f"## {k}\n{v}" for k, v in raw_outputs.items()
-            )
+            cleaned_sections: list[tuple[str, str]] = []
+            all_findings: list[str] = []
+            summaries: list[str] = []
+
+            for key, value in raw_outputs.items():
+                cleaned = _clean_report_for_display(value, key)
+                if not cleaned:
+                    continue
+                cleaned_sections.append((key, cleaned))
+                summary = _extract_summary_from_report(cleaned)
+                if summary:
+                    summaries.append(summary)
+                all_findings.extend(_extract_key_findings_from_report(cleaned))
+
+            deduped_findings = _dedupe_preserve_order(all_findings, limit=5)
+
+            if len(cleaned_sections) == 1:
+                fallback_report = cleaned_sections[0][1]
+                fallback_summary = summaries[0] if summaries else "Research completed. Review the saved analyst output."
+            else:
+                fallback_report = "\n\n---\n\n".join(section for _, section in cleaned_sections)
+                fallback_summary = (
+                    "Research completed across multiple analyst inputs. "
+                    + (summaries[0] if summaries else "Review the saved analyst output for the consolidated view.")
+                )
+
             return {
-                "summary": "Research completed. See full report for details.",
-                "key_findings": [],
+                "summary": fallback_summary,
+                "key_findings": deduped_findings,
                 "material_change": True,
                 "alert_level": "low",
                 "full_report": fallback_report,

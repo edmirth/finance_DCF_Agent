@@ -605,9 +605,11 @@ export default function IssueDashboardPage() {
       await load();
       setRefreshSummary(
         [
+          `${result.stale_runs_recovered} stale recovered`,
           `${result.redispatched} restarted`,
           `${result.queued_for_ceo} requeued`,
-          `${result.moved_to_review} moved to review`,
+          `${result.tasks_returned_to_queue} returned to queue`,
+          `${result.tasks_moved_to_review + result.moved_to_review} moved to review`,
           `${result.skipped} skipped`,
         ].join(' · '),
       );

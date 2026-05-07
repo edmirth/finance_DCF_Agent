@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from backend.api_server import app, ResearchConnectionManager
 from backend.database import AsyncSessionLocal, SyncSessionLocal
-from backend.models import AgentRun, ResearchTask, ResearchTaskDocument, ResearchTaskMessage, ScheduledAgent
+from backend.models import AgentRun, HeartbeatRun, ResearchTask, ResearchTaskDocument, ResearchTaskMessage, ScheduledAgent
 from backend.research_orchestrator import (
     ResearchOrchestrator,
     _create_minimal_state,
@@ -492,6 +492,103 @@ async def test_refresh_task_work_queue_redispatches_assigned_pending_issue():
     assert task is not None
     assert task.status == "running"
     assert task.run_id is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_task_work_queue_recovers_stale_running_issue_then_redispatches():
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    stale_run_id = str(uuid4())
+    stale_heartbeat_id = str(uuid4())
+    created_at = datetime.now(timezone.utc) - timedelta(hours=3)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            AgentRun(
+                id=stale_run_id,
+                scheduled_agent_id=agent_id,
+                status="running",
+                started_at=created_at,
+            )
+        )
+        db.add(
+            HeartbeatRun(
+                id=stale_heartbeat_id,
+                scheduled_agent_id=agent_id,
+                agent_run_id=stale_run_id,
+                trigger_type="manual",
+                status="running",
+                started_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="AAPL",
+                task_type="ad_hoc",
+                title="Recover this stale analyst issue",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_assignment",
+                notes="Restart the stale work",
+                status="running",
+                run_id=stale_run_id,
+                created_at=created_at,
+                started_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post("/tasks/refresh-work")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale_runs_recovered"] >= 1
+    assert body["tasks_returned_to_queue"] >= 1
+    assert body["redispatched"] >= 1
+
+    async with AsyncSessionLocal() as db:
+        old_run = await db.get(AgentRun, stale_run_id)
+        stale_heartbeat = await db.get(HeartbeatRun, stale_heartbeat_id)
+        task = await db.get(ResearchTask, task_id)
+
+    assert old_run is not None
+    assert old_run.status == "failed"
+    assert old_run.completed_at is not None
+    assert stale_heartbeat is not None
+    assert stale_heartbeat.status == "failed"
+    assert task is not None
+    assert task.status == "running"
+    assert task.run_id is not None
+    assert task.run_id != stale_run_id
 
 
 @pytest.mark.asyncio

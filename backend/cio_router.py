@@ -44,6 +44,7 @@ from backend.scheduled_agent_config import (
     validate_template,
     validate_ticker_requirement,
 )
+from shared.ticker_utils import extract_ticker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cio"])
@@ -685,6 +686,10 @@ def _issue_scope_label(task: ResearchTask) -> str:
     ticker = (task.ticker or "").strip()
     if ticker and ticker.upper() != "GENERAL":
         return ticker
+    source = " ".join(part.strip() for part in [task.title or "", task.notes or ""] if part and part.strip())
+    inferred = extract_ticker(source)
+    if inferred:
+        return inferred.strip().upper()
     return "Not explicitly specified"
 
 
@@ -692,6 +697,10 @@ def _issue_scope_reference(task: ResearchTask) -> str:
     ticker = (task.ticker or "").strip()
     if ticker and ticker.upper() != "GENERAL":
         return ticker
+    source = " ".join(part.strip() for part in [task.title or "", task.notes or ""] if part and part.strip())
+    inferred = extract_ticker(source)
+    if inferred:
+        return inferred.strip().upper()
     return "the assigned company or scope"
 
 

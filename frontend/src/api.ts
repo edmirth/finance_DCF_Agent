@@ -1018,6 +1018,9 @@ export const runTaskPipeline = async (
 export const refreshTaskWorkQueue = async (
   limit = 100,
 ): Promise<{
+  stale_runs_recovered: number;
+  tasks_returned_to_queue: number;
+  tasks_moved_to_review: number;
   queued_for_ceo: number;
   redispatched: number;
   moved_to_review: number;

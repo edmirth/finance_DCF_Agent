@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -26,6 +27,7 @@ from backend.models import (
     ResearchTaskMessage,
     ScheduledAgent,
 )
+from shared.ticker_utils import extract_ticker
 
 HEARTBEAT_ROUTINE_TYPE = "heartbeat"
 ACTIVE_TASK_STATUSES = ("pending", "running", "in_review")
@@ -325,36 +327,120 @@ def _issue_output_title(task: ResearchTask, agent: ScheduledAgent | None) -> str
     return f"{role_title} output"
 
 
+def _derived_issue_scope(task: ResearchTask) -> str | None:
+    source = " ".join(part.strip() for part in [task.title or "", task.notes or ""] if part and part.strip())
+    inferred = extract_ticker(source)
+    return inferred.strip().upper() if inferred else None
+
+
 def _issue_scope_label(task: ResearchTask) -> str:
     ticker = (task.ticker or "").strip()
     if ticker and ticker.upper() != "GENERAL":
         return ticker
+    inferred = _derived_issue_scope(task)
+    if inferred:
+        return inferred
     return "Not explicitly specified"
+
+
+def _strip_duplicate_heading_line(report: str, scope_label: str) -> str:
+    lines = [line.rstrip() for line in (report or "").strip().splitlines()]
+    if len(lines) >= 2 and lines[0].strip().upper() == scope_label.upper():
+        second = lines[1].strip()
+        if second.startswith("#") or scope_label.upper() in second.upper():
+            lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _extract_report_summary(report: str) -> str:
+    lines = [line.strip() for line in (report or "").splitlines()]
+    for line in lines:
+        if not line or line.startswith("#") or line.startswith("- ") or re.match(r"^\d+[.)]\s+", line):
+            continue
+        if len(line) >= 30:
+            return line
+    compact = re.sub(r"\s+", " ", (report or "").strip())
+    for sentence in re.split(r"(?<=[.!?])\s+", compact):
+        sentence = sentence.strip()
+        if len(sentence) >= 30:
+            return sentence
+    return ""
+
+
+def _extract_report_key_findings(report: str) -> list[str]:
+    findings: list[str] = []
+    lines = [line.strip() for line in (report or "").splitlines()]
+    for line in lines:
+        if line.startswith(("- ", "* ", "• ")):
+            findings.append(line[2:].strip())
+        elif re.match(r"^\d+[.)]\s+", line):
+            findings.append(re.sub(r"^\d+[.)]\s+", "", line).strip())
+        if len(findings) >= 5:
+            break
+    if findings:
+        return findings
+
+    compact = re.sub(r"\s+", " ", (report or "").strip())
+    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", compact) if len(sentence.strip()) >= 35]
+    return sentences[:4]
+
+
+def _normalize_report_markdown(report: str) -> str:
+    cleaned_lines: list[str] = []
+    for raw_line in (report or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            cleaned_lines.append("")
+            continue
+        heading_match = re.match(r"^([A-Z][A-Z /&()\-]{4,}):\s*$", line)
+        inline_label_match = re.match(r"^([A-Z][A-Z /&()\-]{2,}):\s+(.+)$", line)
+        if heading_match:
+            cleaned_lines.append(f"### {heading_match.group(1).title()}")
+            continue
+        if " — " in line and line.upper() == line and len(line) <= 100:
+            cleaned_lines.append(f"## {line.title()}")
+            continue
+        if inline_label_match:
+            label = inline_label_match.group(1).title()
+            cleaned_lines.append(f"**{label}:** {inline_label_match.group(2).strip()}")
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 def _issue_output_content(task: ResearchTask, agent: ScheduledAgent | None, outcome: dict) -> str:
     role_title = agent.role_title if agent and agent.role_title else (agent.name if agent else "Agent")
+    scope_label = _issue_scope_label(task)
+    raw_report = (outcome.get("report") or "").strip()
+    report = _normalize_report_markdown(_strip_duplicate_heading_line(raw_report, scope_label))
     summary = (outcome.get("findings_summary") or "").strip()
-    report = (outcome.get("report") or "").strip()
-    key_findings = outcome.get("key_findings") or []
+    if not summary or summary == "Research completed. See full report for details.":
+        summary = _extract_report_summary(report)
+    key_findings = [str(item).strip() for item in (outcome.get("key_findings") or []) if str(item).strip()]
+    if not key_findings:
+        key_findings = _extract_report_key_findings(report)
     key_findings_block = "\n".join(f"- {item}" for item in key_findings if item) or "- None recorded"
     parts = [
         f"# {role_title} output",
         "",
-        "## Issue",
-        f"- Title: {task.title}",
-        f"- Ticker / scope: {_issue_scope_label(task)}",
-        f"- Type: {task.task_type}",
+        "## Snapshot",
+        f"- Issue: {task.title}",
+        f"- Scope: {scope_label}",
+        f"- Task type: {task.task_type.replace('_', ' ')}",
         f"- Priority: {task.priority}",
+        f"- Analyst: {role_title}",
         "",
-        "## Executive summary",
+        "## Bottom line",
         summary or "No summary was saved for this run.",
         "",
         "## Key findings",
         key_findings_block,
     ]
     if report:
-        parts.extend(["", "## Full output", report])
+        parts.extend(["", "## Detailed analysis", report])
     elif outcome.get("error"):
         parts.extend(["", "## Run failure", str(outcome.get("error"))])
     return "\n".join(parts).strip() + "\n"
