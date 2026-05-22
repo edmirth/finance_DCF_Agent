@@ -21,10 +21,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from anthropic import Anthropic
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.agent_issue_plans import role_specific_deliverable, role_specific_plan_steps
 from backend.agent_roles import ROLE_CATALOG, infer_role_identity, resolve_role_definition, validate_role_key
 from backend.config import CIO_MODEL
 from backend.database import AsyncSessionLocal, get_db
@@ -44,12 +46,14 @@ from backend.scheduled_agent_config import (
     validate_template,
     validate_ticker_requirement,
 )
-from shared.ticker_utils import extract_ticker
+from shared.ticker_utils import COMPANY_NAME_MAP, extract_ticker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cio"])
 
 _anthropic = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+SCOPE_RESOLUTION_MODEL = "claude-haiku-4-5-20251001"
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,5}(?:\.[A-Z]{1,2})?$")
 
 SCHEDULE_LABELS = {
     "daily_morning": "Daily at 7am",
@@ -75,6 +79,44 @@ CEO_INSTRUCTION_DOCS: dict[str, dict[str, str]] = {
 }
 CEO_OPEN_TASK_STATUSES = ("pending", "running", "in_review")
 CEO_PRIORITY_RANK = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+THEME_SCOPE_CANDIDATES: dict[str, list[str]] = {
+    "ai": ["NVDA", "PLTR", "AMZN", "MSFT", "GOOGL"],
+    "artificial intelligence": ["NVDA", "PLTR", "AMZN", "MSFT", "GOOGL"],
+    "llm": ["NVDA", "MSFT", "AMZN", "GOOGL", "META"],
+    "gpu": ["NVDA", "AMD", "AVGO", "TSM"],
+    "semiconductor": ["NVDA", "AMD", "AVGO", "TSM", "ASML"],
+    "chip": ["NVDA", "AMD", "AVGO", "TSM", "ASML"],
+    "software": ["MSFT", "CRM", "NOW", "ORCL", "ADBE"],
+    "cloud": ["AMZN", "MSFT", "GOOGL", "ORCL", "CRM"],
+    "cybersecurity": ["PANW", "CRWD", "ZS", "OKTA"],
+    "energy": ["XOM", "CVX", "COP", "SLB", "EOG"],
+    "oil": ["XOM", "CVX", "COP", "SLB", "EOG"],
+    "banks": ["JPM", "BAC", "WFC", "GS", "MS"],
+    "financials": ["JPM", "BAC", "GS", "MS", "BLK"],
+    "consumer": ["AMZN", "WMT", "COST", "NKE", "MCD"],
+    "healthcare": ["JNJ", "UNH", "PFE", "MRK", "ABBV"],
+}
+ROLE_THEME_SCOPE_CANDIDATES: dict[str, dict[str, list[str]]] = {
+    "semis_analyst": {
+        "ai": ["NVDA", "AMD", "AVGO", "TSM", "ASML"],
+        "artificial intelligence": ["NVDA", "AMD", "AVGO", "TSM", "ASML"],
+        "semiconductor": ["NVDA", "AMD", "AVGO", "TSM", "ASML"],
+        "chip": ["NVDA", "AMD", "AVGO", "TSM", "ASML"],
+    },
+    "software_analyst": {
+        "ai": ["MSFT", "GOOGL", "AMZN", "META", "ORCL"],
+        "software": ["MSFT", "CRM", "NOW", "ORCL", "ADBE"],
+        "cloud": ["AMZN", "MSFT", "GOOGL", "ORCL", "CRM"],
+    },
+    "energy_analyst": {
+        "energy": ["XOM", "CVX", "COP", "SLB", "EOG"],
+        "oil": ["XOM", "CVX", "COP", "SLB", "EOG"],
+    },
+    "financials_analyst": {
+        "financials": ["JPM", "BAC", "GS", "MS", "BLK"],
+        "banks": ["JPM", "BAC", "WFC", "GS", "MS"],
+    },
+}
 
 
 def _validate_schedule_label(schedule_label: str) -> str:
@@ -649,9 +691,18 @@ async def _upsert_issue_document(
     return document, False
 
 
-def _issue_plan_steps_for_agent(task: ResearchTask, agent: ScheduledAgent) -> list[str]:
+def _issue_plan_steps_for_agent(
+    task: ResearchTask,
+    agent: ScheduledAgent,
+    *,
+    resolved_tickers: list[str] | None = None,
+) -> list[str]:
     template = agent.template
-    scope_reference = _issue_scope_reference(task)
+    role_key = (agent.role_key or "").strip()
+    scope_reference = _resolved_scope_label(task, resolved_tickers)
+    role_steps = role_specific_plan_steps(role_key, scope_reference)
+    if role_steps is not None:
+        return role_steps
     if template == "risk_analyst":
         return [
             f"Map the main downside scenarios and risk concentrations around {scope_reference}.",
@@ -680,6 +731,199 @@ def _issue_plan_steps_for_agent(task: ResearchTask, agent: ScheduledAgent) -> li
         "Separate primary findings from open questions and missing evidence.",
         "Write a concise analyst output with the current take, supporting facts, and next actions.",
     ]
+
+
+def _normalize_scope_tickers(values: list[str] | None, *, limit: int = 5) -> list[str]:
+    cleaned = normalize_tickers(values or [])
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for ticker in cleaned:
+        normalized = str(ticker or "").strip().upper()
+        if not normalized or normalized == "GENERAL" or not _TICKER_PATTERN.fullmatch(normalized):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _agent_coverage_tickers(agent: ScheduledAgent) -> list[str]:
+    try:
+        coverage = json.loads(agent.tickers or "[]")
+    except Exception:
+        coverage = []
+    return _normalize_scope_tickers(coverage, limit=8)
+
+
+def _mentioned_company_tickers(*parts: Any) -> list[str]:
+    matches: list[str] = []
+    for raw_part in parts:
+        text = str(raw_part or "").strip()
+        if not text:
+            continue
+        query_lower = text.lower()
+        for company_name, ticker in COMPANY_NAME_MAP.items():
+            if re.search(r"\b" + re.escape(company_name) + r"\b", query_lower):
+                matches.append(ticker)
+        inferred = extract_ticker(text)
+        if inferred:
+            matches.append(inferred)
+    return _normalize_scope_tickers(matches)
+
+
+def _looks_like_broad_scope_request(task: ResearchTask) -> bool:
+    text = " ".join(
+        part.strip().lower()
+        for part in [task.title or "", task.notes or ""]
+        if part and part.strip()
+    )
+    broad_markers = (
+        "industry",
+        "sector",
+        "theme",
+        "trend",
+        "wave",
+        "ecosystem",
+        "value chain",
+        "benefit",
+        "beneficiaries",
+        "players",
+        "companies",
+        "who wins",
+        "who benefits",
+        "around ai",
+    )
+    return any(marker in text for marker in broad_markers)
+
+
+def _keyword_scope_candidates(task: ResearchTask, agent: ScheduledAgent) -> list[str]:
+    text = " ".join(
+        part.strip().lower()
+        for part in [task.title or "", task.notes or ""]
+        if part and part.strip()
+    )
+    if not text:
+        return []
+
+    role_candidates = ROLE_THEME_SCOPE_CANDIDATES.get(agent.role_key or "", {})
+    matches: list[str] = []
+    for keyword, tickers in role_candidates.items():
+        if keyword in text:
+            matches.extend(tickers)
+    for keyword, tickers in THEME_SCOPE_CANDIDATES.items():
+        if keyword in text:
+            matches.extend(tickers)
+    return _normalize_scope_tickers(matches)
+
+
+def _scope_json_object(text: str) -> Optional[dict[str, Any]]:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(cleaned[start : end + 1])
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _resolve_scope_with_llm_sync(task: ResearchTask, agent: ScheduledAgent) -> dict[str, Any]:
+    role_title = agent.role_title or agent.name
+    coverage = ", ".join(_agent_coverage_tickers(agent)) or "Broad / general coverage"
+    prompt = f"""You are helping a finance research agent determine which public companies to analyze.
+
+Choose 1 to 5 PUBLIC company tickers that best match the issue below.
+- Prefer directly mentioned companies.
+- If the issue is about an industry, sector, or theme, pick the most relevant public beneficiaries.
+- Bias toward the assigned analyst seat when helpful, but do not force irrelevant names.
+- Return tickers only, not company names.
+- If the issue is too vague to determine any public companies, return an empty list.
+
+Return valid JSON only:
+{{
+  "tickers": ["AAPL", "MSFT"],
+  "rationale": "one short sentence"
+}}
+
+Issue title: {task.title}
+Issue notes: {task.notes or "No additional notes"}
+Assigned role: {role_title}
+Role template: {agent.template}
+Coverage universe: {coverage}
+"""
+    response = _anthropic.messages.create(
+        model=SCOPE_RESOLUTION_MODEL,
+        max_tokens=220,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = response.content[0].text.strip()
+    parsed = _scope_json_object(text) or {}
+    raw_tickers = parsed.get("tickers") if isinstance(parsed.get("tickers"), list) else []
+    normalized = _normalize_scope_tickers([str(value) for value in raw_tickers], limit=5)
+    return {
+        "tickers": normalized,
+        "rationale": str(parsed.get("rationale") or "").strip(),
+        "source": "llm",
+    }
+
+
+async def _resolve_task_scope_for_agent(task: ResearchTask, agent: ScheduledAgent) -> dict[str, Any]:
+    explicit_ticker = (task.ticker or "").strip().upper()
+    if explicit_ticker and explicit_ticker != "GENERAL":
+        return {"tickers": [explicit_ticker], "source": "task_ticker", "rationale": ""}
+
+    company_matches = _mentioned_company_tickers(task.title, task.notes)
+    if company_matches:
+        return {"tickers": company_matches, "source": "issue_text", "rationale": ""}
+
+    heuristic_matches = _keyword_scope_candidates(task, agent)
+    llm_matches: list[str] = []
+    llm_rationale = ""
+    if _agent_requires_explicit_scope(agent):
+        try:
+            llm_resolution = await run_in_threadpool(_resolve_scope_with_llm_sync, task, agent)
+            llm_matches = _normalize_scope_tickers(llm_resolution.get("tickers") or [], limit=5)
+            llm_rationale = str(llm_resolution.get("rationale") or "").strip()
+        except Exception as exc:
+            logger.warning("Scope resolution LLM failed for task %s: %s", task.id, exc)
+
+    if llm_matches:
+        return {"tickers": llm_matches, "source": "llm", "rationale": llm_rationale}
+    if heuristic_matches:
+        return {"tickers": heuristic_matches, "source": "theme_map", "rationale": ""}
+
+    coverage = _agent_coverage_tickers(agent)
+    if coverage and _looks_like_broad_scope_request(task):
+        return {
+            "tickers": coverage[: min(len(coverage), 4)],
+            "source": "coverage_fallback",
+            "rationale": "",
+        }
+
+    return {"tickers": [], "source": "unresolved", "rationale": ""}
+
+
+def _resolved_scope_label(task: ResearchTask, resolved_tickers: list[str] | None = None) -> str:
+    normalized = _normalize_scope_tickers(resolved_tickers or [], limit=5)
+    if normalized:
+        if len(normalized) == 1:
+            return normalized[0]
+        return ", ".join(normalized)
+    return _issue_scope_label(task)
 
 
 def _issue_scope_label(task: ResearchTask) -> str:
@@ -733,6 +977,10 @@ def _issue_objective(task: ResearchTask) -> str:
 
 def _issue_deliverable_for_agent(agent: ScheduledAgent) -> str:
     template = agent.template
+    role_key = (agent.role_key or "").strip()
+    deliverable = role_specific_deliverable(role_key)
+    if deliverable is not None:
+        return deliverable
     if template == "risk_analyst":
         return "Risk note with downside scenarios, break conditions, and monitoring points."
     if template in {"macro_analyst", "market_pulse"}:
@@ -742,13 +990,22 @@ def _issue_deliverable_for_agent(agent: ScheduledAgent) -> str:
     return "Structured analyst brief with the current view, supporting evidence, risks, and next actions."
 
 
-def _render_issue_plan_chat_summary(task: ResearchTask, agent: ScheduledAgent, plan_title: str) -> str:
-    steps = _issue_plan_steps_for_agent(task, agent)[:3]
+def _render_issue_plan_chat_summary(
+    task: ResearchTask,
+    agent: ScheduledAgent,
+    plan_title: str,
+    *,
+    resolved_tickers: list[str] | None = None,
+) -> str:
+    steps = _issue_plan_steps_for_agent(task, agent, resolved_tickers=resolved_tickers)[:3]
     step_block = "\n".join(f"- {step}" for step in steps)
+    resolved_scope = _resolved_scope_label(task, resolved_tickers)
     return (
         "I've started the first pass on this issue.\n\n"
         f"**Objective**\n"
         f"{_issue_objective(task)}\n\n"
+        f"**Working scope**\n"
+        f"{resolved_scope}\n\n"
         f"**Plan**\n"
         f"{step_block}\n\n"
         f"**Expected output**\n"
@@ -759,18 +1016,24 @@ def _render_issue_plan_chat_summary(task: ResearchTask, agent: ScheduledAgent, p
     )
 
 
-def _render_issue_plan_document(task: ResearchTask, agent: ScheduledAgent) -> str:
+def _render_issue_plan_document(
+    task: ResearchTask,
+    agent: ScheduledAgent,
+    *,
+    resolved_tickers: list[str] | None = None,
+) -> str:
     role_title = agent.role_title or agent.name
     coverage = _coverage_universe_label(agent)
-    steps = _issue_plan_steps_for_agent(task, agent)
+    steps = _issue_plan_steps_for_agent(task, agent, resolved_tickers=resolved_tickers)
     bullet_block = "\n".join(f"{idx}. {step}" for idx, step in enumerate(steps, start=1))
+    resolved_scope = _resolved_scope_label(task, resolved_tickers)
     return (
         f"# {role_title} execution plan\n\n"
         f"## Objective\n"
         f"{_issue_objective(task)}\n\n"
         f"## Issue metadata\n"
         f"- Title: {task.title}\n"
-        f"- Ticker / scope: {_issue_scope_label(task)}\n"
+        f"- Ticker / scope: {resolved_scope}\n"
         f"- Type: {task.task_type}\n"
         f"- Priority: {task.priority}\n"
         f"- Agent: {role_title}\n"
@@ -805,19 +1068,57 @@ async def _run_cio_task_review(
         proposed_by=f"issue:{task.id}",
         source_task_id=task.id,
     )
+    now = datetime.now(timezone.utc)
     await _record_cio_review_message(
         db,
         task.id,
         response.message,
         action=response.action.model_dump() if response.action else None,
     )
+    normalized_message = (response.message or "").lower()
+    requires_follow_up = any(
+        marker in normalized_message
+        for marker in (
+            "delegation was skipped",
+            "could not be found",
+            "issue no longer exists, so delegation was skipped",
+            "is paused, so delegation was skipped",
+        )
+    )
     if response.action and response.action.type == "propose_hire":
+        task.status = "in_review"
+        task.error = None
+        task.updated_at = now
         await _append_issue_activity(
             db,
             task.id,
             f"CEO proposed hiring {response.action.role_title or response.action.name or 'a new role'}.",
             author_label="CEO",
             metadata={"event": "ceo_hire_proposed", "action": response.action.model_dump()},
+        )
+    elif requires_follow_up:
+        task.status = "in_review"
+        task.error = "CEO review needs follow-up before this issue can be executed."
+        task.completed_at = None
+        task.updated_at = now
+        await _append_issue_activity(
+            db,
+            task.id,
+            "CEO review could not start execution and the issue needs follow-up.",
+            author_label="CEO",
+            metadata={"event": "ceo_review_follow_up_required"},
+        )
+    elif response.action is None and task.status in CEO_OPEN_TASK_STATUSES:
+        task.status = "done"
+        task.error = None
+        task.completed_at = task.completed_at or now
+        task.updated_at = now
+        await _append_issue_activity(
+            db,
+            task.id,
+            "CEO reviewed this issue directly and closed it with a final answer.",
+            author_label="CEO",
+            metadata={"event": "ceo_review_completed"},
         )
     return response
 
@@ -908,14 +1209,17 @@ async def _dispatch_agent_for_task(
     if not agent.is_active:
         raise HTTPException(status_code=409, detail=f"{agent.role_title or agent.name} is paused")
 
-    if task.status in {"done", "cancelled"}:
+    if task.status == "cancelled":
         return {"run_id": None, "reused": False, "skipped": True}
 
-    if _agent_requires_explicit_scope(agent) and not _task_has_explicit_scope(task):
+    scope_resolution = await _resolve_task_scope_for_agent(task, agent)
+    resolved_tickers = _normalize_scope_tickers(scope_resolution.get("tickers") or [], limit=5)
+
+    if _agent_requires_explicit_scope(agent) and not resolved_tickers:
         role_title = agent.role_title or agent.name
         reason = (
             f"{role_title} needs an explicit ticker or company scope before it can start. "
-            "Update the issue with a concrete company or symbol, then dispatch it again."
+            "Add a concrete company, ticker, or a clearer industry/theme so the analyst can resolve the right names."
         )
         task.assigned_agent_id = agent.id
         task.status = "in_review"
@@ -928,7 +1232,10 @@ async def _dispatch_agent_for_task(
             author_label=role_title,
             author_agent_id=agent.id,
             content=reason,
-            metadata={"event": "issue_scope_required"},
+            metadata={
+                "event": "issue_scope_required",
+                "scope_source": scope_resolution.get("source"),
+            },
         )
         await _append_issue_activity(
             db,
@@ -936,7 +1243,12 @@ async def _dispatch_agent_for_task(
             reason,
             author_label=role_title,
             author_agent_id=agent.id,
-            metadata={"event": "issue_scope_required", "agent_id": agent.id, "status": "in_review"},
+            metadata={
+                "event": "issue_scope_required",
+                "agent_id": agent.id,
+                "status": "in_review",
+                "scope_source": scope_resolution.get("source"),
+            },
         )
         await db.commit()
         return {"run_id": None, "reused": False, "skipped": True, "reason": "scope_required"}
@@ -961,6 +1273,47 @@ async def _dispatch_agent_for_task(
         )
         await db.commit()
         return {"run_id": existing_run.id, "reused": True, "skipped": False}
+
+    active_run_result = await db.execute(
+        select(AgentRun)
+        .where(
+            AgentRun.scheduled_agent_id == agent.id,
+            AgentRun.status == "running",
+        )
+        .order_by(AgentRun.started_at.desc())
+        .limit(1)
+    )
+    active_run = active_run_result.scalar_one_or_none()
+    if active_run is not None:
+        role_title = agent.role_title or agent.name
+        task.assigned_agent_id = agent.id
+        task.run_id = None
+        task.status = "pending"
+        task.error = (
+            f"{role_title} is already working another issue. "
+            "This issue stays queued until the active run finishes."
+        )
+        task.updated_at = datetime.now(timezone.utc)
+        await _append_issue_activity(
+            db,
+            task.id,
+            f"{initiated_by} tried to start {role_title}, but the agent already has an active run. "
+            "This issue remains queued.",
+            author_label=initiated_by,
+            author_agent_id=agent.id,
+            metadata={
+                "event": "issue_agent_busy",
+                "agent_id": agent.id,
+                "active_run_id": active_run.id,
+            },
+        )
+        await db.commit()
+        return {
+            "run_id": active_run.id,
+            "reused": False,
+            "skipped": True,
+            "reason": "agent_busy",
+        }
 
     now = datetime.now(timezone.utc)
     await ensure_agent_heartbeat_routine(db, agent)
@@ -988,7 +1341,7 @@ async def _dispatch_agent_for_task(
     task.error = None
     role_title = agent.role_title or agent.name
     plan_title = f"{role_title} execution plan"
-    plan_content = _render_issue_plan_document(task, agent)
+    plan_content = _render_issue_plan_document(task, agent, resolved_tickers=resolved_tickers)
     plan_steps = _issue_plan_steps_for_agent(task, agent)[:5]
     plan_document, created_plan = await _upsert_issue_document(
         db,
@@ -1004,7 +1357,7 @@ async def _dispatch_agent_for_task(
         task.id,
         author_label=role_title,
         author_agent_id=agent.id,
-        content=_render_issue_plan_chat_summary(task, agent, plan_title),
+        content=_render_issue_plan_chat_summary(task, agent, plan_title, resolved_tickers=resolved_tickers),
         metadata={
             "event": "issue_plan_created",
             "run_id": run.id,
@@ -1012,7 +1365,8 @@ async def _dispatch_agent_for_task(
             "document_title": plan_title,
             "document_type": "plan",
             "objective": _issue_objective(task),
-            "scope": _issue_scope_label(task),
+            "scope": _resolved_scope_label(task, resolved_tickers),
+            "resolved_tickers": resolved_tickers,
             "steps": plan_steps,
             "deliverable": _issue_deliverable_for_agent(agent),
         },
@@ -1033,10 +1387,36 @@ async def _dispatch_agent_for_task(
             "run_id": run.id,
             "plan_document_title": plan_title,
             "plan_document_created": created_plan,
+            "resolved_tickers": resolved_tickers,
+            "scope_source": scope_resolution.get("source"),
         },
     )
 
     config_data = _agent_to_dict(agent)
+    runtime_scope = _resolved_scope_label(task, resolved_tickers)
+    issue_specific_instruction = "\n\n".join(
+        part
+        for part in [
+            (agent.instruction or "").strip(),
+            "CURRENT ISSUE",
+            f"Title: {task.title}",
+            f"Objective: {_issue_objective(task)}",
+            f"Resolved scope: {runtime_scope}",
+            (
+                "Analyze the listed companies as the working scope for this issue. "
+                "If multiple companies are in scope, compare them and highlight the most relevant winners, risks, "
+                "and differences for the user's request."
+                if len(resolved_tickers) > 1
+                else "Treat the resolved company scope above as the active name you must analyze for this issue."
+            ),
+            f"Required deliverable: {_issue_deliverable_for_agent(agent)}",
+            "This is an issue-specific run. Do not produce a generic standing brief; answer the issue directly.",
+        ]
+        if part
+    )
+    config_data["instruction"] = issue_specific_instruction
+    if resolved_tickers:
+        config_data["tickers"] = resolved_tickers
     await db.commit()
 
     spawn_background(

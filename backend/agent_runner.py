@@ -23,6 +23,13 @@ from typing import Any, Optional
 
 from anthropic import Anthropic
 
+from backend.agent_prompt_profiles import (
+    format_bullets,
+    format_required_sections,
+    infer_research_intent,
+    resolve_role_prompt_profile,
+)
+
 logger = logging.getLogger(__name__)
 
 # Max parallel ticker threads per run — keeps API rate limits safe
@@ -118,13 +125,23 @@ def _clean_report_for_display(text: str, section_key: str) -> str:
             lines = lines[1:]
 
     cleaned_lines: list[str] = []
+    skip_internal_block = False
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
+            skip_internal_block = False
             cleaned_lines.append("")
             continue
 
         upper = line.upper()
+        if re.match(r"^(CURRENT ISSUE|ASSIGNMENT|USER REQUEST|ISSUE METADATA|TASK METADATA):?\s*$", upper):
+            skip_internal_block = True
+            continue
+        if skip_internal_block and re.match(r"^(TITLE|OBJECTIVE|TASK TYPE|PRIORITY|RESOLVED SCOPE|REQUIRED DELIVERABLE):\s+", upper):
+            continue
+        if re.match(r"^(TASK TYPE|PRIORITY):\s+", upper):
+            continue
+
         heading_match = re.match(r"^([A-Z][A-Z /&()\-]{4,}):\s*$", line)
         inline_label_match = re.match(r"^([A-Z][A-Z /&()\-]{2,}):\s+(.+)$", line)
         if heading_match:
@@ -186,9 +203,81 @@ def _extract_key_findings_from_report(text: str) -> list[str]:
     return _dedupe_preserve_order(extracted, limit=4)
 
 
+def _extract_suggestions_from_report(text: str) -> list[str]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    section_match = re.search(
+        r"(?:^|\n)##\s*(?:Agent Suggestions|Next Steps|Action Items|Risks And Watch Items|What This Means For Your Thesis)\s*\n(?P<body>.*?)(?=\n##\s+|\Z)",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    source = section_match.group("body") if section_match else cleaned
+
+    suggestions: list[str] = []
+    for line in source.splitlines():
+        item = line.strip()
+        if not item:
+            continue
+        if item.startswith(("- ", "* ", "• ")):
+            suggestions.append(item[2:].strip())
+        elif re.match(r"^\d+[.)]\s+", item):
+            suggestions.append(re.sub(r"^\d+[.)]\s+", "", item).strip())
+        if len(suggestions) >= 4:
+            break
+
+    if suggestions:
+        return _dedupe_preserve_order(suggestions, limit=4)
+
+    compact = re.sub(r"\s+", " ", source)
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", compact)
+        if any(keyword in sentence.lower() for keyword in ["watch", "track", "compare", "review", "stress", "monitor", "next"])
+    ]
+    return _dedupe_preserve_order(sentences, limit=3)
+
+
+def _render_structured_fallback_report(
+    *,
+    summary: str,
+    key_findings: list[str],
+    suggestions: list[str],
+    cleaned_sections: list[tuple[str, str]],
+) -> str:
+    findings_block = "\n".join(f"- {item}" for item in key_findings if item) or "- None recorded"
+    suggestions_block = "\n".join(f"- {item}" for item in suggestions if item) or "- Review the detailed analysis and decide whether the issue needs a follow-up run."
+    section_blocks: list[str] = []
+    for key, section in cleaned_sections:
+        label = key.strip().upper()
+        if len(cleaned_sections) == 1:
+            label = "Company analysis"
+        section_blocks.append(f"### {label.title()}\n\n{section.strip()}")
+
+    detail_block = "\n\n".join(block for block in section_blocks if block.strip())
+    parts = [
+        "## Executive Summary",
+        summary.strip() or "Research completed. Review the detailed analysis.",
+        "",
+        "## Key Findings",
+        findings_block,
+        "",
+        "## Agent Suggestions",
+        suggestions_block,
+    ]
+    if detail_block:
+        parts.extend(["", "## Detailed Analysis", detail_block])
+    return "\n".join(parts).strip()
+
+
 def _statement_row_count(financials: dict, key: str) -> int:
     rows = (financials or {}).get(key) or []
     return len(rows) if isinstance(rows, list) else 0
+
+
+def _agent_config_attr(agent_config: Any, name: str, default: Any = None) -> Any:
+    return getattr(agent_config, name, default)
 
 
 class AgentRunnerService:
@@ -247,6 +336,13 @@ class AgentRunnerService:
                     tickers,
                     agent_config.instruction,
                     template,
+                    role_key=_agent_config_attr(agent_config, "role_key"),
+                    role_title=(
+                        _agent_config_attr(agent_config, "role_title")
+                        or _agent_config_attr(agent_config, "name")
+                    ),
+                    role_family=_agent_config_attr(agent_config, "role_family"),
+                    description=_agent_config_attr(agent_config, "description"),
                 )
 
             elif template == "arena_analyst":
@@ -402,6 +498,11 @@ class AgentRunnerService:
         tickers: list[str],
         instruction: str,
         template: str,
+        *,
+        role_key: Optional[str] = None,
+        role_title: Optional[str] = None,
+        role_family: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> tuple[dict, list]:
         """
         Instruction-driven analysis for hired agents.
@@ -410,12 +511,23 @@ class AgentRunnerService:
         pillar math. This is what makes a hired analyst actually do its job.
         """
         from data.financial_data import FinancialDataFetcher
-        from shared.tavily_client import get_tavily_client
+        from shared.web_research import WebResearchService
 
         outputs: dict[str, str] = {}
         fetcher = FinancialDataFetcher()
-        tavily = get_tavily_client()
-        template_label = TEMPLATE_LABELS.get(template, template)
+        web_research = WebResearchService()
+        role_profile = resolve_role_prompt_profile(
+            template=template,
+            role_key=role_key,
+            role_title=role_title,
+            description=description,
+        )
+        intent_profile = infer_research_intent(instruction, tickers)
+        role_family_label = (role_family or "").strip()
+        assignment_scope = "multi-company / theme work" if (
+            intent_profile.key in {"industry_map", "peer_comparison"}
+            or len([ticker for ticker in tickers if str(ticker).strip().upper() != "GENERAL"]) > 1
+        ) else "single-company work"
 
         def _validation_error(
             ticker_upper: str,
@@ -454,40 +566,72 @@ class AgentRunnerService:
 
                 data_block = self._format_financial_data(ticker_upper, stock_info, financials, key_metrics)
 
-                # Current news / analyst sentiment via Tavily
-                news_block = ""
+                # Current market context with source URLs and extracted snippets.
+                browser_context = ""
                 try:
                     focus = instruction[:150] if instruction else "fundamentals and investment thesis"
-                    news_block = tavily.search_text(
-                        f"{ticker_upper} stock analysis {focus}",
+                    browser_context = web_research.research_text(
+                        (
+                            f"{ticker_upper} {role_profile.web_query_hint} "
+                            f"{intent_profile.search_hint} {focus}"
+                        ),
                         topic="finance",
-                        search_depth="advanced",
                         max_results=4,
+                        extract_top_k=2,
                         time_range="month",
                     )
                 except Exception as _e:
-                    logger.warning(f"Tavily search failed for {ticker_upper}: {_e}")
+                    logger.warning(f"Web research failed for {ticker_upper}: {_e}")
 
-                news_section = f"\nCURRENT CONTEXT:\n{news_block}" if news_block else ""
+                browser_section = f"\nCURRENT WEB RESEARCH:\n{browser_context}" if browser_context else ""
 
-                prompt = f"""You are a {template_label}. Your assignment:
+                comparative_rule = ""
+                if assignment_scope == "multi-company / theme work":
+                    comparative_rule = (
+                        "- This is part of a broader industry/theme or peer assignment. "
+                        "Explain how this company fits into the wider map and what should be compared across the full set.\n"
+                    )
 
-{instruction or f"Provide a comprehensive {template_label.lower()} analysis."}
+                prompt = f"""You are the {role_profile.title}.
+
+ROLE FAMILY: {role_family_label or "coverage"}
+ROLE MANDATE: {role_profile.mandate}
+ANALYST LENS: {role_profile.lens}
+
+ISSUE INTENT: {intent_profile.title}
+INTENT MANDATE: {intent_profile.mandate}
+ASSIGNMENT SCOPE: {assignment_scope}
+
+USER ASSIGNMENT:
+
+{instruction or f"Provide a comprehensive {role_profile.title.lower()} analysis."}
 
 TICKER: {ticker_upper}
 COMPANY: {stock_info.get("company_name", ticker_upper)}
 SECTOR: {stock_info.get("sector", "Unknown")}
 
+ROLE FOCUS QUESTIONS:
+{format_bullets(role_profile.focus_questions)}
+
 HISTORICAL FINANCIALS:
-{data_block}{news_section}
+{data_block}{browser_section}
 
-Write a focused research report that directly addresses the assignment above.
-- Lead with your investment signal (BULLISH / BEARISH / NEUTRAL) and the single most important reason
-- Support every claim with specific numbers from the data
-- Focus on what matters most for the stated assignment
-- Close with a concrete action or watch item
+Interpret the assignment as an investment research mandate. Do not copy the user's raw wording into the report.
+Write a polished analyst report that directly answers the mandate.
 
-Markdown format. 400-600 words. No filler."""
+Required markdown sections:
+{format_required_sections(intent_profile)}
+
+Rules:
+- Lead with your investment signal (BULLISH / BEARISH / NEUTRAL) and the single most important reason.
+- Support every claim with specific numbers from the data.
+- Use the web research context for recent developments, catalysts, competitive context, and source-backed watch items.
+- Cite source titles or URLs briefly when web context materially affects the conclusion.
+- In Agent Suggestions, include 3-5 follow-up angles the user may not have asked for but should consider based on the numbers, risks, or peer comparison.
+- {role_profile.report_emphasis}
+{comparative_rule}- Do not include internal fields such as task type, priority, assignment text, current issue, or resolved scope.
+- Do not use filler, preamble, or process narration.
+- 500-800 words."""
 
                 response = self._anthropic.messages.create(
                     model="claude-haiku-4-5-20251001",
@@ -507,7 +651,7 @@ Markdown format. 400-600 words. No filler."""
                 if result:
                     outputs[ticker_sym] = result
 
-        return outputs, [template] if outputs else []
+        return outputs, [role_key or template] if outputs else []
 
     @staticmethod
     def _format_financial_data(ticker: str, stock_info: dict, financials: dict, key_metrics: Optional[dict] = None) -> str:
@@ -692,15 +836,34 @@ Markdown format. 400-600 words. No filler."""
             for key, value in raw_outputs.items()
         )
 
-        last_summary = agent_config.last_run_summary or ""
-        instruction = agent_config.instruction or ""
-        template_label = TEMPLATE_LABELS.get(agent_config.template, agent_config.template)
-        topics = json.loads(agent_config.topics or "[]") if isinstance(agent_config.topics, str) else (agent_config.topics or [])
+        last_summary = _agent_config_attr(agent_config, "last_run_summary", "") or ""
+        instruction = _agent_config_attr(agent_config, "instruction", "") or ""
+        raw_tickers = _agent_config_attr(agent_config, "tickers", "[]")
+        tickers = json.loads(raw_tickers or "[]") if isinstance(raw_tickers, str) else (raw_tickers or [])
+        role_profile = resolve_role_prompt_profile(
+            template=_agent_config_attr(agent_config, "template", ""),
+            role_key=_agent_config_attr(agent_config, "role_key"),
+            role_title=(
+                _agent_config_attr(agent_config, "role_title")
+                or _agent_config_attr(agent_config, "name")
+            ),
+            description=_agent_config_attr(agent_config, "description"),
+        )
+        intent_profile = infer_research_intent(instruction, tickers)
+        raw_topics = _agent_config_attr(agent_config, "topics", "[]")
+        topics = json.loads(raw_topics or "[]") if isinstance(raw_topics, str) else (raw_topics or [])
         topics_str = ", ".join(topics) if topics else ""
 
         prompt = f"""You are synthesizing investment research findings for a retail investor.
 
-AGENT TYPE: {template_label}
+AGENT ROLE: {role_profile.title}
+ROLE MANDATE: {role_profile.mandate}
+ROLE LENS: {role_profile.lens}
+ANALYSIS INTENT: {intent_profile.title}
+INTENT MANDATE: {intent_profile.mandate}
+REQUIRED REPORT SECTIONS:
+{format_required_sections(intent_profile)}
+
 INVESTOR INSTRUCTION / THESIS:
 {instruction or "No specific instruction — provide general findings."}
 {f"FOCUS TOPICS: {topics_str}" if topics_str else ""}
@@ -717,7 +880,7 @@ Produce a JSON object with these exact keys:
   "key_findings": ["3-5 concrete, specific findings with numbers where available"],
   "material_change": true or false (true if something significant changed vs previous run, or first run with notable findings),
   "alert_level": "high" | "medium" | "low" | "none",
-  "full_report": "A well-structured markdown report (400-700 words). Include: ## Summary, ## Key Findings, ## What This Means For Your Thesis, ## Action Items. Use real numbers. No emojis. No ASCII borders."
+  "full_report": "A polished markdown investment research report written from the {role_profile.title} lens. Use the required sections above, preserve role-specific analysis, and include a compact comparison table when multiple companies or an industry/theme are covered. In Agent Suggestions, add 3-5 follow-up angles the user may not have asked for but should consider based on the numbers, risks, or comparisons. Use real numbers. Do not quote the raw user request. Do not include task type, priority, current issue, resolved scope, or internal process notes. No emojis. No ASCII borders."
 }}
 
 Return ONLY the JSON object — no preamble, no explanation."""
@@ -737,6 +900,7 @@ Return ONLY the JSON object — no preamble, no explanation."""
             logger.error(f"Synthesis Haiku call failed: {exc}")
             cleaned_sections: list[tuple[str, str]] = []
             all_findings: list[str] = []
+            all_suggestions: list[str] = []
             summaries: list[str] = []
 
             for key, value in raw_outputs.items():
@@ -748,17 +912,29 @@ Return ONLY the JSON object — no preamble, no explanation."""
                 if summary:
                     summaries.append(summary)
                 all_findings.extend(_extract_key_findings_from_report(cleaned))
+                all_suggestions.extend(_extract_suggestions_from_report(cleaned))
 
             deduped_findings = _dedupe_preserve_order(all_findings, limit=5)
+            deduped_suggestions = _dedupe_preserve_order(all_suggestions, limit=4)
 
             if len(cleaned_sections) == 1:
-                fallback_report = cleaned_sections[0][1]
+                fallback_report = _render_structured_fallback_report(
+                    summary=summaries[0] if summaries else "Research completed. Review the saved analyst output.",
+                    key_findings=deduped_findings,
+                    suggestions=deduped_suggestions,
+                    cleaned_sections=cleaned_sections,
+                )
                 fallback_summary = summaries[0] if summaries else "Research completed. Review the saved analyst output."
             else:
-                fallback_report = "\n\n---\n\n".join(section for _, section in cleaned_sections)
                 fallback_summary = (
                     "Research completed across multiple analyst inputs. "
                     + (summaries[0] if summaries else "Review the saved analyst output for the consolidated view.")
+                )
+                fallback_report = _render_structured_fallback_report(
+                    summary=fallback_summary,
+                    key_findings=deduped_findings,
+                    suggestions=deduped_suggestions,
+                    cleaned_sections=cleaned_sections,
                 )
 
             return {
