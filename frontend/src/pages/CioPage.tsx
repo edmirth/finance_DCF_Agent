@@ -26,6 +26,7 @@ import {
 } from '../api';
 import { getRoleMeta } from '../agentRoles';
 import type { HireProposal } from '../types';
+import { formatRelativeApiTime } from '../utils/time';
 
 type CeoTab = 'dashboard' | 'instructions';
 
@@ -44,18 +45,6 @@ const PRIORITY_TONE: Record<TaskPriority, string> = {
   high: 'bg-amber-50 text-amber-700',
   urgent: 'bg-red-50 text-red-700',
 };
-
-function formatRelativeTime(iso?: string | null): string {
-  if (!iso) return 'Just now';
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  const hours = Math.floor(diff / 3_600_000);
-  const days = Math.floor(diff / 86_400_000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  return `${days}d ago`;
-}
 
 function displayTicker(ticker: string): string {
   return ticker === 'GENERAL' ? 'General' : ticker;
@@ -95,7 +84,7 @@ function RecentIssueRow({ issue }: { issue: CeoRecentIssue }) {
         </p>
       </div>
       <div className="flex-shrink-0 text-right text-xs text-slate-400">
-        <div>{formatRelativeTime(issue.updated_at || issue.created_at)}</div>
+        <div>{formatRelativeApiTime(issue.updated_at || issue.created_at)}</div>
         <div className="mt-2 text-slate-500">{issue.triggered_by === 'manual_pm_review' ? 'CEO review' : 'Intake'}</div>
       </div>
     </button>

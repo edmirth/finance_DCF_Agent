@@ -8,7 +8,7 @@ Replaces Perplexity API calls across all tool files.
 import os
 import logging
 import threading
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Union
 from dotenv import load_dotenv
 from shared.retry_utils import retry_with_backoff, RetryConfig
 
@@ -96,6 +96,17 @@ class TavilySearchClient:
         if not self._client:
             raise ValueError("TAVILY_API_KEY not configured")
         return self._client.search(**kwargs)
+
+    @retry_with_backoff(RetryConfig(
+        max_attempts=3,
+        base_delay=1.5,
+        max_delay=45.0
+    ))
+    def _execute_extract(self, **kwargs) -> Dict:
+        """Execute Tavily page extraction with retry logic."""
+        if not self._client:
+            raise ValueError("TAVILY_API_KEY not configured")
+        return self._client.extract(**kwargs)
 
     def search(
         self,
@@ -207,6 +218,42 @@ class TavilySearchClient:
                     output += f"- {title}: {url}\n"
 
         return output
+
+    def extract(
+        self,
+        urls: Union[List[str], str],
+        *,
+        extract_depth: str = "advanced",
+        format: str = "markdown",
+        timeout: float = 30,
+        query: Optional[str] = None,
+        chunks_per_source: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract readable page content from URLs via Tavily.
+
+        This is the preferred browser/extraction path because Tavily handles
+        common page boilerplate and inaccessible static HTML better than a
+        naive scraper.
+        """
+        if not self._client:
+            raise ValueError(
+                "TAVILY_API_KEY not found in environment variables. "
+                "Please add it to your .env file."
+            )
+
+        kwargs: Dict[str, Any] = {
+            "urls": urls,
+            "extract_depth": extract_depth,
+            "format": format,
+            "timeout": timeout,
+        }
+        if query:
+            kwargs["query"] = query
+        if chunks_per_source:
+            kwargs["chunks_per_source"] = chunks_per_source
+
+        return self._execute_extract(**kwargs)
 
 
 def get_tavily_client() -> TavilySearchClient:

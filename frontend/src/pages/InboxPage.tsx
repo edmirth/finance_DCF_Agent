@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
+  FileText,
   Loader2,
   RefreshCw,
   Search,
@@ -15,13 +17,30 @@ import {
   rejectHireProposal,
   triggerAgentRun,
 } from '../api';
-import type { AgentRunInboxItem, HireProposalInboxItem, InboxItem, TaskInboxItem } from '../types';
+import type { AgentRunInboxItem, HireProposalInboxItem, InboxItem } from '../types';
+import { formatRelativeApiTime, isApiDateAfter, parseApiDate } from '../utils/time';
 
 type InboxTab = 'mine' | 'recent' | 'unread' | 'all';
+type InboxFilter = 'all' | 'unread' | 'failure' | 'approval' | 'issue_update' | 'deliverable';
+
+type InboxGroup = {
+  key: string;
+  taskId: string | null;
+  taskTitle: string;
+  items: InboxItem[];
+  latestTimestamp: string | null;
+  latestItem: InboxItem;
+  unread: boolean;
+  requiresAction: boolean;
+  approvals: HireProposalInboxItem[];
+  failures: AgentRunInboxItem[];
+  deliverables: InboxItem[];
+  updates: InboxItem[];
+};
 
 const TAB_LABELS: Array<{ id: InboxTab; label: string }> = [
-  { id: 'mine', label: 'Mine' },
   { id: 'recent', label: 'Recent' },
+  { id: 'mine', label: 'Mine' },
   { id: 'unread', label: 'Unread' },
   { id: 'all', label: 'All' },
 ];
@@ -36,72 +55,13 @@ function itemTimestamp(item: InboxItem): string | null {
   return item.timestamp;
 }
 
-function formatRelativeTime(iso?: string | null): string {
-  if (!iso) return 'Just now';
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  const hours = Math.floor(diff / 3_600_000);
-  const days = Math.floor(diff / 86_400_000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 30) return `${days}d ago`;
-  return `${Math.floor(days / 30)}mo ago`;
-}
-
 function isUnread(item: InboxItem, readState: Record<string, string>): boolean {
   const key = itemKey(item);
   const seenAt = readState[key];
   const ts = itemTimestamp(item);
   if (!ts) return !seenAt;
   if (!seenAt) return true;
-  return new Date(ts).getTime() > new Date(seenAt).getTime();
-}
-
-function toneClasses(feedType: InboxItem['feed_type']) {
-  switch (feedType) {
-    case 'failure':
-      return {
-        dot: 'bg-red-500',
-        badge: 'bg-red-50 text-red-700 border-red-200',
-        Icon: XCircle,
-        iconColor: 'text-red-400',
-      };
-    case 'approval':
-      return {
-        dot: 'bg-amber-400',
-        badge: 'bg-amber-50 text-amber-700 border-amber-200',
-        Icon: UserPlus,
-        iconColor: 'text-amber-300',
-      };
-    case 'deliverable':
-      return {
-        dot: 'bg-emerald-400',
-        badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-        Icon: CheckCircle2,
-        iconColor: 'text-emerald-400',
-      };
-    default:
-      return {
-        dot: 'bg-violet-400',
-        badge: 'bg-violet-50 text-violet-700 border-violet-200',
-        Icon: AlertTriangle,
-        iconColor: 'text-violet-500',
-      };
-  }
-}
-
-function feedTypeLabel(item: InboxItem): string {
-  switch (item.feed_type) {
-    case 'failure':
-      return 'failed';
-    case 'approval':
-      return 'approval';
-    case 'deliverable':
-      return 'ready';
-    default:
-      return 'update';
-  }
+  return isApiDateAfter(ts, seenAt);
 }
 
 function loadReadState(): Record<string, string> {
@@ -121,200 +81,375 @@ function saveReadState(state: Record<string, string>) {
   }
 }
 
-function sectioned(items: InboxItem[]) {
-  const recent: InboxItem[] = [];
-  const earlier: InboxItem[] = [];
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  for (const item of items) {
-    const ts = itemTimestamp(item);
-    if (ts && new Date(ts).getTime() < cutoff) {
-      earlier.push(item);
-    } else {
-      recent.push(item);
-    }
+function toneClasses(feedType: InboxItem['feed_type']) {
+  switch (feedType) {
+    case 'failure':
+      return {
+        badge: 'bg-red-50 text-red-700 border-red-200',
+        rail: 'border-l-red-400',
+        accent: 'bg-red-500',
+        soft: 'bg-red-50',
+        Icon: XCircle,
+        iconClass: 'text-red-500',
+      };
+    case 'approval':
+      return {
+        badge: 'bg-amber-50 text-amber-700 border-amber-200',
+        rail: 'border-l-amber-400',
+        accent: 'bg-amber-500',
+        soft: 'bg-amber-50',
+        Icon: UserPlus,
+        iconClass: 'text-amber-500',
+      };
+    case 'deliverable':
+      return {
+        badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+        rail: 'border-l-emerald-400',
+        accent: 'bg-emerald-500',
+        soft: 'bg-emerald-50',
+        Icon: CheckCircle2,
+        iconClass: 'text-emerald-500',
+      };
+    default:
+      return {
+        badge: 'bg-violet-50 text-violet-700 border-violet-200',
+        rail: 'border-l-violet-400',
+        accent: 'bg-violet-500',
+        soft: 'bg-violet-50',
+        Icon: AlertTriangle,
+        iconClass: 'text-violet-500',
+      };
   }
-  return { recent, earlier };
 }
 
-function AgentRunRow({
-  item,
-  unread,
-  onRetry,
-  onMarkRead,
+function feedTypeLabel(feedType: InboxItem['feed_type']): string {
+  switch (feedType) {
+    case 'failure':
+      return 'Failure';
+    case 'approval':
+      return 'Approval';
+    case 'deliverable':
+      return 'Deliverable';
+    default:
+      return 'Update';
+  }
+}
+
+function itemHeadline(item: InboxItem): string {
+  if (item.item_type === 'task_message') return item.task_title;
+  if (item.item_type === 'hire_proposal') return item.role_title || item.title;
+  return item.task_title || item.title;
+}
+
+function itemActor(item: InboxItem): string {
+  if (item.item_type === 'task_message') return item.author_label;
+  if (item.item_type === 'hire_proposal') return 'CEO';
+  return item.agent_name || 'Agent';
+}
+
+function itemSummary(item: InboxItem): string {
+  return item.summary.replace(/\s+/g, ' ').trim();
+}
+
+function itemTaskId(item: InboxItem): string | null {
+  if (item.item_type === 'task_message') return item.task_id;
+  if (item.item_type === 'hire_proposal') return item.source_task_id ?? null;
+  return item.task_id ?? null;
+}
+
+function itemTaskTitle(item: InboxItem): string {
+  if (item.item_type === 'task_message') return item.task_title;
+  if (item.item_type === 'hire_proposal') return item.source_task_title || item.role_title || item.title;
+  return item.task_title || item.title;
+}
+
+function groupItems(items: InboxItem[], readState: Record<string, string>): InboxGroup[] {
+  const groups = new Map<string, InboxGroup>();
+
+  for (const item of items) {
+    const taskId = itemTaskId(item);
+    const key = taskId ? `task:${taskId}` : itemKey(item);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.items.push(item);
+      if (
+        (itemTimestamp(item) || '') > (existing.latestTimestamp || '')
+      ) {
+        existing.latestTimestamp = itemTimestamp(item);
+        existing.latestItem = item;
+        existing.taskTitle = itemTaskTitle(item);
+      }
+      existing.unread = existing.unread || isUnread(item, readState);
+      existing.requiresAction = existing.requiresAction || item.requires_action;
+    } else {
+      groups.set(key, {
+        key,
+        taskId,
+        taskTitle: itemTaskTitle(item),
+        items: [item],
+        latestTimestamp: itemTimestamp(item),
+        latestItem: item,
+        unread: isUnread(item, readState),
+        requiresAction: item.requires_action,
+        approvals: [],
+        failures: [],
+        deliverables: [],
+        updates: [],
+      });
+    }
+  }
+
+  return Array.from(groups.values())
+    .map((group) => {
+      group.items.sort((a, b) => (itemTimestamp(b) || '').localeCompare(itemTimestamp(a) || ''));
+      group.latestItem = group.items[0];
+      group.latestTimestamp = itemTimestamp(group.latestItem);
+      group.approvals = group.items.filter((item): item is HireProposalInboxItem => item.item_type === 'hire_proposal');
+      group.failures = group.items.filter(
+        (item): item is AgentRunInboxItem => item.item_type === 'agent_run' && item.feed_type === 'failure',
+      );
+      group.deliverables = group.items.filter((item) => item.feed_type === 'deliverable');
+      group.updates = group.items.filter((item) => item.feed_type === 'issue_update');
+      return group;
+    })
+    .sort((a, b) => (b.latestTimestamp || '').localeCompare(a.latestTimestamp || ''));
+}
+
+function SummaryBar({
+  groups,
+  unreadCount,
+  activeFilter,
+  onFilterChange,
 }: {
-  item: AgentRunInboxItem;
-  unread: boolean;
-  onRetry: (item: AgentRunInboxItem) => Promise<void>;
-  onMarkRead: (item: InboxItem) => void;
+  groups: InboxGroup[];
+  unreadCount: number;
+  activeFilter: InboxFilter;
+  onFilterChange: (filter: InboxFilter) => void;
 }) {
-  const tone = toneClasses(item.feed_type);
-  const { Icon } = tone;
+  const counts = useMemo(() => {
+    let failures = 0;
+    let approvals = 0;
+    let updates = 0;
+    let deliverables = 0;
+    for (const group of groups) {
+      failures += group.failures.length;
+      approvals += group.approvals.length;
+      updates += group.updates.length;
+      deliverables += group.deliverables.length;
+    }
+    return { failures, approvals, updates, deliverables };
+  }, [groups]);
+
+  const chips = [
+    { id: 'all' as const, label: 'All', value: groups.length, className: 'bg-white text-slate-700 border-slate-200' },
+    { id: 'unread' as const, label: 'Unread', value: unreadCount, className: 'bg-blue-50 text-blue-700 border-blue-200' },
+    { id: 'failure' as const, label: 'Failures', value: counts.failures, className: 'bg-red-50 text-red-700 border-red-200' },
+    { id: 'approval' as const, label: 'Approvals', value: counts.approvals, className: 'bg-amber-50 text-amber-700 border-amber-200' },
+    { id: 'issue_update' as const, label: 'Updates', value: counts.updates, className: 'bg-violet-50 text-violet-700 border-violet-200' },
+    { id: 'deliverable' as const, label: 'Deliverables', value: counts.deliverables, className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  ].filter((chip) => chip.value > 0);
 
   return (
-    <div
-      className={`group flex items-center gap-3 border-b border-slate-100 px-4 py-3 transition hover:bg-slate-50 ${unread ? 'bg-blue-50/40' : ''}`}
-      onClick={() => onMarkRead(item)}
-    >
-      <div className={`h-3 w-3 flex-shrink-0 rounded-full ${unread ? 'bg-blue-500' : 'bg-transparent'}`} />
-      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-slate-100">
-        {item.status === 'running' ? <Loader2 className="h-4 w-4 animate-spin text-blue-400" /> : <Icon className={`h-4 w-4 ${tone.iconColor}`} />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-3">
-          <p className="truncate text-[15px] font-semibold text-slate-900">{item.title}</p>
-          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${tone.badge}`}>
-            {feedTypeLabel(item)}
-          </span>
-        </div>
-        <div className="mt-0.5 flex items-center gap-3 text-[13px] text-slate-500">
-          <span className="truncate">{item.summary}</span>
-          <span className="shrink-0">{formatRelativeTime(item.timestamp)}</span>
-        </div>
-      </div>
-      <div className="flex flex-shrink-0 items-center gap-2">
-        {item.status === 'failed' && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRetry(item);
-            }}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Retry
-          </button>
-        )}
-        <span className="text-[13px] text-slate-400">{formatRelativeTime(item.timestamp)}</span>
-      </div>
+    <div className="mb-4 flex flex-wrap items-center gap-2">
+      {chips.map((chip) => (
+        <button
+          key={chip.id}
+          type="button"
+          onClick={() => onFilterChange(chip.id)}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] transition hover:-translate-y-0.5 hover:shadow-sm ${
+            activeFilter === chip.id ? 'ring-2 ring-slate-900/10' : ''
+          } ${chip.className}`}
+          aria-pressed={activeFilter === chip.id}
+        >
+          <span>{chip.label}</span>
+          <span>{chip.value}</span>
+        </button>
+      ))}
     </div>
   );
 }
 
-function HireProposalRow({
-  item,
-  unread,
+function GroupCard({
+  group,
+  busyKey,
+  onRetry,
   onApprove,
   onReject,
   onOpenIssue,
   onMarkRead,
 }: {
-  item: HireProposalInboxItem;
-  unread: boolean;
+  group: InboxGroup;
+  busyKey: string | null;
+  onRetry: (item: AgentRunInboxItem) => Promise<void>;
   onApprove: (item: HireProposalInboxItem) => Promise<void>;
   onReject: (item: HireProposalInboxItem) => Promise<void>;
   onOpenIssue: (taskId: string) => void;
-  onMarkRead: (item: InboxItem) => void;
+  onMarkRead: (items: InboxItem[]) => void;
 }) {
-  const tone = toneClasses(item.feed_type);
-  const { Icon } = tone;
+  const latest = group.latestItem;
+  const latestTone = toneClasses(
+    group.failures.length > 0
+      ? 'failure'
+      : group.approvals.length > 0
+        ? 'approval'
+        : latest.feed_type,
+  );
+  const { Icon } = latestTone;
+  const latestFailedRun = group.failures[0];
+  const latestApproval = group.approvals[0];
+  const recentItems = group.items.slice(0, 3);
+  const disabled = group.items.some((item) => busyKey === itemKey(item));
+  const canOpenIssue = !!group.taskId;
 
   return (
     <div
-      className={`group flex items-start gap-3 border-b border-slate-100 px-4 py-3 transition hover:bg-slate-50 ${unread ? 'bg-blue-50/40' : ''}`}
-      onClick={() => onMarkRead(item)}
+      className={`rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:border-slate-300 ${disabled ? 'opacity-70' : ''}`}
     >
-      <div className={`mt-3.5 h-3 w-3 flex-shrink-0 rounded-full ${unread ? 'bg-blue-500' : 'bg-transparent'}`} />
-      <div className="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-slate-100">
-        <Icon className={`h-4 w-4 ${tone.iconColor}`} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-3">
-          <p className="truncate text-[15px] font-semibold text-slate-900">{item.title}</p>
-          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${tone.badge}`}>
-            approval
-          </span>
+      <div className="flex items-start gap-4 px-4 py-4">
+        <div className={`mt-1 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl ${latestTone.soft}`}>
+          <Icon className={`h-4.5 w-4.5 ${latestTone.iconClass}`} />
         </div>
-        <p className="mt-0.5 text-[13px] text-slate-600">{item.summary}</p>
-        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-          {item.source_task_title && <span>{item.source_task_title}</span>}
-          {item.reports_to_label && <span>Reports to {item.reports_to_label}</span>}
-          {item.tickers.map((ticker) => (
-            <span key={ticker} className="rounded-full border border-slate-200 px-2 py-0.5 text-slate-500">
-              {ticker}
-            </span>
-          ))}
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="truncate text-[16px] font-semibold text-slate-900">{group.taskTitle}</p>
+                {group.unread ? <span className="h-2 w-2 rounded-full bg-blue-500" /> : null}
+                {group.requiresAction ? (
+                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-700">
+                    Action needed
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-slate-500">
+                <span>{recentItems.length} event{recentItems.length === 1 ? '' : 's'}</span>
+                {group.failures.length > 0 ? <span>{group.failures.length} failure{group.failures.length === 1 ? '' : 's'}</span> : null}
+                {group.approvals.length > 0 ? <span>{group.approvals.length} approval{group.approvals.length === 1 ? '' : 's'}</span> : null}
+                {group.deliverables.length > 0 ? <span>{group.deliverables.length} deliverable{group.deliverables.length === 1 ? '' : 's'}</span> : null}
+              </div>
+            </div>
+            <div className="min-w-[72px] text-right text-[12px] text-slate-400">
+              {formatRelativeApiTime(group.latestTimestamp)}
+            </div>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {recentItems.map((item) => {
+              const tone = toneClasses(item.feed_type);
+              return (
+                <div
+                  key={itemKey(item)}
+                  className="rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${tone.badge}`}>
+                      {feedTypeLabel(item.feed_type)}
+                    </span>
+                    <span className="text-[12px] font-medium text-slate-700">{itemActor(item)}</span>
+                    <span className="text-[11px] text-slate-400">{formatRelativeApiTime(item.timestamp)}</span>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-slate-600">{itemSummary(item)}</p>
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
-      <div className="flex flex-shrink-0 items-center gap-2">
-        {item.source_task_id && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenIssue(item.source_task_id!);
-            }}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-          >
-            Open issue
-          </button>
-        )}
-        <button
-          type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onReject(item);
-            }}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-          >
-            Decline
-          </button>
-        <button
-          type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onApprove(item);
-            }}
-            className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[13px] font-semibold text-emerald-700 transition hover:bg-emerald-100"
-          >
-            Approve
-          </button>
+
+        <div className="flex flex-shrink-0 items-center gap-2">
+          {canOpenIssue ? (
+            <button
+              type="button"
+              onClick={() => {
+                onMarkRead(group.items);
+                onOpenIssue(group.taskId!);
+              }}
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Open
+            </button>
+          ) : null}
+
+          {latestFailedRun ? (
+            <button
+              type="button"
+              onClick={() => onRetry(latestFailedRun)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Retry
+            </button>
+          ) : null}
+
+          {latestApproval ? (
+            <>
+              <button
+                type="button"
+                onClick={() => onReject(latestApproval)}
+                className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={() => onApprove(latestApproval)}
+                className="rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-700 transition hover:bg-emerald-100"
+              >
+                Approve
+              </button>
+            </>
+          ) : null}
+
+          {canOpenIssue ? <ChevronRight className="h-4 w-4 text-slate-300" /> : null}
+        </div>
       </div>
     </div>
   );
 }
 
-function TaskMessageRow({
-  item,
-  unread,
+function GroupSection({
+  title,
+  groups,
+  busyKey,
+  onRetry,
+  onApprove,
+  onReject,
   onOpenIssue,
   onMarkRead,
 }: {
-  item: TaskInboxItem;
-  unread: boolean;
+  title: string;
+  groups: InboxGroup[];
+  busyKey: string | null;
+  onRetry: (item: AgentRunInboxItem) => Promise<void>;
+  onApprove: (item: HireProposalInboxItem) => Promise<void>;
+  onReject: (item: HireProposalInboxItem) => Promise<void>;
   onOpenIssue: (taskId: string) => void;
-  onMarkRead: (item: InboxItem) => void;
+  onMarkRead: (items: InboxItem[]) => void;
 }) {
-  const tone = toneClasses(item.feed_type);
-  const { Icon } = tone;
+  if (groups.length === 0) return null;
 
   return (
-    <button
-      type="button"
-      onClick={() => {
-        onMarkRead(item);
-        onOpenIssue(item.task_id);
-      }}
-      className={`group flex w-full items-center gap-3 border-b border-slate-100 px-4 py-3 text-left transition hover:bg-slate-50 ${unread ? 'bg-blue-50/40' : ''}`}
-    >
-      <div className={`h-3 w-3 flex-shrink-0 rounded-full ${unread ? 'bg-blue-500' : 'bg-transparent'}`} />
-      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-slate-100">
-        <Icon className={`h-4 w-4 ${tone.iconColor}`} />
+    <div className="mb-6">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.16em] text-slate-400">{title}</h2>
+        <span className="text-[12px] text-slate-400">{groups.length}</span>
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-3">
-          <p className="truncate text-[15px] font-semibold text-slate-900">{item.task_title}</p>
-          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${tone.badge}`}>
-            {item.feed_type === 'deliverable' ? 'document' : 'issue update'}
-          </span>
-        </div>
-        <div className="mt-0.5 flex items-center gap-3 text-[13px] text-slate-500">
-          <span className="truncate">{item.author_label}</span>
-          <span className="truncate text-slate-500">{item.summary}</span>
-        </div>
+      <div className="space-y-3">
+        {groups.map((group) => (
+          <GroupCard
+            key={group.key}
+            group={group}
+            busyKey={busyKey}
+            onRetry={onRetry}
+            onApprove={onApprove}
+            onReject={onReject}
+            onOpenIssue={onOpenIssue}
+            onMarkRead={onMarkRead}
+          />
+        ))}
       </div>
-      <span className="flex-shrink-0 text-[13px] text-slate-400">{formatRelativeTime(item.timestamp)}</span>
-    </button>
+    </div>
   );
 }
 
@@ -323,7 +458,8 @@ export default function InboxPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<InboxTab>('mine');
+  const [activeTab, setActiveTab] = useState<InboxTab>('recent');
+  const [activeFilter, setActiveFilter] = useState<InboxFilter>('all');
   const [query, setQuery] = useState('');
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [readState, setReadState] = useState<Record<string, string>>({});
@@ -346,28 +482,26 @@ export default function InboxPage() {
     load();
   }, []);
 
-  const markRead = (item: InboxItem) => {
-    const next = { ...readState, [itemKey(item)]: new Date().toISOString() };
+  const markItemsRead = (selectedItems: InboxItem[]) => {
+    const next = { ...readState };
+    const now = new Date().toISOString();
+    for (const item of selectedItems) next[itemKey(item)] = now;
     setReadState(next);
     saveReadState(next);
   };
 
-  const visibleItems = useMemo(() => {
+  const tabItems = useMemo(() => {
     const lower = query.trim().toLowerCase();
     const base = items.filter((item) => {
-      const title = 'title' in item ? item.title : '';
-      const summary = 'summary' in item ? item.summary : '';
-      const haystack = `${title} ${summary}`.toLowerCase();
+      const haystack = `${itemHeadline(item)} ${itemSummary(item)} ${itemActor(item)}`.toLowerCase();
       if (lower && !haystack.includes(lower)) return false;
 
       if (activeTab === 'unread') return isUnread(item, readState);
       if (activeTab === 'recent') {
         const ts = itemTimestamp(item);
-        return ts ? Date.now() - new Date(ts).getTime() < 7 * 24 * 60 * 60 * 1000 : true;
+        return ts ? Date.now() - (parseApiDate(ts)?.getTime() ?? 0) < 7 * 24 * 60 * 60 * 1000 : true;
       }
-      if (activeTab === 'mine') {
-        return item.requires_action || item.item_type === 'task_message';
-      }
+      if (activeTab === 'mine') return item.requires_action || item.item_type === 'task_message';
       return true;
     });
 
@@ -378,13 +512,38 @@ export default function InboxPage() {
     });
   }, [activeTab, items, query, readState]);
 
-  const { recent, earlier } = useMemo(() => sectioned(visibleItems), [visibleItems]);
+  const baseGroups = useMemo(() => groupItems(tabItems, readState), [readState, tabItems]);
+
+  const visibleItems = useMemo(() => {
+    if (activeFilter === 'all') return tabItems;
+    return tabItems.filter((item) => {
+      if (activeFilter === 'unread') return isUnread(item, readState);
+      return item.feed_type === activeFilter;
+    });
+  }, [activeFilter, readState, tabItems]);
+
+  const groups = useMemo(() => groupItems(visibleItems, readState), [readState, visibleItems]);
+
+  const unreadCount = useMemo(
+    () => tabItems.filter((item) => isUnread(item, readState)).length,
+    [readState, tabItems],
+  );
+
+  const actionGroups = useMemo(
+    () => groups.filter((group) => group.requiresAction || group.failures.length > 0 || group.approvals.length > 0),
+    [groups],
+  );
+
+  const informationalGroups = useMemo(
+    () => groups.filter((group) => !actionGroups.some((actionGroup) => actionGroup.key === group.key)),
+    [actionGroups, groups],
+  );
 
   const handleRetry = async (item: AgentRunInboxItem) => {
     setBusyKey(itemKey(item));
     try {
       await triggerAgentRun(item.scheduled_agent_id);
-      markRead(item);
+      markItemsRead([item]);
       await load();
     } finally {
       setBusyKey(null);
@@ -395,7 +554,7 @@ export default function InboxPage() {
     setBusyKey(itemKey(item));
     try {
       await approveHireProposal(item.id);
-      markRead(item);
+      markItemsRead([item]);
       await load();
     } finally {
       setBusyKey(null);
@@ -406,53 +565,11 @@ export default function InboxPage() {
     setBusyKey(itemKey(item));
     try {
       await rejectHireProposal(item.id);
-      markRead(item);
+      markItemsRead([item]);
       await load();
     } finally {
       setBusyKey(null);
     }
-  };
-
-  const renderItem = (item: InboxItem) => {
-    const unread = isUnread(item, readState);
-    const key = itemKey(item);
-    const disabled = busyKey === key;
-
-    if (item.item_type === 'hire_proposal') {
-      return (
-        <div key={key} className={disabled ? 'pointer-events-none opacity-70' : ''}>
-          <HireProposalRow
-            item={item}
-            unread={unread}
-            onApprove={handleApprove}
-            onReject={handleReject}
-            onOpenIssue={(taskId) => {
-              markRead(item);
-              navigate(`/issues/${taskId}`);
-            }}
-            onMarkRead={markRead}
-          />
-        </div>
-      );
-    }
-
-    if (item.item_type === 'task_message') {
-      return (
-        <TaskMessageRow
-          key={key}
-          item={item}
-          unread={unread}
-          onOpenIssue={(taskId) => navigate(`/issues/${taskId}`)}
-          onMarkRead={markRead}
-        />
-      );
-    }
-
-    return (
-      <div key={key} className={disabled ? 'pointer-events-none opacity-70' : ''}>
-        <AgentRunRow item={item} unread={unread} onRetry={handleRetry} onMarkRead={markRead} />
-      </div>
-    );
   };
 
   return (
@@ -461,15 +578,18 @@ export default function InboxPage() {
         <h1 className="text-[28px] font-semibold tracking-[-0.03em] text-slate-900">Inbox</h1>
       </div>
 
-      <div className="px-6 py-6">
-        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="px-6 py-5">
+        <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex items-center gap-6 border-b border-slate-200">
             {TAB_LABELS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`border-b-2 px-1 pb-2.5 text-[16px] font-medium transition ${
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setActiveFilter('all');
+                }}
+                className={`border-b-2 px-1 pb-2 text-[15px] font-medium transition ${
                   activeTab === tab.id
                     ? 'border-slate-900 text-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-700'
@@ -480,42 +600,62 @@ export default function InboxPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex w-full min-w-[300px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 lg:w-[340px]">
+          <div className="flex w-full items-center gap-3 lg:w-auto">
+            <div className="flex min-w-[280px] flex-1 items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 lg:w-[360px] lg:flex-none">
               <Search className="h-4 w-4 text-slate-400" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search inbox..."
-                className="w-full bg-transparent text-[15px] text-slate-900 outline-none placeholder:text-slate-400"
+                className="w-full bg-transparent text-[14px] text-slate-900 outline-none placeholder:text-slate-400"
               />
             </div>
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-sm">
-          {loading ? (
-            <div className="flex items-center justify-center px-6 py-16">
-              <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-            </div>
-          ) : error ? (
-            <div className="px-6 py-10 text-center text-sm text-red-600">{error}</div>
-          ) : visibleItems.length === 0 ? (
-            <div className="px-6 py-12 text-center text-sm text-slate-500">No inbox items.</div>
-          ) : (
-            <>
-              {recent.length > 0 && recent.map(renderItem)}
-              {earlier.length > 0 && (
-                <>
-                  <div className="flex items-center justify-end border-y border-slate-100 px-6 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                    Earlier
-                  </div>
-                  {earlier.map(renderItem)}
-                </>
-              )}
-            </>
-          )}
-        </div>
+        <SummaryBar
+          groups={baseGroups}
+          unreadCount={unreadCount}
+          activeFilter={activeFilter}
+          onFilterChange={setActiveFilter}
+        />
+
+        {loading ? (
+          <div className="flex items-center justify-center rounded-[20px] border border-slate-200 bg-white px-6 py-16 shadow-sm">
+            <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+          </div>
+        ) : error ? (
+          <div className="rounded-[20px] border border-slate-200 bg-white px-6 py-10 text-center text-sm text-red-600 shadow-sm">
+            {error}
+          </div>
+        ) : groups.length === 0 ? (
+          <div className="rounded-[20px] border border-slate-200 bg-white px-6 py-12 text-center text-sm text-slate-500 shadow-sm">
+            No inbox items.
+          </div>
+        ) : (
+          <>
+            <GroupSection
+              title="Needs Action"
+              groups={actionGroups}
+              busyKey={busyKey}
+              onRetry={handleRetry}
+              onApprove={handleApprove}
+              onReject={handleReject}
+              onOpenIssue={(taskId) => navigate(`/issues/${taskId}`)}
+              onMarkRead={markItemsRead}
+            />
+            <GroupSection
+              title="Recent Activity"
+              groups={informationalGroups}
+              busyKey={busyKey}
+              onRetry={handleRetry}
+              onApprove={handleApprove}
+              onReject={handleReject}
+              onOpenIssue={(taskId) => navigate(`/issues/${taskId}`)}
+              onMarkRead={markItemsRead}
+            />
+          </>
+        )}
       </div>
     </div>
   );

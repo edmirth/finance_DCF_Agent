@@ -570,8 +570,11 @@ async def get_inbox(
             AgentRun,
             ScheduledAgent.name.label("agent_name"),
             ScheduledAgent.role_title.label("agent_role_title"),
+            ResearchTask.id.label("task_id"),
+            ResearchTask.title.label("task_title"),
         )
         .join(ScheduledAgent, AgentRun.scheduled_agent_id == ScheduledAgent.id)
+        .outerjoin(ResearchTask, ResearchTask.run_id == AgentRun.id)
     )
     if alert_level:
         run_query = run_query.where(AgentRun.alert_level == alert_level)
@@ -581,9 +584,11 @@ async def get_inbox(
     run_rows = run_result.all()
 
     items = []
-    for run, agent_name, agent_role_title in run_rows:
+    for run, agent_name, agent_role_title, task_id, task_title in run_rows:
         d = _run_to_dict(run)
         d["agent_name"] = agent_role_title or agent_name
+        d["task_id"] = task_id
+        d["task_title"] = task_title
         d["feed_type"] = (
             "failure"
             if run.status == "failed"
@@ -669,7 +674,11 @@ async def _execute_run_background(
         def __init__(self, d):
             self.id = d["id"]
             self.name = d["name"]
+            self.description = d.get("description")
             self.template = d["template"]
+            self.role_key = d.get("role_key")
+            self.role_title = d.get("role_title")
+            self.role_family = d.get("role_family")
             self.tickers = json.dumps(d["tickers"])
             self.topics = json.dumps(d["topics"])
             self.instruction = d["instruction"]

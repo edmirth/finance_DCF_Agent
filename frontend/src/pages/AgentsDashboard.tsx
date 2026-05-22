@@ -21,6 +21,7 @@ import {
 } from '../api';
 import { roleMetaForAgent } from '../agentRoles';
 import type { InboxItem, ScheduledAgent } from '../types';
+import { compareApiDatesDesc, formatRelativeApiTime } from '../utils/time';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -40,18 +41,6 @@ const TASK_STATUS_TONE: Record<string, string> = {
 };
 
 const ACTIVE_TASK_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review', 'failed'];
-
-function formatRelativeTime(iso?: string | null): string {
-  if (!iso) return 'Never run';
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  return `${days}d ago`;
-}
 
 function displayTicker(ticker: string): string {
   return ticker === 'GENERAL' ? 'General' : ticker;
@@ -124,6 +113,28 @@ function taskPriorityOrder(status: ResearchTask['status']): number {
     default:
       return 4;
   }
+}
+
+function AgentWorkingIndicator({
+  isWorking,
+  runningCount,
+}: {
+  isWorking: boolean;
+  runningCount: number;
+}) {
+  if (!isWorking) return null;
+
+  return (
+    <div className="mb-3 flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+      <span className="relative flex h-3 w-3 flex-shrink-0 items-center justify-center">
+        <span className="absolute inline-flex h-3 w-3 animate-ping rounded-full bg-blue-400 opacity-75" />
+        <span className="relative inline-flex h-3 w-3 rounded-full border-2 border-white bg-blue-500" />
+      </span>
+      <span className="text-xs font-semibold text-blue-700">
+        {runningCount === 1 ? 'Working on 1 issue now' : `Working on ${runningCount} issues now`}
+      </span>
+    </div>
+  );
 }
 
 function WorkloadBar({ workload }: { workload: AgentWorkload }) {
@@ -233,6 +244,7 @@ function AgentCard({
   const meta = roleMetaForAgent(agent);
   const [running, setRunning] = useState(false);
   const showSubtitle = meta.displayTitle !== agent.name;
+  const isWorking = workload.runningCount > 0;
 
   const handleRunNow = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -280,11 +292,23 @@ function AgentCard({
         </div>
 
         <div className="flex flex-shrink-0 items-center gap-1.5">
-          <div
-            className={`h-2 w-2 rounded-full ${agent.is_active ? 'bg-emerald-400' : 'bg-slate-300'}`}
-            style={agent.is_active ? { boxShadow: '0 0 0 3px #D1FAE5' } : {}}
-          />
-          <span className="text-xs text-slate-400">{agent.is_active ? 'Active' : 'Paused'}</span>
+          {isWorking ? (
+            <>
+              <span className="relative flex h-2.5 w-2.5 items-center justify-center">
+                <span className="absolute inline-flex h-2.5 w-2.5 animate-ping rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
+              </span>
+              <span className="text-xs font-medium text-blue-600">Working</span>
+            </>
+          ) : (
+            <>
+              <div
+                className={`h-2 w-2 rounded-full ${agent.is_active ? 'bg-emerald-400' : 'bg-slate-300'}`}
+                style={agent.is_active ? { boxShadow: '0 0 0 3px #D1FAE5' } : {}}
+              />
+              <span className="text-xs text-slate-400">{agent.is_active ? 'Active' : 'Paused'}</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -313,6 +337,8 @@ function AgentCard({
         <p className="mb-3 text-xs italic text-slate-400">No runs yet</p>
       )}
 
+      <AgentWorkingIndicator isWorking={isWorking} runningCount={workload.runningCount} />
+
       <WorkloadBar workload={workload} />
 
       <div className="flex items-center justify-between border-t border-slate-100 pt-3">
@@ -322,7 +348,7 @@ function AgentCard({
           {agent.last_run_at && (
             <>
               <span className="text-slate-300">·</span>
-              <span className="text-xs">{formatRelativeTime(agent.last_run_at)}</span>
+              <span className="text-xs">{formatRelativeApiTime(agent.last_run_at)}</span>
             </>
           )}
         </div>
@@ -359,6 +385,7 @@ function AgentCard({
 
 function LeaderCard({ workload }: { workload: AgentWorkload }) {
   const navigate = useNavigate();
+  const isWorking = workload.runningCount > 0;
 
   return (
     <div
@@ -380,14 +407,28 @@ function LeaderCard({ workload }: { workload: AgentWorkload }) {
         </div>
 
         <div className="flex flex-shrink-0 items-center gap-1.5">
-          <div className="h-2 w-2 rounded-full bg-emerald-400" style={{ boxShadow: '0 0 0 3px #D1FAE5' }} />
-          <span className="text-xs text-slate-400">Active</span>
+          {isWorking ? (
+            <>
+              <span className="relative flex h-2.5 w-2.5 items-center justify-center">
+                <span className="absolute inline-flex h-2.5 w-2.5 animate-ping rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
+              </span>
+              <span className="text-xs font-medium text-blue-600">Working</span>
+            </>
+          ) : (
+            <>
+              <div className="h-2 w-2 rounded-full bg-emerald-400" style={{ boxShadow: '0 0 0 3px #D1FAE5' }} />
+              <span className="text-xs text-slate-400">Active</span>
+            </>
+          )}
         </div>
       </div>
 
       <p className="mb-3 text-xs leading-relaxed text-slate-500">
         Reviews new issues, decides whether to delegate existing work, and suggests new hires when the current team has a coverage gap.
       </p>
+
+      <AgentWorkingIndicator isWorking={isWorking} runningCount={workload.runningCount} />
 
       <WorkloadBar workload={workload} />
 
@@ -461,7 +502,7 @@ function TaskRow({ task }: { task: ResearchTask }) {
             <span className="font-mono text-xs uppercase tracking-wide text-slate-500">
               {displayTicker(task.ticker)}
             </span>
-            <span>{formatRelativeTime(task.updated_at || task.created_at)}</span>
+            <span>{formatRelativeApiTime(task.updated_at || task.created_at)}</span>
           </div>
           <p className="mt-1 truncate text-sm font-medium text-slate-900">{task.title}</p>
         </div>
@@ -547,7 +588,7 @@ export default function AgentsDashboard() {
         item.status === 'running'
           ? 'Run in progress'
           : item.findings_summary || item.error || 'Run completed',
-      time: formatRelativeTime(item.started_at),
+      time: formatRelativeApiTime(item.started_at),
       initials: agentInitials(item.agent_name),
     }));
 
@@ -560,7 +601,7 @@ export default function AgentsDashboard() {
         id: `active-${agent.id}`,
         label: agent.name,
         body: agent.last_run_summary || 'Active and monitoring',
-        time: formatRelativeTime(agent.updated_at),
+        time: formatRelativeApiTime(agent.updated_at),
         initials: agentInitials(agent.name),
       }));
 
@@ -589,7 +630,7 @@ export default function AgentsDashboard() {
       workload.currentTasks.sort((left, right) => {
         const byStatus = taskPriorityOrder(left.status) - taskPriorityOrder(right.status);
         if (byStatus !== 0) return byStatus;
-        return new Date(right.updated_at || right.created_at || 0).getTime() - new Date(left.updated_at || left.created_at || 0).getTime();
+        return compareApiDatesDesc(left.updated_at || left.created_at, right.updated_at || right.created_at);
       });
     }
     return workloads;
@@ -612,7 +653,7 @@ export default function AgentsDashboard() {
     workload.currentTasks.sort((left, right) => {
       const byStatus = taskPriorityOrder(left.status) - taskPriorityOrder(right.status);
       if (byStatus !== 0) return byStatus;
-      return new Date(right.updated_at || right.created_at || 0).getTime() - new Date(left.updated_at || left.created_at || 0).getTime();
+      return compareApiDatesDesc(left.updated_at || left.created_at, right.updated_at || right.created_at);
     });
     return workload;
   }, [allTasks]);

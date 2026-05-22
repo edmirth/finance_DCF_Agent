@@ -322,8 +322,18 @@ def report_config_snapshot(report: ScheduledAgent) -> dict:
     }
 
 
-def _issue_output_title(task: ResearchTask, agent: ScheduledAgent | None) -> str:
+def _issue_output_title(task: ResearchTask, agent: ScheduledAgent | None, outcome: dict | None = None) -> str:
     role_title = agent.role_title if agent and agent.role_title else (agent.name if agent else "Agent")
+    resolved_scope = [
+        str(value).strip().upper()
+        for value in ((outcome or {}).get("tickers_analyzed") or [])
+        if str(value).strip() and str(value).strip().upper() != "GENERAL"
+    ]
+    scope_label = ", ".join(resolved_scope) if resolved_scope else _issue_scope_label(task)
+    if "analyst" in role_title.lower():
+        if scope_label != "Not explicitly specified":
+            return f"{scope_label} Equity Research Report"
+        return f"{role_title} Research Report"
     return f"{role_title} output"
 
 
@@ -385,12 +395,50 @@ def _extract_report_key_findings(report: str) -> list[str]:
     return sentences[:4]
 
 
+def _extract_report_suggestions(report: str) -> list[str]:
+    if not report:
+        return []
+    match = re.search(
+        r"(?:^|\n)##\s*(?:Agent Suggestions|Next Steps|Action Items|Risks And Watch Items)\s*\n(?P<body>.*?)(?=\n##\s+|\Z)",
+        report,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    source = match.group("body") if match else report
+    suggestions: list[str] = []
+    for line in source.splitlines():
+        item = line.strip()
+        if item.startswith(("- ", "* ", "• ")):
+            suggestions.append(item[2:].strip())
+        elif re.match(r"^\d+[.)]\s+", item):
+            suggestions.append(re.sub(r"^\d+[.)]\s+", "", item).strip())
+        if len(suggestions) >= 5:
+            break
+    if suggestions:
+        return suggestions
+    compact = re.sub(r"\s+", " ", source)
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", compact)
+        if len(sentence.strip()) >= 35 and any(word in sentence.lower() for word in ["watch", "track", "compare", "review", "stress", "monitor", "next"])
+    ][:4]
+
+
 def _normalize_report_markdown(report: str) -> str:
     cleaned_lines: list[str] = []
+    skip_internal_block = False
     for raw_line in (report or "").splitlines():
         line = raw_line.strip()
         if not line:
+            skip_internal_block = False
             cleaned_lines.append("")
+            continue
+        upper = line.upper()
+        if re.match(r"^(CURRENT ISSUE|ASSIGNMENT|USER REQUEST|ISSUE METADATA|TASK METADATA):?\s*$", upper):
+            skip_internal_block = True
+            continue
+        if skip_internal_block and re.match(r"^(TITLE|OBJECTIVE|TASK TYPE|PRIORITY|RESOLVED SCOPE|REQUIRED DELIVERABLE):\s+", upper):
+            continue
+        if re.match(r"^(TASK TYPE|PRIORITY):\s+", upper):
             continue
         heading_match = re.match(r"^([A-Z][A-Z /&()\-]{4,}):\s*$", line)
         inline_label_match = re.match(r"^([A-Z][A-Z /&()\-]{2,}):\s+(.+)$", line)
@@ -413,7 +461,20 @@ def _normalize_report_markdown(report: str) -> str:
 
 def _issue_output_content(task: ResearchTask, agent: ScheduledAgent | None, outcome: dict) -> str:
     role_title = agent.role_title if agent and agent.role_title else (agent.name if agent else "Agent")
-    scope_label = _issue_scope_label(task)
+    resolved_scope = [
+        str(value).strip().upper()
+        for value in (outcome.get("tickers_analyzed") or [])
+        if str(value).strip() and str(value).strip().upper() != "GENERAL"
+    ]
+    scope_label = ", ".join(resolved_scope) if resolved_scope else _issue_scope_label(task)
+    if "analyst" in role_title.lower():
+        report_heading = (
+            f"{scope_label} Equity Research Report"
+            if scope_label != "Not explicitly specified"
+            else f"{task.title} Equity Research Report"
+        )
+    else:
+        report_heading = f"{role_title} output"
     raw_report = (outcome.get("report") or "").strip()
     report = _normalize_report_markdown(_strip_duplicate_heading_line(raw_report, scope_label))
     summary = (outcome.get("findings_summary") or "").strip()
@@ -423,22 +484,23 @@ def _issue_output_content(task: ResearchTask, agent: ScheduledAgent | None, outc
     if not key_findings:
         key_findings = _extract_report_key_findings(report)
     key_findings_block = "\n".join(f"- {item}" for item in key_findings if item) or "- None recorded"
+    suggestions = _extract_report_suggestions(report)
+    suggestions_block = "\n".join(f"- {item}" for item in suggestions if item)
     parts = [
-        f"# {role_title} output",
+        f"# {report_heading}",
         "",
         "## Snapshot",
-        f"- Issue: {task.title}",
         f"- Scope: {scope_label}",
-        f"- Task type: {task.task_type.replace('_', ' ')}",
-        f"- Priority: {task.priority}",
         f"- Analyst: {role_title}",
         "",
-        "## Bottom line",
+        "## Executive summary",
         summary or "No summary was saved for this run.",
         "",
         "## Key findings",
         key_findings_block,
     ]
+    if suggestions_block:
+        parts.extend(["", "## Agent suggestions", suggestions_block])
     if report:
         parts.extend(["", "## Detailed analysis", report])
     elif outcome.get("error"):
@@ -502,7 +564,7 @@ async def _upsert_task_output_document(
     agent: ScheduledAgent | None,
     outcome: dict,
 ) -> tuple[ResearchTaskDocument, bool]:
-    title = _issue_output_title(task, agent)
+    title = _issue_output_title(task, agent, outcome)
     content_md = _issue_output_content(task, agent, outcome)
     status = "published" if not outcome.get("error") else "draft"
     result = await db.execute(
@@ -678,7 +740,7 @@ async def update_task_from_delegated_run(
             },
         )
     else:
-        task.status = "in_review"
+        task.status = "done"
         task.error = None
         task.completed_at = now
         await _append_task_assistant_message(

@@ -369,6 +369,8 @@ export interface AgentRun {
   item_type?: 'agent_run';
   id: string;
   scheduled_agent_id: string;
+  task_id?: string | null;
+  task_title?: string | null;
   status: 'running' | 'completed' | 'failed';
   report: string;
   findings_summary: string;

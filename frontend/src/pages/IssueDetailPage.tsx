@@ -15,19 +15,21 @@ import {
   ShieldCheck,
   Trash2,
   X,
+  Download,
 } from 'lucide-react';
 import {
   cioReviewTask,
   createTaskChatTurn,
   createTaskDocument,
   deleteTaskDocument,
+  exportTaskDocumentDocx,
   getProjects,
   getScheduledAgents,
   getTask,
   getTaskRelatedWork,
   listTaskDocuments,
   listTaskMessages,
-  runTaskPipeline,
+  runTaskNow,
   updateTaskDocument,
   type ResearchTask,
   type TaskDocument,
@@ -35,6 +37,7 @@ import {
   type TaskRelatedWork,
 } from '../api';
 import type { ProjectSummary, ScheduledAgent } from '../types';
+import { formatApiDateTime, formatRelativeApiTime } from '../utils/time';
 
 type IssueTab = 'chat' | 'activity' | 'related' | 'documents';
 const LIVE_EXECUTION_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review'];
@@ -51,6 +54,7 @@ const DOCUMENT_HEADINGS = [
   'Bottom line',
   'Executive summary',
   'Key findings',
+  'Agent suggestions',
   'Detailed analysis',
   'Full output',
   'Run failure',
@@ -86,28 +90,6 @@ function assigneeLabel(task: ResearchTask, agentsById: Map<string, ScheduledAgen
     return 'PM / CIO';
   }
   return 'No assignee';
-}
-
-function formatDateTime(iso?: string | null): string {
-  if (!iso) return 'Not yet';
-  return new Date(iso).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
-function formatRelativeTime(iso?: string | null): string {
-  if (!iso) return 'Just now';
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  const hours = Math.floor(diff / 3_600_000);
-  const days = Math.floor(diff / 86_400_000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  return `${days}d ago`;
 }
 
 function executionProgressValue(status: ResearchTask['status']): number {
@@ -149,15 +131,15 @@ function executionHeadline(task: ResearchTask, assignee: string): string {
 
 function executionSubline(task: ResearchTask): string {
   if (task.status === 'running' && task.started_at) {
-    return `Run started ${formatRelativeTime(task.started_at)}.`;
+    return `Run started ${formatRelativeApiTime(task.started_at)}.`;
   }
   if (task.status === 'in_review' && task.completed_at) {
-    return `Latest run finished ${formatRelativeTime(task.completed_at)}.`;
+    return `Latest run finished ${formatRelativeApiTime(task.completed_at)}.`;
   }
   if (task.status === 'failed' && task.error) {
     return task.error;
   }
-  return `Last issue update ${formatRelativeTime(task.updated_at || task.created_at)}.`;
+  return `Last issue update ${formatRelativeApiTime(task.updated_at || task.created_at)}.`;
 }
 
 function eventTone(message: TaskMessage): string {
@@ -358,6 +340,46 @@ function parseLabeledBulletRows(lines: string[]): Array<{ label: string; value: 
     .filter((item): item is { label: string; value: string } => Boolean(item));
 }
 
+const DETAIL_FACT_LABELS = new Set([
+  'signal',
+  'reasoning',
+  'metrics',
+  'data observations',
+  'framework application',
+  'action items',
+  'what this means for your thesis',
+]);
+
+function extractDetailFactRows(lines: string[]): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = [];
+  const seen = new Set<string>();
+  for (const rawLine of lines) {
+    const cleaned = cleanMarkdownText(rawLine);
+    if (!cleaned) continue;
+    const match = cleaned.match(/^([A-Za-z][A-Za-z /&()%\-]{2,50}):\s+(.+)$/);
+    if (!match) continue;
+    const label = match[1].trim();
+    const value = match[2].trim();
+    const key = label.toLowerCase();
+    if (!DETAIL_FACT_LABELS.has(key)) continue;
+    if (seen.has(key)) continue;
+    rows.push({ label, value });
+    seen.add(key);
+    if (rows.length >= 6) break;
+  }
+  return rows;
+}
+
+function stripDetailFactRows(lines: string[]): string[] {
+  return lines.filter((rawLine) => {
+    const cleaned = cleanMarkdownText(rawLine);
+    if (!cleaned) return true;
+    const match = cleaned.match(/^([A-Za-z][A-Za-z /&()%\-]{2,50}):\s+(.+)$/);
+    if (!match) return true;
+    return !DETAIL_FACT_LABELS.has(match[1].trim().toLowerCase());
+  });
+}
+
 function cleanDocumentReportMarkdown(text: string, scopeLabel?: string): string {
   const lines = (text || '').split(/\r?\n/);
   const cleanedLines: string[] = [];
@@ -411,11 +433,14 @@ function buildDocumentViewModel(document: TaskDocument, task: ResearchTask) {
   const deliverable = extractFirstMeaningfulLine(extractSection(source, ['Expected deliverable', 'Assigned coverage'], DOCUMENT_HEADINGS));
   const summary = extractFirstMeaningfulLine(extractSection(source, ['Bottom line', 'Executive summary'], DOCUMENT_HEADINGS));
   const findings = extractBulletsFromSection(extractSection(source, ['Key findings'], DOCUMENT_HEADINGS));
+  const suggestions = extractBulletsFromSection(extractSection(source, ['Agent suggestions'], DOCUMENT_HEADINGS));
   const failure = extractFirstMeaningfulLine(extractSection(source, ['Run failure', 'What failed'], DOCUMENT_HEADINGS));
   const nextAction = extractFirstMeaningfulLine(extractSection(source, ['Required action'], DOCUMENT_HEADINGS));
   const detailLines = extractSection(source, ['Detailed analysis', 'Full output'], DOCUMENT_HEADINGS);
+  const detailFactRows = extractDetailFactRows(detailLines);
+  const detailBodyLines = stripDetailFactRows(detailLines);
   const fallbackScope = task.ticker === 'GENERAL' ? undefined : task.ticker;
-  const detailMarkdown = cleanDocumentReportMarkdown(detailLines.join('\n').trim(), fallbackScope);
+  const detailMarkdown = cleanDocumentReportMarkdown(detailBodyLines.join('\n').trim(), fallbackScope);
   const derivedDetailSummary = extractFirstMeaningfulLine(detailMarkdown.split(/\r?\n/));
   const summaryIsGeneric = !summary || summary === 'Research completed. See full report for details.';
   const findingsAreGeneric = findings.length === 0 || findings.every((item) => item.toLowerCase() === 'none recorded');
@@ -427,8 +452,10 @@ function buildDocumentViewModel(document: TaskDocument, task: ResearchTask) {
     deliverable,
     summary: summaryIsGeneric ? (derivedDetailSummary || summary) : summary,
     findings: findingsAreGeneric ? extractBulletsFromSection(detailMarkdown.split(/\r?\n/)) : findings,
+    suggestions,
     failure,
     nextAction,
+    detailFactRows,
     detailMarkdown,
   };
 }
@@ -510,7 +537,7 @@ function RelatedIssueRow({
           {task.notes?.trim() || 'No issue brief yet.'}
         </p>
       </div>
-      <div className="flex-shrink-0 text-xs text-slate-400">{formatRelativeTime(task.updated_at || task.created_at)}</div>
+      <div className="flex-shrink-0 text-xs text-slate-400">{formatRelativeApiTime(task.updated_at || task.created_at)}</div>
     </Link>
   );
 }
@@ -542,7 +569,7 @@ function ThreadMessage({
             <div>
               <div className="flex items-center gap-2 text-xs font-semibold">
                 <span className="text-slate-900">{message.author_label}</span>
-                <span className="text-slate-400">{formatRelativeTime(message.created_at)}</span>
+                <span className="text-slate-400">{formatRelativeApiTime(message.created_at)}</span>
               </div>
               <div className="mt-2 inline-flex items-center rounded-full border border-white/70 bg-white/80 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">
                 {artifactThreadLabel(message)}
@@ -582,7 +609,7 @@ function ThreadMessage({
       <div className={`max-w-[85%] rounded-[24px] px-4 py-3 shadow-sm ${bubbleClasses}`}>
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
           <span>{message.author_label}</span>
-          <span className={isUser ? 'text-white/60' : 'text-slate-400'}>{formatRelativeTime(message.created_at)}</span>
+          <span className={isUser ? 'text-white/60' : 'text-slate-400'}>{formatRelativeApiTime(message.created_at)}</span>
         </div>
         <div className={`prose prose-sm max-w-none prose-p:my-2 prose-p:leading-7 prose-ul:my-2 prose-ul:pl-5 prose-li:my-1 ${isUser ? 'prose-invert' : 'prose-strong:text-slate-900 prose-headings:text-slate-900'}`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
@@ -608,6 +635,7 @@ export default function IssueDetailPage() {
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
   const [documentDraftTitle, setDocumentDraftTitle] = useState('');
   const [documentDraftContent, setDocumentDraftContent] = useState('');
+  const [showDocumentDetails, setShowDocumentDetails] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -663,25 +691,28 @@ export default function IssueDetailPage() {
   }, [taskId]);
 
   useEffect(() => {
-    if (!taskId || !task || !LIVE_EXECUTION_STATUSES.includes(task.status)) {
+    const analysisDocumentExists = documents.some((document) => document.document_type === 'analysis');
+    const shouldPollForFreshOutput =
+      !!task &&
+      (LIVE_EXECUTION_STATUSES.includes(task.status) ||
+        (task.status === 'done' && !!task.run_id && !analysisDocumentExists));
+
+    if (!taskId || !shouldPollForFreshOutput) {
       return;
     }
     const intervalId = window.setInterval(() => {
       void load(false);
     }, 5000);
     return () => window.clearInterval(intervalId);
-  }, [taskId, task?.status]);
+  }, [taskId, task, documents]);
 
   const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
   const documentsById = useMemo(() => new Map(documents.map((document) => [document.id, document])), [documents]);
   const project = task?.project_id ? projectsById.get(task.project_id) || null : null;
-  const selectedAgentCount = task?.selected_agents.length || 0;
-  const canRunPipeline =
+  const canRunNow =
     !!task &&
-    task.ticker !== 'GENERAL' &&
-    selectedAgentCount > 0 &&
-    ['pending', 'failed'].includes(task.status);
+    !['done', 'cancelled'].includes(task.status);
   const selectedDocument = documents.find((doc) => doc.id === selectedDocumentId) || null;
   const selectedDocumentView = useMemo(
     () => (selectedDocument && task ? buildDocumentViewModel(selectedDocument, task) : null),
@@ -704,6 +735,7 @@ export default function IssueDetailPage() {
       setEditingDocumentId(null);
       setDocumentDraftTitle('');
       setDocumentDraftContent('');
+      setShowDocumentDetails(false);
       return;
     }
     if (editingDocumentId === selectedDocument.id) {
@@ -713,15 +745,19 @@ export default function IssueDetailPage() {
     setDocumentDraftContent(selectedDocument.content_md);
   }, [selectedDocumentId, selectedDocument, editingDocumentId]);
 
+  useEffect(() => {
+    setShowDocumentDetails(false);
+  }, [selectedDocumentId]);
+
   const handleRun = async () => {
-    if (!taskId || !canRunPipeline) return;
+    if (!taskId || !canRunNow) return;
     setRunning(true);
     setError(null);
     try {
-      await runTaskPipeline(taskId);
+      await runTaskNow(taskId);
       await load();
     } catch {
-      setError('Failed to start the issue pipeline.');
+      setError('Failed to start work on this issue.');
     } finally {
       setRunning(false);
     }
@@ -905,11 +941,11 @@ export default function IssueDetailPage() {
               <button
                 type="button"
                 onClick={handleRun}
-                disabled={!canRunPipeline || running}
+                disabled={!canRunNow || running}
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                Run pipeline
+                Run now
               </button>
             </div>
           </div>
@@ -934,7 +970,7 @@ export default function IssueDetailPage() {
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Created</p>
-              <p className="mt-2 text-sm font-medium text-slate-900">{formatDateTime(task!.created_at)}</p>
+              <p className="mt-2 text-sm font-medium text-slate-900">{formatApiDateTime(task!.created_at)}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Selected engines</p>
@@ -1091,7 +1127,7 @@ export default function IssueDetailPage() {
                               <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${eventTone(message)}`}>
                                 {message.author_label}
                               </span>
-                              <span className="text-[11px] text-slate-400">{formatRelativeTime(message.created_at)}</span>
+                              <span className="text-[11px] text-slate-400">{formatRelativeApiTime(message.created_at)}</span>
                             </div>
                             <p className="line-clamp-2 text-xs leading-relaxed text-slate-600">{message.content}</p>
                           </div>
@@ -1120,7 +1156,7 @@ export default function IssueDetailPage() {
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span>Last update</span>
-                      <span className="font-medium text-slate-900">{formatRelativeTime(task!.updated_at || task!.created_at)}</span>
+                      <span className="font-medium text-slate-900">{formatRelativeApiTime(task!.updated_at || task!.created_at)}</span>
                     </div>
                   </div>
                 </div>
@@ -1155,7 +1191,7 @@ export default function IssueDetailPage() {
                       </div>
                       <p className="text-sm leading-relaxed text-slate-800">{message.content}</p>
                     </div>
-                    <span className="flex-shrink-0 text-xs text-slate-400">{formatRelativeTime(message.created_at)}</span>
+                    <span className="flex-shrink-0 text-xs text-slate-400">{formatRelativeApiTime(message.created_at)}</span>
                   </div>
                 ))
               )}
@@ -1244,7 +1280,7 @@ export default function IssueDetailPage() {
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold text-slate-900">{document.title}</p>
                           <p className="mt-1 text-xs text-slate-500">
-                            rev {document.revision} · {formatRelativeTime(document.updated_at)}
+                            rev {document.revision} · {formatRelativeApiTime(document.updated_at)}
                           </p>
                         </div>
                         <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -1278,7 +1314,7 @@ export default function IssueDetailPage() {
                           )}
                         </div>
                         <p className="mt-1 text-sm text-slate-500">
-                          rev {selectedDocument.revision} · updated {formatRelativeTime(selectedDocument.updated_at)}
+                          rev {selectedDocument.revision} · updated {formatRelativeApiTime(selectedDocument.updated_at)}
                         </p>
                       </div>
 
@@ -1309,6 +1345,17 @@ export default function IssueDetailPage() {
                           </>
                         ) : (
                           <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!taskId) return;
+                                window.open(exportTaskDocumentDocx(taskId, selectedDocument.id), '_blank');
+                              }}
+                              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
+                            >
+                              <Download className="h-4 w-4" />
+                              Word
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -1382,14 +1429,56 @@ export default function IssueDetailPage() {
                                 )}
                               </div>
 
+                              {selectedDocumentView.suggestions.length > 0 && (
+                                <div className="rounded-[24px] border border-blue-100 bg-blue-50/70 p-5">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Agent suggestions</p>
+                                  <ul className="mt-4 space-y-3">
+                                    {selectedDocumentView.suggestions.map((suggestion) => (
+                                      <li key={suggestion} className="rounded-2xl border border-blue-100 bg-white px-4 py-3 text-sm leading-7 text-slate-700">
+                                        {suggestion}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {selectedDocumentView.detailFactRows.length > 0 && (
+                                <div className="grid gap-3 md:grid-cols-2">
+                                  {selectedDocumentView.detailFactRows.map((row) => (
+                                    <div key={`${row.label}-${row.value}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                        {row.label}
+                                      </p>
+                                      <p className="mt-2 text-sm leading-7 text-slate-800">{row.value}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
                               {selectedDocumentView.detailMarkdown ? (
                                 <div className="rounded-[24px] border border-slate-200 bg-white p-6">
-                                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Detailed analysis</p>
-                                  <div className="mt-4 max-w-none">
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                                      {selectedDocumentView.detailMarkdown}
-                                    </ReactMarkdown>
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Detailed analysis</p>
+                                      <p className="mt-1 text-sm text-slate-500">
+                                        Full analyst notes, evidence, and supporting detail.
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowDocumentDetails((current) => !current)}
+                                      className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+                                    >
+                                      {showDocumentDetails ? 'Hide details' : 'Show details'}
+                                    </button>
                                   </div>
+                                  {showDocumentDetails && (
+                                    <div className="mt-4 max-w-none">
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                                        {selectedDocumentView.detailMarkdown}
+                                      </ReactMarkdown>
+                                    </div>
+                                  )}
                                 </div>
                               ) : selectedDocumentView.failure ? (
                                 <div className="rounded-[24px] border border-red-200 bg-red-50 p-5">

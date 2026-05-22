@@ -129,6 +129,10 @@ ROLE_CATALOG: dict[str, AgentRoleDefinition] = {
     ),
 }
 
+LEGACY_ROLE_KEY_ALIASES: dict[str, str] = {
+    "equity_research_analyst": "generalist_analyst",
+}
+
 
 TEMPLATE_FALLBACK_ROLES: dict[str, AgentRoleDefinition] = {
     "earnings_watcher": ROLE_CATALOG["earnings_analyst"],
@@ -152,6 +156,7 @@ TEMPLATE_FALLBACK_ROLES: dict[str, AgentRoleDefinition] = {
 
 def validate_role_key(role_key: str) -> str:
     normalized = (role_key or "").strip()
+    normalized = LEGACY_ROLE_KEY_ALIASES.get(normalized, normalized)
     if normalized not in ROLE_CATALOG:
         raise ValueError(f"Invalid role_key. Must be one of: {sorted(ROLE_CATALOG)}")
     return normalized
@@ -166,7 +171,10 @@ def resolve_role_definition(
     template: Optional[str] = None,
 ) -> Optional[AgentRoleDefinition]:
     if role_key:
-        return get_role_definition(role_key)
+        try:
+            return get_role_definition(role_key)
+        except ValueError:
+            pass
     if template:
         return TEMPLATE_FALLBACK_ROLES.get(template)
     return None

@@ -7,7 +7,7 @@ from langchain.tools import BaseTool
 from typing import Optional, Type
 from pydantic import BaseModel, Field
 from data.financial_data import FinancialDataFetcher
-from shared.tavily_client import get_tavily_client
+from shared.web_research import WebResearchService, WebResearchResult
 import json
 import logging
 
@@ -29,6 +29,12 @@ class FinancialMetricsInput(BaseModel):
 class WebSearchInput(BaseModel):
     """Input for web search tool"""
     query: str = Field(description="Search query to find information on the web (e.g., 'Apple revenue growth forecast', 'Tesla market share 2025')")
+
+
+class BrowseUrlInput(BaseModel):
+    """Input for browser extraction tool"""
+    url: str = Field(description="Public HTTP/HTTPS URL to extract readable page content from")
+    question: Optional[str] = Field(default=None, description="Optional focus question for extraction")
 
 
 # Tool Implementations
@@ -286,34 +292,60 @@ Capital Intensity:
 
 
 class SearchWebTool(BaseTool):
-    """Tool to search the web for current financial information"""
+    """Tool to search and extract web context for current financial information"""
     name: str = "search_web"
-    description: str = """Search the web for current financial information, analyst estimates, industry trends, and market data.
+    description: str = """Search the web and extract source context for current financial information, analyst estimates, industry trends, and market data.
     Use this tool to find:
     - Analyst consensus on revenue/earnings growth rates
     - Recent company news, earnings reports, or guidance
     - Competitive analysis and market conditions
     - Industry-specific data and sector trends
-    - Management commentary and strategic direction"""
+    - Management commentary and strategic direction
+    The output includes source URLs and extracted snippets where available."""
     args_schema: Type[BaseModel] = WebSearchInput
 
     def _run(self, query: str) -> str:
         try:
-            tavily = get_tavily_client()
-            result = tavily.search_text(
+            browser = WebResearchService()
+            result = browser.research_text(
                 query=query,
                 topic="finance",
-                search_depth="advanced",
                 max_results=5,
-                include_answer="advanced",
+                extract_top_k=3,
             )
-            return f"Web Search Results:\n\n{result}"
+            return f"Web Research Results:\n\n{result}"
         except Exception as e:
-            logger.error(f"Error searching web: {e}")
-            return f"Error searching web: {str(e)}"
+            logger.error(f"Error researching web: {e}")
+            return f"Error researching web: {str(e)}"
 
     async def _arun(self, query: str) -> str:
         return self._run(query)
+
+
+class BrowseWebPageTool(BaseTool):
+    """Tool to extract readable content from a specific public URL."""
+    name: str = "browse_web_page"
+    description: str = """Browse a specific public web page and extract readable content.
+    Use this after search_web when you need to inspect one source in more detail.
+    Do not use it for private/internal URLs."""
+    args_schema: Type[BaseModel] = BrowseUrlInput
+
+    def _run(self, url: str, question: Optional[str] = None) -> str:
+        try:
+            browser = WebResearchService()
+            sources = browser.extract_urls([url], query=question, max_sources=1, max_chars_per_source=3500)
+            if not sources:
+                return f"No readable content extracted from {url}."
+            return WebResearchService.format_for_prompt(
+                WebResearchResult(query=question or url, answer="", sources=sources),
+                max_chars=4200,
+            )
+        except Exception as e:
+            logger.error(f"Error browsing web page: {e}")
+            return f"Error browsing web page: {str(e)}"
+
+    async def _arun(self, url: str, question: Optional[str] = None) -> str:
+        return self._run(url, question)
 
 
 def get_stock_tools() -> list:
@@ -322,4 +354,5 @@ def get_stock_tools() -> list:
         GetStockInfoTool(),
         GetFinancialMetricsTool(),
         SearchWebTool(),
+        BrowseWebPageTool(),
     ]

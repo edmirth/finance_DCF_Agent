@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from unittest.mock import patch
@@ -9,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from backend import cio_router
 from backend.api_server import app, ResearchConnectionManager
 from backend.database import AsyncSessionLocal, SyncSessionLocal
 from backend.models import AgentRun, HeartbeatRun, ResearchTask, ResearchTaskDocument, ResearchTaskMessage, ScheduledAgent
@@ -194,11 +196,32 @@ async def test_create_task_with_direct_assignee_dispatches_agent_run():
 
 
 @pytest.mark.asyncio
-async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immediately():
-    # An agent watchlist must not rewrite the issue scope. Broad asks stay in
-    # review until the issue names a concrete ticker or company.
+async def test_create_task_with_direct_assignee_resolves_broad_scope_and_dispatches(monkeypatch):
     agent_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
+    captured: dict[str, object] = {}
+
+    def fake_execute_run_background(
+        run_id: str,
+        agent_id: str,
+        config_data: dict,
+        heartbeat_run_id=None,
+        trigger_type: str = "manual",
+        linked_task_id=None,
+    ):
+        captured["run_id"] = run_id
+        captured["agent_id"] = agent_id
+        captured["config_data"] = config_data
+        async def _noop() -> None:
+            return None
+        return _noop()
+
+    async def fake_resolve_scope(task, agent):
+        return {
+            "tickers": ["NVDA", "PLTR", "AMZN"],
+            "source": "llm",
+            "rationale": "Representative AI beneficiaries.",
+        }
 
     async with AsyncSessionLocal() as db:
         db.add(
@@ -223,23 +246,30 @@ async def test_create_task_with_direct_assignee_and_own_tickers_dispatches_immed
         )
         await db.commit()
 
+    monkeypatch.setattr("backend.cio_router._resolve_task_scope_for_agent", fake_resolve_scope)
+    monkeypatch.setattr("backend.scheduled_agents_router._execute_run_background", fake_execute_run_background)
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(
-            "/tasks",
-            json={
-                "title": "Analyze the AI value chain",
-                "assigned_agent_id": agent_id,
-                "triggered_by": "manual_assignment",
-            },
-        )
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post(
+                "/tasks",
+                json={
+                    "title": "Analyze the AI value chain",
+                    "assigned_agent_id": agent_id,
+                    "triggered_by": "manual_assignment",
+                },
+            )
 
     assert response.status_code == 201
     body = response.json()
     assert body["ticker"] == "GENERAL"
     assert body["assigned_agent_id"] == agent_id
-    assert body["status"] == "in_review"
-    assert body["run_id"] is None
-    assert "explicit ticker or company scope" in (body["error"] or "")
+    assert body["status"] == "running"
+    assert body["run_id"] is not None
+    assert body["error"] is None
+    assert captured["config_data"]["tickers"] == ["NVDA", "PLTR", "AMZN"]
+    assert "Analyze the listed companies as the working scope for this issue." in captured["config_data"]["instruction"]
+    assert "Resolved scope: NVDA, PLTR, AMZN" in captured["config_data"]["instruction"]
 
 
 @pytest.mark.asyncio
@@ -429,6 +459,67 @@ async def test_refresh_task_work_queue_requeues_unassigned_pending_issue():
 
 
 @pytest.mark.asyncio
+async def test_refresh_task_work_queue_moves_ceo_answered_pending_issue_to_review():
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="GENERAL",
+                task_type="ad_hoc",
+                title="CEO already answered this",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=None,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_pm_review",
+                notes="CEO already looked at this",
+                status="pending",
+                run_id=None,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTaskMessage(
+                id=str(uuid4()),
+                task_id=task_id,
+                kind="chat",
+                role="assistant",
+                author_label="CEO",
+                author_agent_id=None,
+                content="I'll answer this directly as CEO.",
+                metadata_json=json.dumps({"event": "ceo_review_completed"}),
+                created_at=created_at,
+            )
+        )
+        await db.commit()
+
+    queued: list[str] = []
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.queue_cio_review_for_task", side_effect=lambda value: queued.append(value)):
+            response = await client.post("/tasks/refresh-work")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["moved_to_review"] >= 1
+    assert body["tasks_moved_to_done"] >= 1
+    assert task_id not in queued
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+
+    assert task is not None
+    assert task.status == "done"
+    assert task.error is None
+
+
+@pytest.mark.asyncio
 async def test_refresh_task_work_queue_redispatches_assigned_pending_issue():
     agent_id = str(uuid4())
     task_id = str(uuid4())
@@ -592,6 +683,156 @@ async def test_refresh_task_work_queue_recovers_stale_running_issue_then_redispa
 
 
 @pytest.mark.asyncio
+async def test_refresh_task_work_queue_backfills_scope_for_review_issue_and_redispatches():
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Equity Research Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="equity_research_analyst",
+                role_title="Equity Research Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="GENERAL",
+                task_type="ad_hoc",
+                title="Do an analysis on apple",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_assignment",
+                notes="No issue brief yet.",
+                status="in_review",
+                run_id=None,
+                error="Equity Research Analyst needs an explicit ticker or company scope before it can start. Update the issue with a concrete company or symbol, then dispatch it again.",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post("/tasks/refresh-work")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["redispatched"] >= 1
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+
+    assert task is not None
+    assert task.ticker == "AAPL"
+    assert task.error is None
+    assert task.status == "running"
+    assert task.run_id is not None
+
+
+@pytest.mark.asyncio
+async def test_run_task_now_closes_scope_blocked_issue_when_ceo_already_answered():
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["GENERAL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="GENERAL",
+                task_type="ad_hoc",
+                title="Hire my first analyst",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_pm_review",
+                notes="Need coverage guidance.",
+                status="in_review",
+                run_id=None,
+                error="Generalist Analyst needs an explicit ticker or company scope before it can start. Update the issue with a concrete company or symbol, then dispatch it again.",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTaskMessage(
+                id=str(uuid4()),
+                task_id=task_id,
+                kind="chat",
+                role="assistant",
+                author_label="CEO",
+                author_agent_id=None,
+                content="We already have active coverage for this.",
+                metadata_json=json.dumps({"event": "ceo_review_completed"}),
+                created_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(f"/tasks/{task_id}/run-now")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "completed"
+    assert body["run_id"] is None
+    assert body["task"]["status"] == "done"
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+
+    assert task is not None
+    assert task.status == "done"
+    assert task.error is None
+
+
+@pytest.mark.asyncio
 async def test_task_chat_creates_issue_thread_messages(monkeypatch):
     async def fake_reply(db, task, prompt, *, target_agent_id, thread_messages):
         return {
@@ -602,6 +843,7 @@ async def test_task_chat_creates_issue_thread_messages(monkeypatch):
         }
 
     monkeypatch.setattr("backend.api_server._run_task_chat_reply", fake_reply)
+    monkeypatch.setattr("backend.cio_router.queue_cio_review_for_task", lambda _task_id: None)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         task_response = await client.post("/tasks", json={"title": "Analyze the AI stack"})
@@ -843,6 +1085,281 @@ async def test_run_task_pipeline_rejects_invalid_saved_selected_agents():
 
     assert response.status_code == 400
     assert "invalid selected_agents" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_task_now_dispatches_assigned_issue_even_from_review():
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Equity Research Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="equity_research_analyst",
+                role_title="Equity Research Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="AAPL",
+                task_type="ad_hoc",
+                title="Run now from review",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_assignment",
+                notes="Start this issue now",
+                status="in_review",
+                run_id=None,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post(f"/tasks/{task_id}/run-now")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "dispatch"
+    assert body["task"]["status"] == "running"
+    assert body["run_id"] is not None
+    assert body["skipped"] is False
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+        run = await db.get(AgentRun, body["run_id"])
+
+    assert task is not None
+    assert task.status == "running"
+    assert task.run_id == body["run_id"]
+    assert run is not None
+    assert run.status == "running"
+    assert run.scheduled_agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_run_task_now_resolves_broad_scope_for_assigned_issue(monkeypatch):
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+    captured: dict[str, object] = {}
+
+    def fake_execute_run_background(
+        run_id: str,
+        agent_id: str,
+        config_data: dict,
+        heartbeat_run_id=None,
+        trigger_type: str = "manual",
+        linked_task_id=None,
+    ):
+        captured["run_id"] = run_id
+        captured["config_data"] = config_data
+        async def _noop() -> None:
+            return None
+        return _noop()
+
+    async def fake_resolve_scope(task, agent):
+        return {
+            "tickers": ["NVDA", "PLTR", "AMZN"],
+            "source": "llm",
+            "rationale": "Representative AI beneficiaries.",
+        }
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["GENERAL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="GENERAL",
+                task_type="ad_hoc",
+                title="Analyze the AI value chain",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_assignment",
+                notes="Find the public companies most exposed to the AI wave.",
+                status="in_review",
+                run_id=None,
+                error="Generalist Analyst needs an explicit ticker or company scope before it can start.",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    monkeypatch.setattr("backend.cio_router._resolve_task_scope_for_agent", fake_resolve_scope)
+    monkeypatch.setattr("backend.scheduled_agents_router._execute_run_background", fake_execute_run_background)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post(f"/tasks/{task_id}/run-now")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "dispatch"
+    assert body["task"]["status"] == "running"
+    assert body["task"]["assigned_agent_id"] == agent_id
+    assert body["run_id"] is not None
+    assert captured["config_data"]["tickers"] == ["NVDA", "PLTR", "AMZN"]
+    assert "Resolved scope: NVDA, PLTR, AMZN" in captured["config_data"]["instruction"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_now_dispatches_assigned_issue_even_from_done():
+    agent_id = str(uuid4())
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Equity Research Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="equity_research_analyst",
+                role_title="Equity Research Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover the issue and return a concise brief.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="AAPL",
+                task_type="ad_hoc",
+                title="Run now from done",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=agent_id,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_assignment",
+                notes="Run this issue again",
+                status="done",
+                run_id=None,
+                created_at=created_at,
+                updated_at=created_at,
+                completed_at=created_at,
+            )
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+            response = await client.post(f"/tasks/{task_id}/run-now")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "dispatch"
+    assert body["task"]["status"] == "running"
+    assert body["run_id"] is not None
+    assert body["skipped"] is False
+
+@pytest.mark.asyncio
+async def test_run_task_now_requeues_unassigned_issue_for_ceo_review():
+    task_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ResearchTask(
+                id=task_id,
+                ticker="AAPL",
+                task_type="ad_hoc",
+                title="Route me through the CEO",
+                priority="medium",
+                selected_agents="[]",
+                project_id=None,
+                parent_task_id=None,
+                owner_agent_id=None,
+                assigned_agent_id=None,
+                source_heartbeat_run_id=None,
+                triggered_by="manual_pm_review",
+                notes="Need CEO routing",
+                status="in_review",
+                run_id=None,
+                error="Old routing error",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    queued: list[str] = []
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("backend.cio_router.queue_cio_review_for_task", side_effect=lambda value: queued.append(value)):
+            response = await client.post(f"/tasks/{task_id}/run-now")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "ceo_review_queued"
+    assert body["run_id"] is None
+    assert body["skipped"] is False
+    assert queued == [task_id]
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+
+    assert task is not None
+    assert task.status == "pending"
+    assert task.error is None
 
 
 def test_minimal_state_carries_assignment_context():

@@ -980,6 +980,10 @@ export const deleteTaskDocument = async (taskId: string, documentId: string): Pr
   await api.delete(`/tasks/${taskId}/documents/${documentId}`);
 };
 
+export const exportTaskDocumentDocx = (taskId: string, documentId: string): string => {
+  return `${API_BASE_URL}/tasks/${taskId}/documents/${documentId}/export.docx`;
+};
+
 export const getTaskRelatedWork = async (taskId: string): Promise<TaskRelatedWork> => {
   const response = await api.get(`/tasks/${taskId}/related-work`);
   return response.data;
@@ -1012,6 +1016,20 @@ export const runTaskPipeline = async (
   taskId: string,
 ): Promise<{ run_id: string; task_id: string; ticker: string }> => {
   const response = await api.post(`/tasks/${taskId}/run`);
+  return response.data;
+};
+
+export const runTaskNow = async (
+  taskId: string,
+): Promise<{
+  action: string;
+  task: ResearchTask;
+  run_id: string | null;
+  reused: boolean;
+  skipped: boolean;
+  reason?: string;
+}> => {
+  const response = await api.post(`/tasks/${taskId}/run-now`);
   return response.data;
 };
 

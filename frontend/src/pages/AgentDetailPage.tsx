@@ -28,6 +28,7 @@ import {
 } from '../api';
 import type { AgentRun, AlertLevel, HeartbeatRun, ScheduledAgent } from '../types';
 import { roleMetaForAgent } from '../agentRoles';
+import { compareApiDatesDesc, formatApiDateTime, formatRelativeApiTime, parseApiDate } from '../utils/time';
 
 type AgentTab = 'dashboard' | 'instructions';
 
@@ -62,31 +63,12 @@ const ALERT_CONFIG: Record<AlertLevel, { label: string; color: string; bg: strin
   none: { label: 'No change', color: '#94A3B8', bg: '#F1F5F9', Icon: CheckCircle2 },
 };
 
-function formatRelativeTime(iso?: string | null): string {
-  if (!iso) return 'Just now';
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  const hours = Math.floor(diff / 3_600_000);
-  const days = Math.floor(diff / 86_400_000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  return `${days}d ago`;
-}
-
-function formatDate(iso?: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
 function formatDuration(startIso?: string, endIso?: string): string {
   if (!startIso || !endIso) return '—';
-  const secs = Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 1000);
+  const start = parseApiDate(startIso)?.getTime();
+  const end = parseApiDate(endIso)?.getTime();
+  if (start == null || end == null) return '—';
+  const secs = Math.round((end - start) / 1000);
   if (secs < 60) return `${secs}s`;
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
@@ -134,7 +116,7 @@ function RecentIssueRow({ task }: { task: ResearchTask }) {
         </p>
       </div>
       <div className="flex-shrink-0 text-right text-xs text-slate-400">
-        <div>{formatRelativeTime(task.updated_at || task.created_at)}</div>
+        <div>{formatRelativeApiTime(task.updated_at || task.created_at)}</div>
         <div className="mt-2 text-slate-500">
           {task.assigned_agent_id ? 'Assigned' : task.owner_agent_id ? 'Owned' : 'Tracked'}
         </div>
@@ -150,7 +132,7 @@ function MiniHeartbeatRow({ run }: { run: HeartbeatRun }) {
         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
           {run.trigger_type}
         </span>
-        <span className="text-xs text-slate-400">{formatRelativeTime(run.started_at)}</span>
+        <span className="text-xs text-slate-400">{formatRelativeApiTime(run.started_at)}</span>
       </div>
       <p className="mt-2 text-sm text-slate-700">
         {run.summary || run.error || 'Heartbeat wake-up recorded.'}
@@ -194,7 +176,7 @@ function RunRow({ run }: { run: AgentRun }) {
 
         <div className="flex flex-shrink-0 items-center gap-4 text-xs text-slate-400">
           {run.material_change && <span className="font-medium text-amber-600">Material change</span>}
-          <span>{formatDate(run.started_at)}</span>
+          <span>{formatApiDateTime(run.started_at)}</span>
           <span>{formatDuration(run.started_at, run.completed_at)}</span>
           {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </div>
@@ -305,9 +287,7 @@ export default function AgentDetailPage() {
   const recentTasks = useMemo(
     () =>
       [...tasks].sort((left, right) => {
-        const leftAt = new Date(left.updated_at || left.created_at || 0).getTime();
-        const rightAt = new Date(right.updated_at || right.created_at || 0).getTime();
-        return rightAt - leftAt;
+        return compareApiDatesDesc(left.updated_at || left.created_at, right.updated_at || right.created_at);
       }),
     [tasks],
   );
@@ -583,11 +563,11 @@ export default function AgentDetailPage() {
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Last run</p>
-                      <p className="mt-2 text-sm text-slate-700">{formatDate(agent.last_run_at)}</p>
+                      <p className="mt-2 text-sm text-slate-700">{formatApiDateTime(agent.last_run_at)}</p>
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Next run</p>
-                      <p className="mt-2 text-sm text-slate-700">{formatDate(agent.next_run_at)}</p>
+                      <p className="mt-2 text-sm text-slate-700">{formatApiDateTime(agent.next_run_at)}</p>
                     </div>
                   </div>
                 </div>

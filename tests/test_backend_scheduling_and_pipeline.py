@@ -381,6 +381,39 @@ async def test_cio_agent_heartbeat_reviews_open_issue_and_updates_state(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_cio_review_without_action_moves_issue_to_review():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        task_response = await client.post(
+            "/tasks",
+            json={
+                "title": f"CEO direct answer {uuid4()}",
+                "notes": "Answer this directly as CEO",
+                "priority": "medium",
+                "triggered_by": "manual_pm_review",
+            },
+        )
+        task_id = task_response.json()["id"]
+
+    mocked_response = {
+        "message": "I'll answer this directly. No delegation or hire is needed.",
+        "action": None,
+    }
+
+    with patch("backend.cio_router._cio_chat_sync", return_value=mocked_response):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(f"/cio/review-task/{task_id}")
+
+    assert response.status_code == 200
+
+    async with AsyncSessionLocal() as db:
+        task = await db.get(ResearchTask, task_id)
+
+    assert task is not None
+    assert task.status == "done"
+    assert task.error is None
+
+
+@pytest.mark.asyncio
 async def test_cio_agent_heartbeat_rejects_when_paused(tmp_path: Path):
     for name in ("SYSTEM.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"):
         (tmp_path / name).write_text(f"{name} content", encoding="utf-8")
@@ -1073,7 +1106,7 @@ async def test_delegated_run_updates_assigned_research_task():
         assistant_messages = chat_result.scalars().all()
 
     assert refreshed_task is not None
-    assert refreshed_task.status == "in_review"
+    assert refreshed_task.status == "done"
     assert refreshed_task.run_id == run_id
     assert "risk" in (refreshed_task.completed_agents or "")
     assert any(doc.document_type == "analysis" for doc in task_documents)
@@ -1097,21 +1130,31 @@ def test_agent_runner_executes_specialist_template():
     # the arena sub-agent. Patch at that level.
     runner = AgentRunnerService()
     config = SimpleNamespace(
+        name="Semis Analyst",
         template="fundamental_analyst",
+        role_key="semis_analyst",
+        role_title="Semis Analyst",
+        role_family="sector_coverage",
+        description="Semiconductor coverage analyst.",
         tickers='["AAPL"]',
         topics="[]",
         instruction="Own the core coverage.",
         last_run_summary="",
     )
+    captured_kwargs = {}
+
+    def fake_run_instruction_driven_research(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"AAPL": "## AAPL\n\nBULLISH. Revenue growth healthy, margins stabilizing."}, ["semis_analyst"]
 
     with (
         patch.object(
-            AgentRunnerService,
+            runner,
             "_run_instruction_driven_research",
-            return_value=({"AAPL": "## AAPL\n\nBULLISH. Revenue growth healthy, margins stabilizing."}, ["fundamental_analyst"]),
+            side_effect=fake_run_instruction_driven_research,
         ),
         patch.object(
-            AgentRunnerService,
+            runner,
             "_synthesize",
             return_value={
                 "full_report": "report",
@@ -1125,9 +1168,12 @@ def test_agent_runner_executes_specialist_template():
         outcome = runner.execute(config)
 
     assert outcome["error"] is None
-    assert outcome["agents_used"] == ["fundamental_analyst"]
+    assert outcome["agents_used"] == ["semis_analyst"]
     assert outcome["tickers_analyzed"] == ["AAPL"]
     assert outcome["findings_summary"] == "summary"
+    assert captured_kwargs["role_key"] == "semis_analyst"
+    assert captured_kwargs["role_title"] == "Semis Analyst"
+    assert captured_kwargs["role_family"] == "sector_coverage"
 
 
 def test_agent_runner_returns_error_when_specialist_has_no_usable_data():
@@ -1185,6 +1231,188 @@ def test_agent_runner_instruction_driven_research_fails_closed_when_financial_da
     assert outcome["agents_used"] == []
 
 
+def test_agent_runner_instruction_driven_research_includes_browser_context():
+    runner = AgentRunnerService()
+    config = SimpleNamespace(
+        template="fundamental_analyst",
+        tickers='["AAPL"]',
+        topics="[]",
+        instruction="Analyze the current setup.",
+        last_run_summary="",
+    )
+
+    class FakeFetcher:
+        def get_stock_info(self, _ticker):
+            return {
+                "company_name": "Apple Inc.",
+                "sector": "Technology",
+                "market_cap": 3_000_000_000_000,
+                "current_price": 210,
+            }
+
+        def get_financial_statements(self, _ticker):
+            return {
+                "income_statements": [{"report_period": "2025", "revenue": 400_000_000_000}],
+                "balance_sheets": [{"cash_and_equivalents": 60_000_000_000}],
+                "cash_flow_statements": [{"report_period": "2025", "operating_cash_flow": 110_000_000_000}],
+            }
+
+        def get_key_metrics(self, _ticker):
+            return {"latest_revenue": 400_000_000_000, "latest_net_income": 95_000_000_000}
+
+    class FakeWebResearch:
+        def research_text(self, *_args, **_kwargs):
+            return "WEB RESEARCH CONTEXT\nSources:\n- Apple results: https://example.com/apple"
+
+    captured_prompt = {}
+
+    def fake_create(**kwargs):
+        captured_prompt["prompt"] = kwargs["messages"][0]["content"]
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    text=(
+                        "## Executive Summary\nApple remains neutral.\n\n"
+                        "## Agent Suggestions\n- Compare services growth to hardware growth."
+                    )
+                )
+            ]
+        )
+
+    with (
+        patch("data.financial_data.FinancialDataFetcher", return_value=FakeFetcher()),
+        patch("backend.agent_runner.FinancialDataFetcher", return_value=FakeFetcher(), create=True),
+        patch("shared.web_research.WebResearchService", return_value=FakeWebResearch()),
+        patch.object(runner._anthropic.messages, "create", side_effect=fake_create),
+    ):
+        raw_outputs, agents_used = runner._run_instruction_driven_research(
+            ["AAPL"],
+            config.instruction,
+            config.template,
+        )
+
+    assert agents_used == ["fundamental_analyst"]
+    assert "AAPL" in raw_outputs
+    assert "CURRENT WEB RESEARCH" in captured_prompt["prompt"]
+    assert "https://example.com/apple" in captured_prompt["prompt"]
+
+
+def test_agent_runner_instruction_driven_research_uses_role_specific_prompt():
+    runner = AgentRunnerService()
+
+    class FakeFetcher:
+        def get_stock_info(self, _ticker):
+            return {
+                "company_name": "NVIDIA Corporation",
+                "sector": "Technology",
+                "market_cap": 3_200_000_000_000,
+                "current_price": 120,
+            }
+
+        def get_financial_statements(self, _ticker):
+            return {
+                "income_statements": [{"report_period": "2025", "revenue": 130_000_000_000}],
+                "balance_sheets": [{"cash_and_equivalents": 35_000_000_000}],
+                "cash_flow_statements": [{"report_period": "2025", "operating_cash_flow": 65_000_000_000}],
+            }
+
+        def get_key_metrics(self, _ticker):
+            return {"latest_revenue": 130_000_000_000, "latest_net_income": 72_000_000_000}
+
+    class FakeWebResearch:
+        def __init__(self):
+            self.queries = []
+
+        def research_text(self, query, **_kwargs):
+            self.queries.append(query)
+            return "NVIDIA AI accelerator demand remains strong."
+
+    fake_web = FakeWebResearch()
+    captured_prompt = {}
+
+    def fake_create(**kwargs):
+        captured_prompt["prompt"] = kwargs["messages"][0]["content"]
+        return SimpleNamespace(content=[SimpleNamespace(text="## Executive Summary\nSemis analysis.")])
+
+    with (
+        patch("data.financial_data.FinancialDataFetcher", return_value=FakeFetcher()),
+        patch("backend.agent_runner.FinancialDataFetcher", return_value=FakeFetcher(), create=True),
+        patch("shared.web_research.WebResearchService", return_value=fake_web),
+        patch.object(runner._anthropic.messages, "create", side_effect=fake_create),
+    ):
+        raw_outputs, agents_used = runner._run_instruction_driven_research(
+            ["NVDA"],
+            "Assess AI accelerator demand and supply-chain risk.",
+            "fundamental_analyst",
+            role_key="semis_analyst",
+            role_title="Semis Analyst",
+            role_family="sector_coverage",
+            description="Own semiconductor coverage.",
+        )
+
+    assert agents_used == ["semis_analyst"]
+    assert "NVDA" in raw_outputs
+    assert "You are the Semis Analyst" in captured_prompt["prompt"]
+    assert "semiconductor value chain" in captured_prompt["prompt"]
+    assert "AI accelerator" in captured_prompt["prompt"]
+    assert "semiconductor AI accelerator" in fake_web.queries[0]
+
+
+def test_agent_runner_instruction_driven_research_detects_industry_map_intent():
+    runner = AgentRunnerService()
+
+    class FakeFetcher:
+        def get_stock_info(self, ticker):
+            return {
+                "company_name": ticker,
+                "sector": "Technology",
+                "market_cap": 500_000_000_000,
+                "current_price": 100,
+            }
+
+        def get_financial_statements(self, _ticker):
+            return {
+                "income_statements": [{"report_period": "2025", "revenue": 50_000_000_000}],
+                "balance_sheets": [{"cash_and_equivalents": 10_000_000_000}],
+                "cash_flow_statements": [{"report_period": "2025", "operating_cash_flow": 12_000_000_000}],
+            }
+
+        def get_key_metrics(self, _ticker):
+            return {"latest_revenue": 50_000_000_000, "latest_net_income": 8_000_000_000}
+
+    class FakeWebResearch:
+        def research_text(self, *_args, **_kwargs):
+            return "AI infrastructure value chain context."
+
+    captured_prompts = []
+
+    def fake_create(**kwargs):
+        captured_prompts.append(kwargs["messages"][0]["content"])
+        return SimpleNamespace(content=[SimpleNamespace(text="## Executive Summary\nIndustry map.")])
+
+    with (
+        patch("data.financial_data.FinancialDataFetcher", return_value=FakeFetcher()),
+        patch("backend.agent_runner.FinancialDataFetcher", return_value=FakeFetcher(), create=True),
+        patch("shared.web_research.WebResearchService", return_value=FakeWebResearch()),
+        patch.object(runner._anthropic.messages, "create", side_effect=fake_create),
+    ):
+        raw_outputs, agents_used = runner._run_instruction_driven_research(
+            ["NVDA", "MSFT"],
+            "Map the AI industry wave beneficiaries and compare the main players.",
+            "fundamental_analyst",
+            role_key="generalist_analyst",
+            role_title="Generalist Analyst",
+        )
+
+    assert agents_used == ["generalist_analyst"]
+    assert sorted(raw_outputs.keys()) == ["MSFT", "NVDA"]
+    assert captured_prompts
+    assert "ISSUE INTENT: Industry / Theme Map" in captured_prompts[0]
+    assert "ASSIGNMENT SCOPE: multi-company / theme work" in captured_prompts[0]
+    assert "## Industry Map" in captured_prompts[0]
+    assert "## Company Comparison" in captured_prompts[0]
+
+
 def test_agent_runner_synthesis_fallback_stays_structured():
     runner = AgentRunnerService()
     config = SimpleNamespace(
@@ -1202,7 +1430,10 @@ def test_agent_runner_synthesis_fallback_stays_structured():
             "- Government demand is steady.\n"
             "- Margin structure remains solid.\n"
             "DATA OBSERVATIONS:\n"
-            "Revenue CAGR: 24%. FCF margin: 21%."
+            "Revenue CAGR: 24%. FCF margin: 21%.\n\n"
+            "## Agent Suggestions\n"
+            "- Compare Palantir's valuation against Snowflake and Datadog before sizing.\n"
+            "- Monitor commercial customer growth for any slowdown."
         )
     }
 
@@ -1212,6 +1443,9 @@ def test_agent_runner_synthesis_fallback_stays_structured():
     assert synthesis["summary"]
     assert synthesis["summary"] != "Research completed. See full report for details."
     assert synthesis["key_findings"]
+    assert "## Executive Summary" in synthesis["full_report"]
+    assert "## Agent Suggestions" in synthesis["full_report"]
+    assert "Compare Palantir's valuation" in synthesis["full_report"]
     assert "## PLTR\nPLTR" not in synthesis["full_report"]
     assert "### Data Observations" in synthesis["full_report"]
 
@@ -1283,7 +1517,14 @@ async def test_completed_issue_output_document_uses_inferred_scope_from_title():
     class FakeRunner:
         def execute(self, _config):
             return {
-                "report": "Palantir remains executionally strong with durable government demand.\n\n- Revenue growth remains solid.\n- FCF conversion is healthy.",
+                "report": (
+                    "Palantir remains executionally strong with durable government demand.\n\n"
+                    "- Revenue growth remains solid.\n"
+                    "- FCF conversion is healthy.\n\n"
+                    "## Agent Suggestions\n"
+                    "- Compare PLTR's valuation to large-cap software peers before sizing.\n"
+                    "- Monitor commercial customer growth and remaining performance obligations."
+                ),
                 "findings_summary": "Palantir still screens as operationally strong, but valuation discipline matters.",
                 "key_findings": ["Revenue growth remains solid.", "FCF conversion is healthy."],
                 "material_change": False,
@@ -1323,6 +1564,12 @@ async def test_completed_issue_output_document_uses_inferred_scope_from_title():
 
     output_doc = next(doc for doc in task_documents if doc.document_type == "analysis")
     assert "- Scope: PLTR" in output_doc.content_md
+    assert "## Executive summary" in output_doc.content_md
+    assert "## Agent suggestions" in output_doc.content_md
+    assert "Compare PLTR's valuation" in output_doc.content_md
+    assert "- Issue:" not in output_doc.content_md
+    assert "- Task type:" not in output_doc.content_md
+    assert "- Priority:" not in output_doc.content_md
 
 
 @pytest.mark.asyncio

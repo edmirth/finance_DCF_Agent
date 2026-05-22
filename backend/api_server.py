@@ -8,6 +8,7 @@ import json
 import asyncio
 import logging
 import threading
+import io
 import uuid as uuid_mod
 from collections import OrderedDict
 from typing import Optional, AsyncGenerator, Any, Dict, List
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     try:
         async with AsyncSessionLocal() as db:
             recovery = await _recover_stale_issue_work(db)
+            normalization = await _normalize_terminal_issue_states(db)
             await db.commit()
         if recovery["stale_runs_recovered"] > 0:
             logger.warning(
@@ -76,6 +78,11 @@ async def lifespan(app: FastAPI):
                 recovery["stale_runs_recovered"],
                 recovery["tasks_returned_to_queue"],
                 recovery["tasks_moved_to_review"],
+            )
+        if normalization["tasks_moved_to_done"] > 0:
+            logger.info(
+                "Normalized %s issue(s) from review to done on startup",
+                normalization["tasks_moved_to_done"],
             )
     except Exception as _e:
         logger.warning(f"Stale issue-work recovery failed on startup (non-fatal): {_e}")
@@ -2881,6 +2888,174 @@ def _task_document_to_dict(document) -> dict:
     }
 
 
+def _safe_filename_part(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+    normalized = re.sub(r"_+", "_", normalized).strip("._")
+    return normalized or "document"
+
+
+def _extract_snapshot_pairs(content_md: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    current_section: str | None = None
+    for raw_line in (content_md or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = re.match(r"^##\s+(.+)$", line)
+        if heading:
+            current_section = heading.group(1).strip().lower()
+            continue
+        if current_section != "snapshot":
+            continue
+        bullet = re.match(r"^-\s+([^:]+):\s+(.+)$", line)
+        if bullet:
+            pairs.append((bullet.group(1).strip(), bullet.group(2).strip()))
+    return pairs
+
+
+def _add_inline_markdown_runs(paragraph, text: str) -> None:
+    if not text:
+        return
+    parts = re.split(r"(\*\*[^*]+\*\*|`[^`]+`)", text)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+            run = paragraph.add_run(part[1:-1])
+            run.font.name = "Menlo"
+        else:
+            paragraph.add_run(part)
+
+
+def _render_markdown_section_to_docx(doc, body: str) -> None:
+    lines = (body or "").splitlines()
+    in_table = False
+    table_rows: list[list[str]] = []
+
+    def flush_table() -> None:
+        nonlocal in_table, table_rows
+        if len(table_rows) >= 2:
+            headers = table_rows[0]
+            data_rows = table_rows[1:]
+            if data_rows and all(set(cell.replace("-", "").replace(":", "").strip()) == set() for cell in data_rows[0]):
+                data_rows = data_rows[1:]
+            table = doc.add_table(rows=1, cols=len(headers))
+            table.style = "Table Grid"
+            for idx, header in enumerate(headers):
+                table.rows[0].cells[idx].text = header
+            for row in data_rows:
+                row_cells = table.add_row().cells
+                for idx, cell in enumerate(row[: len(headers)]):
+                    row_cells[idx].text = cell
+        in_table = False
+        table_rows = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            table_rows.append(cells)
+            in_table = True
+            continue
+        if in_table:
+            flush_table()
+
+        if not stripped:
+            continue
+
+        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if heading:
+            level = min(len(heading.group(1)), 4)
+            doc.add_heading(heading.group(2).strip(), level=level)
+            continue
+
+        bullet = re.match(r"^[-*]\s+(.+)$", stripped)
+        if bullet:
+            p = doc.add_paragraph(style="List Bullet")
+            _add_inline_markdown_runs(p, bullet.group(1).strip())
+            continue
+
+        numbered = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+        if numbered:
+            p = doc.add_paragraph(style="List Number")
+            _add_inline_markdown_runs(p, numbered.group(1).strip())
+            continue
+
+        p = doc.add_paragraph()
+        _add_inline_markdown_runs(p, stripped)
+
+    if in_table:
+        flush_table()
+
+
+def _build_task_document_docx(document, task) -> bytes:
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    doc = Document()
+    normal_style = doc.styles["Normal"]
+    normal_style.font.name = "Aptos"
+    normal_style.font.size = Pt(11)
+
+    heading_style = doc.styles["Heading 1"]
+    heading_style.font.name = "Aptos Display"
+
+    report_title = document.title
+    snapshot_pairs = _extract_snapshot_pairs(document.content_md or "")
+    scope_value = next((value for label, value in snapshot_pairs if label.lower() == "scope"), None)
+    analyst_value = next((value for label, value in snapshot_pairs if label.lower() == "analyst"), None)
+
+    if document.document_type == "analysis":
+        scope_label = scope_value or ((task.ticker or "").strip() if task else "")
+        if scope_label and scope_label.upper() != "GENERAL":
+            report_title = f"{scope_label.upper()} Equity Research Report"
+        elif task and task.title:
+            report_title = f"{task.title} — Equity Research Report"
+
+    title_paragraph = doc.add_paragraph()
+    title_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    title_run = title_paragraph.add_run(report_title)
+    title_run.bold = True
+    title_run.font.size = Pt(22)
+
+    subtitle_parts = []
+    if task and task.title and task.title != report_title:
+        subtitle_parts.append(f"Issue: {task.title}")
+    if analyst_value:
+        subtitle_parts.append(f"Prepared by: {analyst_value}")
+    updated_at = document.updated_at.strftime("%b %d, %Y %H:%M") if getattr(document, "updated_at", None) else None
+    if updated_at:
+        subtitle_parts.append(f"Updated: {updated_at}")
+    if subtitle_parts:
+        subtitle = doc.add_paragraph()
+        subtitle_run = subtitle.add_run(" | ".join(subtitle_parts))
+        subtitle_run.italic = True
+
+    if snapshot_pairs:
+        table = doc.add_table(rows=1, cols=2)
+        table.style = "Table Grid"
+        header_cells = table.rows[0].cells
+        header_cells[0].text = "Field"
+        header_cells[1].text = "Value"
+        for label, value in snapshot_pairs:
+            row_cells = table.add_row().cells
+            row_cells[0].text = label
+            row_cells[1].text = value
+        doc.add_paragraph("")
+
+    _render_markdown_section_to_docx(doc, document.content_md or "")
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
 async def _append_task_activity(
     db: AsyncSession,
     task_id: str,
@@ -3063,6 +3238,222 @@ async def _recover_stale_issue_work(
         "tasks_returned_to_queue": returned_to_queue,
         "tasks_moved_to_review": moved_to_review,
     }
+
+
+async def _normalize_terminal_issue_states(
+    db: AsyncSession,
+    *,
+    limit: int = 2000,
+) -> Dict[str, int]:
+    from backend.models import AgentRun, HireProposal, ResearchTask, ResearchTaskDocument, ResearchTaskMessage
+
+    now = datetime.now(timezone.utc)
+    normalized_limit = min(max(limit, 1), 5000)
+
+    result = await db.execute(
+        select(ResearchTask)
+        .where(ResearchTask.status == "in_review")
+        .order_by(ResearchTask.updated_at.asc())
+        .limit(normalized_limit)
+    )
+    tasks = result.scalars().all()
+
+    moved_to_done = 0
+
+    for task in tasks:
+        if task.error:
+            continue
+
+        proposal_result = await db.execute(
+            select(HireProposal.id)
+            .where(
+                HireProposal.source_task_id == task.id,
+                HireProposal.status == "pending",
+            )
+            .limit(1)
+        )
+        if proposal_result.scalar_one_or_none() is not None:
+            continue
+
+        if task.run_id:
+            run = await db.get(AgentRun, task.run_id)
+            if run and run.status == "completed" and not run.error:
+                doc_result = await db.execute(
+                    select(ResearchTaskDocument.id)
+                    .where(
+                        ResearchTaskDocument.task_id == task.id,
+                        ResearchTaskDocument.document_type == "analysis",
+                    )
+                    .limit(1)
+                )
+                has_output_doc = doc_result.scalar_one_or_none() is not None
+                if has_output_doc or run.report or run.findings_summary:
+                    task.status = "done"
+                    task.error = None
+                    task.completed_at = task.completed_at or run.completed_at or now
+                    task.updated_at = now
+                    await _append_task_activity(
+                        db,
+                        task.id,
+                        "Issue output is complete and has been moved from review to done.",
+                        metadata={"event": "terminal_state_normalized", "source": "completed_run"},
+                    )
+                    moved_to_done += 1
+                    continue
+
+        if (
+            task.triggered_by == "manual_pm_review"
+            and task.assigned_agent_id is None
+            and task.owner_agent_id is None
+        ):
+            ceo_message_result = await db.execute(
+                select(ResearchTaskMessage.id)
+                .where(
+                    ResearchTaskMessage.task_id == task.id,
+                    ResearchTaskMessage.kind == "chat",
+                    ResearchTaskMessage.author_label == "CEO",
+                )
+                .limit(1)
+            )
+            if ceo_message_result.scalar_one_or_none() is not None:
+                task.status = "done"
+                task.error = None
+                task.completed_at = task.completed_at or now
+                task.updated_at = now
+                await _append_task_activity(
+                    db,
+                    task.id,
+                    "CEO provided a final answer and the issue has been moved from review to done.",
+                    metadata={"event": "terminal_state_normalized", "source": "ceo_direct_answer"},
+                )
+                moved_to_done += 1
+
+    return {
+        "tasks_moved_to_done": moved_to_done,
+    }
+
+
+async def _task_has_pending_hire_proposal(db: AsyncSession, task_id: str) -> bool:
+    from backend.models import HireProposal
+
+    proposal_result = await db.execute(
+        select(HireProposal.id)
+        .where(
+            HireProposal.source_task_id == task_id,
+            HireProposal.status == "pending",
+        )
+        .limit(1)
+    )
+    return proposal_result.scalar_one_or_none() is not None
+
+
+async def _latest_ceo_issue_message_id(db: AsyncSession, task_id: str) -> Optional[str]:
+    from backend.models import ResearchTaskMessage
+
+    ceo_message_result = await db.execute(
+        select(ResearchTaskMessage.id)
+        .where(
+            ResearchTaskMessage.task_id == task_id,
+            ResearchTaskMessage.kind == "chat",
+            ResearchTaskMessage.author_label == "CEO",
+        )
+        .order_by(ResearchTaskMessage.created_at.desc())
+        .limit(1)
+    )
+    return ceo_message_result.scalar_one_or_none()
+
+
+async def _repair_scope_blocked_review_issue(
+    db: AsyncSession,
+    task,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Repair old in-review issues that are only stuck because they were created
+    before scope inference and CEO/direct-answer normalization were tightened.
+    """
+    now = now or datetime.now(timezone.utc)
+    ticker = (task.ticker or "").strip().upper()
+    if ticker and ticker != "GENERAL":
+        return {"action": "noop"}
+
+    inferred_ticker = _infer_issue_ticker(task.title, task.notes)
+    if inferred_ticker and inferred_ticker.upper() != "GENERAL":
+        task.ticker = inferred_ticker.upper()
+        task.error = None
+        task.status = "pending"
+        task.completed_at = None
+        task.updated_at = now
+        await _append_task_activity(
+            db,
+            task.id,
+            f"Recovered explicit scope from the issue content ({task.ticker}). Issue returned to the queue.",
+            metadata={
+                "event": "issue_scope_backfilled",
+                "scope": task.ticker,
+            },
+        )
+        return {"action": "scope_backfilled", "ticker": task.ticker}
+
+    if task.assigned_agent_id or task.owner_agent_id:
+        from backend.cio_router import _looks_like_broad_scope_request
+
+        if not _looks_like_broad_scope_request(task):
+            ceo_message_id = await _latest_ceo_issue_message_id(db, task.id)
+            if ceo_message_id is not None:
+                task.status = "done"
+                task.error = None
+                task.completed_at = task.completed_at or now
+                task.updated_at = now
+                await _append_task_activity(
+                    db,
+                    task.id,
+                    "Recovered a scope-blocked delegated issue that already had a final CEO answer. The issue has been moved to done.",
+                    metadata={
+                        "event": "scope_blocked_delegated_issue_closed",
+                        "message_id": ceo_message_id,
+                        "assigned_agent_id": task.assigned_agent_id,
+                        "owner_agent_id": task.owner_agent_id,
+                    },
+                )
+                return {"action": "done"}
+
+        task.status = "pending"
+        task.error = None
+        task.completed_at = None
+        task.updated_at = now
+        await _append_task_activity(
+            db,
+            task.id,
+            "Recovered a delegated issue that was incorrectly left scope-blocked. Returned it to the queue for runtime scope resolution.",
+            metadata={
+                "event": "scope_blocked_delegated_issue_requeued",
+                "assigned_agent_id": task.assigned_agent_id,
+                "owner_agent_id": task.owner_agent_id,
+            },
+        )
+        return {"action": "requeued"}
+
+    if not await _task_has_pending_hire_proposal(db, task.id):
+        ceo_message_id = await _latest_ceo_issue_message_id(db, task.id)
+        if ceo_message_id is not None:
+            task.status = "done"
+            task.error = None
+            task.completed_at = task.completed_at or now
+            task.updated_at = now
+            await _append_task_activity(
+                db,
+                task.id,
+                "Recovered a scope-blocked issue that already had a CEO answer. The issue has been moved to done.",
+                metadata={
+                    "event": "scope_blocked_ceo_answer_normalized",
+                    "message_id": ceo_message_id,
+                },
+            )
+            return {"action": "done"}
+
+    return {"action": "noop"}
 
 
 def _anthropic_text_response_sync(model: str, system_prompt: str, messages: list[dict[str, str]]) -> str:
@@ -3943,6 +4334,38 @@ async def patch_task_document(
     return _task_document_to_dict(document)
 
 
+@app.get("/tasks/{task_id}/documents/{document_id}/export.docx")
+async def export_task_document_docx(
+    task_id: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    from backend.models import ResearchTask, ResearchTaskDocument
+
+    task_result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    task = task_result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(ResearchTaskDocument).where(
+            ResearchTaskDocument.id == document_id,
+            ResearchTaskDocument.task_id == task_id,
+        )
+    )
+    document = result.scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    content = await run_in_threadpool(_build_task_document_docx, document, task)
+    filename = f"{_safe_filename_part(document.title)}.docx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.delete("/tasks/{task_id}/documents/{document_id}", status_code=204)
 async def delete_task_document(
     task_id: str,
@@ -4216,6 +4639,77 @@ async def run_task_pipeline(task_id: str, db: AsyncSession = Depends(get_db)):
     return {"run_id": run_id, "task_id": task_id, "ticker": ticker}
 
 
+@app.post("/tasks/{task_id}/run-now")
+async def run_task_now(task_id: str, db: AsyncSession = Depends(get_db)):
+    from backend.cio_router import _append_issue_activity, _dispatch_agent_for_task, queue_cio_review_for_task
+    from backend.models import ResearchTask, ScheduledAgent
+
+    result = await db.execute(select(ResearchTask).where(ResearchTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status == "cancelled":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is already in status '{task.status}'. Cancelled tasks cannot be started again.",
+        )
+
+    if task.status == "in_review" and task.error and "explicit ticker or company scope" in task.error:
+        repair = await _repair_scope_blocked_review_issue(db, task)
+        if repair["action"] == "done":
+            await db.commit()
+            await db.refresh(task)
+            return {
+                "action": "completed",
+                "task": _task_to_dict(task),
+                "run_id": None,
+                "reused": False,
+                "skipped": False,
+            }
+
+    if task.assigned_agent_id:
+        agent = await db.get(ScheduledAgent, task.assigned_agent_id)
+        if agent is None:
+            raise HTTPException(status_code=400, detail="Assigned agent no longer exists")
+        if not agent.is_active:
+            raise HTTPException(status_code=409, detail=f"{agent.role_title or agent.name} is paused")
+        dispatch_result = await _dispatch_agent_for_task(
+            db,
+            task,
+            agent,
+            trigger_type="manual",
+            initiated_by="User",
+            note="Run now requested from the issue workspace.",
+        )
+        await db.refresh(task)
+        return {
+            "action": "dispatch",
+            "task": _task_to_dict(task),
+            **dispatch_result,
+        }
+
+    task.status = "pending"
+    task.error = None
+    task.updated_at = datetime.utcnow()
+    await _append_issue_activity(
+        db,
+        task.id,
+        "Run now requested. CEO review queued for this issue.",
+        author_label="User",
+        metadata={"event": "ceo_review_queued", "source": "run_now"},
+    )
+    await db.commit()
+    await db.refresh(task)
+    queue_cio_review_for_task(task.id)
+    return {
+        "action": "ceo_review_queued",
+        "task": _task_to_dict(task),
+        "run_id": None,
+        "reused": False,
+        "skipped": False,
+    }
+
+
 @app.post("/tasks/refresh-work")
 async def refresh_task_work_queue(
     limit: int = 100,
@@ -4229,10 +4723,11 @@ async def refresh_task_work_queue(
       agent runner path.
     """
     from backend.cio_router import _append_issue_activity, _dispatch_agent_for_task, queue_cio_review_for_task
-    from backend.models import ResearchTask, ScheduledAgent
+    from backend.models import HireProposal, ResearchTask, ResearchTaskMessage, ScheduledAgent
 
     normalized_limit = min(max(limit, 1), 500)
     recovery = await _recover_stale_issue_work(db, limit=normalized_limit)
+    normalization = await _normalize_terminal_issue_states(db, limit=normalized_limit * 4)
     await db.flush()
     result = await db.execute(
         select(ResearchTask)
@@ -4248,11 +4743,67 @@ async def refresh_task_work_queue(
     queued_for_ceo = 0
     redispatched = 0
     moved_to_review = 0
+    moved_scope_blocked_to_done = 0
     skipped = 0
-    touched_task_ids: list[str] = []
+    queueable_task_ids: list[str] = []
 
     for task in tasks:
-        touched_task_ids.append(task.id)
+        if (
+            task.triggered_by == "manual_pm_review"
+            and task.assigned_agent_id is None
+            and task.owner_agent_id is None
+        ):
+            proposal_result = await db.execute(
+                select(HireProposal.id)
+                .where(
+                    HireProposal.source_task_id == task.id,
+                    HireProposal.status == "pending",
+                )
+                .limit(1)
+            )
+            pending_proposal_id = proposal_result.scalar_one_or_none()
+            if pending_proposal_id is not None:
+                task.status = "in_review"
+                task.error = None
+                task.updated_at = datetime.now(timezone.utc)
+                await _append_task_activity(
+                    db,
+                    task.id,
+                    "Queue refresh detected a pending CEO hire proposal. Issue moved to review.",
+                    metadata={
+                        "event": "queue_refresh_pending_proposal",
+                        "proposal_id": pending_proposal_id,
+                    },
+                )
+                moved_to_review += 1
+                continue
+
+            ceo_message_result = await db.execute(
+                select(ResearchTaskMessage.id)
+                .where(
+                    ResearchTaskMessage.task_id == task.id,
+                    ResearchTaskMessage.kind == "chat",
+                    ResearchTaskMessage.author_label == "CEO",
+                )
+                .limit(1)
+            )
+            ceo_message_id = ceo_message_result.scalar_one_or_none()
+            if ceo_message_id is not None:
+                task.status = "in_review"
+                task.error = None
+                task.updated_at = datetime.now(timezone.utc)
+                await _append_task_activity(
+                    db,
+                    task.id,
+                    "Queue refresh detected an existing CEO response. Issue moved to review.",
+                    metadata={
+                        "event": "queue_refresh_existing_ceo_response",
+                        "message_id": ceo_message_id,
+                    },
+                )
+                moved_to_review += 1
+                continue
+
         if task.assigned_agent_id:
             agent = await db.get(ScheduledAgent, task.assigned_agent_id)
             if agent is None:
@@ -4305,22 +4856,109 @@ async def refresh_task_work_queue(
             metadata={"event": "queue_refresh_requeued"},
         )
         queued_for_ceo += 1
+        queueable_task_ids.append(task.id)
+
+    review_result = await db.execute(
+        select(ResearchTask)
+        .where(
+            ResearchTask.status == "in_review",
+            ResearchTask.error.is_not(None),
+        )
+        .order_by(ResearchTask.updated_at.asc())
+        .limit(normalized_limit)
+    )
+    review_tasks = review_result.scalars().all()
+
+    for task in review_tasks:
+        task_error = task.error or ""
+        if "explicit ticker or company scope" not in task_error:
+            continue
+
+        repair = await _repair_scope_blocked_review_issue(db, task)
+        if repair["action"] == "scope_backfilled":
+            if task.assigned_agent_id:
+                agent = await db.get(ScheduledAgent, task.assigned_agent_id)
+                if agent is not None and agent.is_active:
+                    dispatch_result = await _dispatch_agent_for_task(
+                        db,
+                        task,
+                        agent,
+                        trigger_type="manual",
+                        initiated_by="System",
+                        note="Queue refresh recovered explicit issue scope and restarted this issue.",
+                    )
+                    if dispatch_result.get("run_id"):
+                        redispatched += 1
+                    elif dispatch_result.get("reason") == "scope_required":
+                        moved_to_review += 1
+                    else:
+                        skipped += 1
+                else:
+                    moved_to_review += 1
+            else:
+                queued_for_ceo += 1
+                queueable_task_ids.append(task.id)
+        elif repair["action"] == "requeued":
+            if task.assigned_agent_id:
+                agent = await db.get(ScheduledAgent, task.assigned_agent_id)
+                if agent is not None and agent.is_active:
+                    dispatch_result = await _dispatch_agent_for_task(
+                        db,
+                        task,
+                        agent,
+                        trigger_type="manual",
+                        initiated_by="System",
+                        note="Queue refresh requeued a delegated broad-scope issue for runtime scope resolution.",
+                    )
+                    if dispatch_result.get("run_id"):
+                        redispatched += 1
+                    elif dispatch_result.get("reason") == "scope_required":
+                        moved_to_review += 1
+                    else:
+                        skipped += 1
+                else:
+                    moved_to_review += 1
+            else:
+                queued_for_ceo += 1
+                queueable_task_ids.append(task.id)
+        elif repair["action"] == "done":
+            moved_scope_blocked_to_done += 1
+        elif task.assigned_agent_id:
+            agent = await db.get(ScheduledAgent, task.assigned_agent_id)
+            if agent is not None and agent.is_active:
+                dispatch_result = await _dispatch_agent_for_task(
+                    db,
+                    task,
+                    agent,
+                    trigger_type="manual",
+                    initiated_by="System",
+                    note="Queue refresh retried a broad-scope issue with runtime scope resolution.",
+                )
+                if dispatch_result.get("run_id"):
+                    redispatched += 1
+                elif dispatch_result.get("reason") == "scope_required":
+                    moved_to_review += 1
+                else:
+                    skipped += 1
+
+    post_normalization = await _normalize_terminal_issue_states(
+        db,
+        limit=max(normalized_limit * 4, len(tasks) or 1),
+    )
+    normalization["tasks_moved_to_done"] += post_normalization["tasks_moved_to_done"]
 
     await db.commit()
 
-    for task_id in touched_task_ids:
+    for task_id in queueable_task_ids:
         # CEO reviews must be launched after commit so the background worker
         # can observe the latest task state with a fresh session.
-        task = next((t for t in tasks if t.id == task_id), None)
-        if task is None:
-            continue
-        if task.assigned_agent_id is None and task.owner_agent_id is None:
-            queue_cio_review_for_task(task_id)
+        queue_cio_review_for_task(task_id)
 
     return {
         "stale_runs_recovered": recovery["stale_runs_recovered"],
         "tasks_returned_to_queue": recovery["tasks_returned_to_queue"],
         "tasks_moved_to_review": recovery["tasks_moved_to_review"],
+        "tasks_moved_to_done": normalization["tasks_moved_to_done"] + moved_scope_blocked_to_done,
         "queued_for_ceo": queued_for_ceo,
         "redispatched": redispatched,
         "moved_to_review": moved_to_review,

@@ -1,23 +1,31 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
+  BarChart3,
   Bot,
   Briefcase,
   ChevronRight,
   ChevronLeft,
   CircleDot,
+  Cpu,
   FilePlus2,
   FolderOpen,
   Globe,
+  HeartPulse,
   Inbox,
+  Landmark,
   LayoutDashboard,
+  LineChart,
   Menu,
-  PenTool,
+  Newspaper,
+  Radar,
   Repeat,
   Shield,
+  ShoppingBag,
   Sparkles,
   TrendingUp,
   Workflow,
+  Wrench,
   X,
 } from 'lucide-react';
 import { getProjects, getScheduledAgents } from '../api';
@@ -25,6 +33,8 @@ import { roleMetaForAgent } from '../agentRoles';
 import type { ProjectSummary, ScheduledAgent } from '../types';
 
 const PROJECT_DOT_COLORS = ['#6366F1', '#8B5CF6', '#06B6D4', '#10B981', '#F59E0B', '#EC4899'];
+const SIDEBAR_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)';
+const SIDEBAR_TEXT_TRANSITION = `grid-template-columns 260ms ${SIDEBAR_EASE}, opacity 180ms ease, transform 260ms ${SIDEBAR_EASE}`;
 
 function projectAccent(project: Pick<ProjectSummary, 'id' | 'title'>): string {
   const seed = `${project.id}:${project.title}`;
@@ -37,6 +47,39 @@ function agentSidebarIcon(agent: Pick<ScheduledAgent, 'role_key' | 'role_family'
   const meta = roleMetaForAgent(agent);
   const iconProps = { className: 'h-4 w-4' };
 
+  switch (meta.key) {
+    case 'generalist_analyst':
+      return <BarChart3 {...iconProps} />;
+    case 'semis_analyst':
+      return <Cpu {...iconProps} />;
+    case 'software_analyst':
+      return <Wrench {...iconProps} />;
+    case 'financials_analyst':
+      return <Landmark {...iconProps} />;
+    case 'healthcare_analyst':
+      return <HeartPulse {...iconProps} />;
+    case 'consumer_analyst':
+      return <ShoppingBag {...iconProps} />;
+    case 'industrials_analyst':
+      return <Wrench {...iconProps} />;
+    case 'energy_analyst':
+      return <TrendingUp {...iconProps} />;
+    case 'earnings_analyst':
+      return <LineChart {...iconProps} />;
+    case 'portfolio_analyst':
+      return <Briefcase {...iconProps} />;
+    case 'thesis_monitor':
+      return <Bot {...iconProps} />;
+    case 'quant_strategist':
+      return <Radar {...iconProps} />;
+    case 'risk_manager':
+      return <Shield {...iconProps} />;
+    case 'macro_strategist':
+      return <Globe {...iconProps} />;
+    case 'market_narrative_analyst':
+      return <Newspaper {...iconProps} />;
+  }
+
   switch (meta.family) {
     case 'portfolio':
       return <Briefcase {...iconProps} />;
@@ -45,14 +88,55 @@ function agentSidebarIcon(agent: Pick<ScheduledAgent, 'role_key' | 'role_family'
     case 'risk':
       return <Shield {...iconProps} />;
     case 'event_driven':
-      return <TrendingUp {...iconProps} />;
+      return <LineChart {...iconProps} />;
     case 'central_research':
       return <Sparkles {...iconProps} />;
     case 'monitoring':
       return <Bot {...iconProps} />;
+    case 'sector_coverage':
+      return <BarChart3 {...iconProps} />;
     default:
-      return <PenTool {...iconProps} />;
+      return <CircleDot {...iconProps} />;
   }
+}
+
+function SidebarReveal({
+  show,
+  children,
+  collapseBlock = false,
+  className,
+  style,
+}: {
+  show: boolean;
+  children: React.ReactNode;
+  collapseBlock?: boolean;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div
+      className={className}
+      aria-hidden={!show}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: show ? '1fr' : '0fr',
+        maxHeight: collapseBlock ? (show ? 1200 : 0) : undefined,
+        opacity: show ? 1 : 0,
+        transform: show ? 'translateX(0)' : 'translateX(-6px)',
+        transition: collapseBlock
+          ? `${SIDEBAR_TEXT_TRANSITION}, max-height 260ms ${SIDEBAR_EASE}`
+          : SIDEBAR_TEXT_TRANSITION,
+        overflow: 'hidden',
+        pointerEvents: show ? 'auto' : 'none',
+        minWidth: 0,
+        ...style,
+      }}
+    >
+      <div style={{ minWidth: 0, overflow: 'hidden' }}>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 // Mobile header component with hamburger menu
@@ -302,9 +386,12 @@ function Sidebar() {
       {/* Navigation */}
       <nav
         className="flex-1 overflow-y-auto overflow-x-hidden"
-        style={{ padding: isMobile ? '12px 10px' : (isCollapsed ? '12px 8px' : '12px 10px') }}
+        style={{
+          padding: isMobile ? '12px 10px' : (isCollapsed ? '12px 8px' : '12px 10px'),
+          transition: `padding 260ms ${SIDEBAR_EASE}`,
+        }}
       >
-        {(isMobile || !isCollapsed) && (
+        <SidebarReveal show={isMobile || !isCollapsed} collapseBlock>
           <button
             type="button"
             onClick={() => {
@@ -313,10 +400,10 @@ function Sidebar() {
             }}
             className="mb-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
           >
-            <FilePlus2 className="w-4 h-4" />
-            New Issue
+            <FilePlus2 className="h-4 w-4 flex-shrink-0" />
+            <span className="whitespace-nowrap">New Issue</span>
           </button>
-        )}
+        </SidebarReveal>
 
         {/* Primary nav links */}
         <div style={{ marginBottom: 4 }}>
@@ -339,7 +426,7 @@ function Sidebar() {
           />
         </div>
 
-        {(isMobile || !isCollapsed) && (
+        <SidebarReveal show={isMobile || !isCollapsed} collapseBlock>
           <div
             style={{
               fontSize: 10,
@@ -355,7 +442,7 @@ function Sidebar() {
           >
             Work
           </div>
-        )}
+        </SidebarReveal>
 
         <div style={{ marginBottom: 4 }}>
           <NavItem
@@ -396,8 +483,8 @@ function Sidebar() {
           )}
         </div>
 
-        {(isMobile || !isCollapsed) && (
-          <>
+        <SidebarReveal show={isMobile || !isCollapsed} collapseBlock>
+          <div>
             <div
               className="flex items-center justify-between"
               style={{
@@ -501,11 +588,11 @@ function Sidebar() {
                 )}
               </div>
             )}
-          </>
-        )}
+          </div>
+        </SidebarReveal>
 
-        {(isMobile || !isCollapsed) && (
-          <>
+        <SidebarReveal show={isMobile || !isCollapsed} collapseBlock>
+          <div>
             <div
               className="flex items-center justify-between"
               style={{
@@ -693,11 +780,11 @@ function Sidebar() {
                 )}
               </div>
             )}
-          </>
-        )}
+          </div>
+        </SidebarReveal>
 
-        {(isMobile || !isCollapsed) && (
-          <>
+        <SidebarReveal show={isMobile || !isCollapsed} collapseBlock>
+          <div>
             <div
               style={{
                 fontSize: 10,
@@ -724,10 +811,10 @@ function Sidebar() {
                 onClick={() => isMobile && setIsMobileOpen(false)}
               />
             </div>
-          </>
-        )}
+          </div>
+        </SidebarReveal>
 
-        {(isMobile || !isCollapsed) && (
+        <SidebarReveal show={isMobile || !isCollapsed} collapseBlock>
           <div
             style={{
               marginTop: 20,
@@ -749,7 +836,7 @@ function Sidebar() {
               Create work from Issues, manage recurring workflows in Routines, keep project-specific work in Projects, and review hired agents from the sidebar.
             </p>
           </div>
-        )}
+        </SidebarReveal>
       </nav>
 
       {/* Footer */}
@@ -762,20 +849,23 @@ function Sidebar() {
           justifyContent: (isMobile || !isCollapsed) ? 'flex-start' : 'center',
           gap: 8,
           flexShrink: 0,
+          transition: `padding 260ms ${SIDEBAR_EASE}, justify-content 260ms ${SIDEBAR_EASE}`,
         }}
       >
-        {(isMobile || !isCollapsed) ? (
+        <SidebarReveal show={isMobile || !isCollapsed}>
           <span
             style={{
               fontSize: 10,
               color: '#D1D5DB',
               fontFamily: 'IBM Plex Mono, monospace',
               letterSpacing: '0.03em',
+              whiteSpace: 'nowrap',
             }}
           >
             Powered by Claude
           </span>
-        ) : (
+        </SidebarReveal>
+        {!isMobile && isCollapsed && (
           <div
             style={{
               width: 6,
@@ -801,10 +891,11 @@ function Sidebar() {
 
       {/* Desktop sidebar - hidden on mobile */}
       <div
-        className={`hidden md:flex fixed left-0 top-0 h-screen flex-col z-40 transition-all duration-300 ease-in-out ${isCollapsed ? 'w-[60px]' : 'w-[240px]'}`}
+        className={`hidden md:flex fixed left-0 top-0 h-screen flex-col z-40 transition-[width] duration-300 ${isCollapsed ? 'w-[60px]' : 'w-[240px]'}`}
         style={{
           background: '#FFFFFF',
           borderRight: '1px solid #EBEBEB',
+          transitionTimingFunction: SIDEBAR_EASE,
         }}
       >
         {/* Header / Logo */}
@@ -814,9 +905,10 @@ function Sidebar() {
             height: 60,
             padding: isCollapsed ? '0 0 0 16px' : '0 0 0 20px',
             borderBottom: '1px solid #F3F3F3',
+            transition: `padding 260ms ${SIDEBAR_EASE}`,
           }}
         >
-          <div className={`flex items-center gap-3 ${isCollapsed ? '' : ''}`}>
+          <div className="flex min-w-0 items-center gap-3">
             {/* Monogram mark */}
             <div
               className="flex-shrink-0 flex items-center justify-center"
@@ -840,7 +932,7 @@ function Sidebar() {
               </span>
             </div>
 
-            {!isCollapsed && (
+            <SidebarReveal show={!isCollapsed}>
               <div>
                 <span
                   style={{
@@ -868,7 +960,7 @@ function Sidebar() {
                   Financial Intelligence
                 </span>
               </div>
-            )}
+            </SidebarReveal>
           </div>
 
           {/* Collapse toggle */}
@@ -926,7 +1018,7 @@ function NavItem({
     >
       {({ isActive }) => (
         <div
-          className="flex items-center gap-2.5 rounded-lg transition-colors duration-100"
+          className="flex items-center gap-2.5 rounded-lg transition-all duration-200"
           style={{
             padding: isCollapsed ? '8px 10px' : '10px 12px',
             marginBottom: 2,
@@ -934,6 +1026,7 @@ function NavItem({
             cursor: 'pointer',
             justifyContent: isCollapsed ? 'center' : 'flex-start',
             minHeight: 44, // Touch-friendly
+            transitionTimingFunction: SIDEBAR_EASE,
           }}
         >
           {/* Icon */}
@@ -951,8 +1044,13 @@ function NavItem({
           </div>
 
           {/* Label + subtitle */}
-          {!isCollapsed && (
-            <div className="flex-1 min-w-0 overflow-hidden">
+          <SidebarReveal
+            show={!isCollapsed}
+            style={{
+              flex: isCollapsed ? '0 0 0px' : '1 1 auto',
+            }}
+          >
+            <div className="min-w-0 overflow-hidden">
               <span
                 style={{
                   display: 'block',
@@ -980,7 +1078,7 @@ function NavItem({
                 {sub}
               </span>
             </div>
-          )}
+          </SidebarReveal>
         </div>
       )}
     </NavLink>
