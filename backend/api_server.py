@@ -38,12 +38,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.config import (
     SSE_CHUNK_SIZE, SSE_STREAM_DELAY_SECONDS,
-    CHART_PERIOD_DAYS, CORS_ORIGINS,
+    CORS_ORIGINS,
 )
 from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 from backend.callbacks.streaming import StreamingCallbackHandler
 from backend.database import init_db, get_db, SyncSessionLocal, AsyncSessionLocal
-from backend.models import Session as DBSession, DBMessage, Analysis, Watchlist, WatchlistTicker, Project, ProjectSession, ProjectDocument
+from backend.models import Session as DBSession, DBMessage, Analysis, Project, ProjectSession, ProjectDocument
 from backend.project_config import normalize_project_config
 from backend.scheduled_agent_config import normalize_tickers, validate_ticker_requirement
 from backend.task_api_contracts import (
@@ -68,6 +68,7 @@ from backend.task_serialization import (
     task_message_to_dict as _task_message_to_dict,
     task_to_dict as _task_to_dict,
 )
+from backend.http_client import requests_get_json as _requests_get_json
 from agents.finance_qa_agent import create_finance_qa_agent
 from agents.market_agent import create_market_agent
 from agents.portfolio_agent import create_portfolio_agent
@@ -191,7 +192,13 @@ app.include_router(scheduled_agents_router)
 from backend.cio_router import router as cio_router
 app.include_router(cio_router)
 
+# Register stock chart router
+from backend.stock_chart_router import router as stock_chart_router
+app.include_router(stock_chart_router)
 
+# Register watchlists router
+from backend.watchlists_router import router as watchlists_router
+app.include_router(watchlists_router)
 
 # Configure CORS
 app.add_middleware(
@@ -614,13 +621,6 @@ async def route_agent_for_message(message: str) -> str:
     except Exception as e:
         logger.warning(f"Auto-routing failed, defaulting to research: {e}")
         return "research"
-
-
-def _requests_get_json(url: str, *, params: Dict[str, Any], timeout: int = 10) -> Any:
-    """Synchronous helper for requests-based APIs."""
-    response = requests.get(url, params=params, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
 
 
 async def _fetch_json(url: str, *, params: Dict[str, Any], timeout: int = 10) -> Any:
@@ -1381,216 +1381,6 @@ async def memo_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-@app.get("/stock-chart/compare")
-async def get_stock_chart_compare(tickers: str, period: str = "1M"):
-    """
-    Fetch stock chart data for multiple tickers for comparison.
-
-    Args:
-        tickers: Comma-separated ticker symbols (max 2), e.g. "AAPL,MSFT"
-        period: Time period (1M, 6M, YTD, 1Y, 5Y, MAX)
-
-    Returns:
-        JSON with tickers list, quotes dict, and historical dict
-    """
-    try:
-        fmp_key = os.getenv("FMP_API_KEY")
-        if not fmp_key:
-            raise HTTPException(status_code=500, detail="FMP_API_KEY not configured")
-
-        ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-        if len(ticker_list) == 0 or len(ticker_list) > 2:
-            raise HTTPException(status_code=400, detail="Provide 1-2 comma-separated tickers")
-
-        quote_url = "https://financialmodelingprep.com/stable/quote"
-        hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-
-        async def load_compare_ticker(tkr: str) -> tuple[str, dict, List[Dict]]:
-            quote_data_list, hist_result = await asyncio.gather(
-                _fetch_json(quote_url, params={"symbol": tkr, "apikey": fmp_key}),
-                _fetch_json(hist_url, params={"symbol": tkr, "apikey": fmp_key}),
-                return_exceptions=True,
-            )
-
-            if isinstance(quote_data_list, Exception):
-                logger.error(f"Failed to fetch compare chart data for {tkr}: {quote_data_list}")
-                raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {tkr}")
-
-            if not quote_data_list:
-                raise HTTPException(status_code=404, detail=f"No quote data found for {tkr}")
-
-            if isinstance(hist_result, Exception):
-                logger.warning(f"Historical compare chart fetch failed for {tkr}: {hist_result}")
-                hist_data = []
-            else:
-                hist_data = hist_result
-
-            qd = quote_data_list[0]
-            quote_payload = {
-                "symbol": qd.get("symbol", tkr),
-                "name": qd.get("name", ""),
-                "exchange": qd.get("exchange", ""),
-                "price": qd.get("price", 0),
-                "changesPercentage": qd.get("changesPercentage", 0),
-                "change": qd.get("change", 0),
-                "dayHigh": qd.get("dayHigh", 0),
-                "dayLow": qd.get("dayLow", 0),
-                "volume": qd.get("volume", 0),
-                "marketCap": qd.get("marketCap", 0),
-                "open": qd.get("open", 0),
-                "previousClose": qd.get("previousClose", 0),
-                "yearHigh": qd.get("yearHigh", 0),
-                "yearLow": qd.get("yearLow", 0),
-                "avgVolume": qd.get("avgVolume", 0),
-                "pe":   qd.get("pe", None),
-                "eps":  qd.get("eps", None),
-                "beta": qd.get("beta", None),
-            }
-            return tkr, quote_payload, filter_chart_data_by_period(hist_data, period)
-
-        results = await asyncio.gather(*(load_compare_ticker(tkr) for tkr in ticker_list))
-        quotes = {ticker: quote for ticker, quote, _ in results}
-        historical = {ticker: history for ticker, _, history in results}
-
-        return {
-            "tickers": ticker_list,
-            "quotes": quotes,
-            "historical": historical,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-def filter_chart_data_by_period(data: Any, period: str) -> List[Dict]:
-    """Filter historical chart data by time period"""
-    if period == "1D":
-        # Intraday data is already filtered by API (last trading day)
-        return data if isinstance(data, list) else []
-
-    # YTD uses Jan 1 of current year; all others use configured days mapping
-    if period == "YTD":
-        cutoff_date = datetime(datetime.now().year, 1, 1)
-    else:
-        days = CHART_PERIOD_DAYS.get(period, CHART_PERIOD_DAYS["1M"])
-        cutoff_date = datetime.now() - timedelta(days=days)
-
-    # Handle both list and dict responses
-    historical = data.get("historical", data) if isinstance(data, dict) else data
-
-    if not isinstance(historical, list):
-        return []
-
-    # Filter by date
-    filtered = []
-    for item in historical:
-        try:
-            # Parse date (format: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS")
-            item_date_str = item.get("date", "").split(" ")[0]
-            item_date = datetime.strptime(item_date_str, "%Y-%m-%d")
-
-            if item_date >= cutoff_date:
-                filtered.append(item)
-        except (ValueError, AttributeError):
-            continue
-
-    return filtered
-
-
-@app.get("/stock-chart/{ticker}")
-async def get_stock_chart(ticker: str, period: str = "1M"):
-    """
-    Fetch stock chart data from FMP API
-
-    Args:
-        ticker: Stock ticker symbol (e.g., AAPL, MSFT)
-        period: Time period (1D, 1W, 1M, 3M, 1Y, ALL)
-
-    Returns:
-        JSON with quote data and historical price data
-    """
-    try:
-        fmp_key = os.getenv("FMP_API_KEY")
-        if not fmp_key:
-            raise HTTPException(status_code=500, detail="FMP_API_KEY not configured")
-
-        ticker = ticker.upper()
-
-        quote_url = "https://financialmodelingprep.com/stable/quote"
-        if period == "1D":
-            hist_url = "https://financialmodelingprep.com/stable/historical-chart/5min"
-        else:
-            hist_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-
-        quote_data_list, hist_result = await asyncio.gather(
-            _fetch_json(quote_url, params={"symbol": ticker, "apikey": fmp_key}),
-            _fetch_json(hist_url, params={"symbol": ticker, "apikey": fmp_key}),
-            return_exceptions=True,
-        )
-
-        if isinstance(quote_data_list, Exception):
-            logger.error("Failed to fetch quote for %s: %s", ticker, quote_data_list)
-            raise HTTPException(status_code=404, detail=f"Could not fetch data for ticker {ticker}")
-
-        if not quote_data_list or len(quote_data_list) == 0:
-            logger.error("Empty quote response for %s", ticker)
-            raise HTTPException(status_code=404, detail=f"No quote data found for {ticker}")
-
-        quote_data = quote_data_list[0]
-
-        logger.debug("FMP quote response for %s: %s", ticker, quote_data)
-
-        if isinstance(hist_result, Exception):
-            logger.error("Failed to fetch historical data for %s: %s", ticker, hist_result)
-            hist_data = []
-        else:
-            hist_data = hist_result
-
-        # Ensure required fields exist with fallbacks
-        quote_data = {
-            "symbol": quote_data.get("symbol", ticker),
-            "name": quote_data.get("name", ""),
-            "exchange": quote_data.get("exchange", ""),
-            "price": quote_data.get("price", 0),
-            "changesPercentage": quote_data.get("changesPercentage", 0),
-            "change": quote_data.get("change", 0),
-            "dayHigh": quote_data.get("dayHigh", 0),
-            "dayLow": quote_data.get("dayLow", 0),
-            "volume": quote_data.get("volume", 0),
-            "marketCap": quote_data.get("marketCap", 0),
-            "open": quote_data.get("open", 0),
-            "previousClose": quote_data.get("previousClose", 0),
-            "yearHigh": quote_data.get("yearHigh", 0),
-            "yearLow": quote_data.get("yearLow", 0),
-            "avgVolume": quote_data.get("avgVolume", 0),
-            "pe":   quote_data.get("pe", None),
-            "eps":  quote_data.get("eps", None),
-            "beta": quote_data.get("beta", None),
-        }
-
-        if isinstance(hist_data, list) and len(hist_data) > 0:
-            logger.debug("FMP historical response sample for %s: %s", ticker, hist_data[0])
-        elif isinstance(hist_data, dict) and "historical" in hist_data:
-            sample = hist_data["historical"][0] if hist_data["historical"] else "empty"
-            logger.debug("FMP historical response sample for %s: %s", ticker, sample)
-
-        # Filter historical data by period
-        filtered_data = filter_chart_data_by_period(hist_data, period)
-
-        return {
-            "ticker": ticker,
-            "quote": quote_data,
-            "historical": filtered_data
-        }
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"FMP API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
@@ -1879,117 +1669,6 @@ async def delete_analysis(analysis_id: str, db: AsyncSession = Depends(get_db)):
     if not a:
         raise HTTPException(status_code=404, detail="Analysis not found")
     await db.delete(a)
-    await db.commit()
-    return Response(status_code=204)
-
-
-# =============================================================================
-# REST Endpoints — Watchlists
-# =============================================================================
-
-class WatchlistCreate(BaseModel):
-    name: str = "My Watchlist"
-
-
-class TickerAdd(BaseModel):
-    ticker: str
-    notes: Optional[str] = None
-
-
-@app.post("/watchlists", status_code=201)
-async def create_watchlist(body: WatchlistCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new watchlist."""
-    wl = Watchlist(name=body.name)
-    db.add(wl)
-    await db.commit()
-    return {"id": wl.id, "name": wl.name, "created_at": wl.created_at.isoformat()}
-
-
-@app.get("/watchlists")
-async def list_watchlists(db: AsyncSession = Depends(get_db)):
-    """List all watchlists with their tickers."""
-    result = await db.execute(select(Watchlist).order_by(Watchlist.created_at))
-    watchlists = result.scalars().all()
-    out = []
-    for wl in watchlists:
-        tickers_result = await db.execute(
-            select(WatchlistTicker).where(WatchlistTicker.watchlist_id == wl.id).order_by(WatchlistTicker.added_at)
-        )
-        tickers = tickers_result.scalars().all()
-        out.append({
-            "id": wl.id,
-            "name": wl.name,
-            "created_at": wl.created_at.isoformat(),
-            "tickers": [
-                {"id": t.id, "ticker": t.ticker, "notes": t.notes, "added_at": t.added_at.isoformat()}
-                for t in tickers
-            ],
-        })
-    return out
-
-
-@app.get("/watchlists/{watchlist_id}/tickers")
-async def get_watchlist_tickers(watchlist_id: str, db: AsyncSession = Depends(get_db)):
-    """Get tickers for a specific watchlist."""
-    result = await db.execute(
-        select(WatchlistTicker).where(WatchlistTicker.watchlist_id == watchlist_id).order_by(WatchlistTicker.added_at)
-    )
-    tickers = result.scalars().all()
-    return [
-        {"id": t.id, "ticker": t.ticker, "notes": t.notes, "added_at": t.added_at.isoformat()}
-        for t in tickers
-    ]
-
-
-@app.post("/watchlists/{watchlist_id}/tickers", status_code=201)
-async def add_ticker_to_watchlist(watchlist_id: str, body: TickerAdd, db: AsyncSession = Depends(get_db)):
-    """Add a ticker to a watchlist."""
-    result = await db.execute(select(Watchlist).where(Watchlist.id == watchlist_id))
-    wl = result.scalar_one_or_none()
-    if not wl:
-        raise HTTPException(status_code=404, detail="Watchlist not found")
-
-    # Check for duplicate
-    existing = await db.execute(
-        select(WatchlistTicker).where(
-            WatchlistTicker.watchlist_id == watchlist_id,
-            WatchlistTicker.ticker == body.ticker.upper(),
-        )
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail=f"{body.ticker.upper()} already in watchlist")
-
-    t = WatchlistTicker(watchlist_id=watchlist_id, ticker=body.ticker.upper(), notes=body.notes)
-    db.add(t)
-    await db.commit()
-    return {"id": t.id, "ticker": t.ticker, "notes": t.notes, "added_at": t.added_at.isoformat()}
-
-
-@app.delete("/watchlists/{watchlist_id}/tickers/{ticker}", status_code=204)
-async def remove_ticker_from_watchlist(watchlist_id: str, ticker: str, db: AsyncSession = Depends(get_db)):
-    """Remove a ticker from a watchlist."""
-    result = await db.execute(
-        select(WatchlistTicker).where(
-            WatchlistTicker.watchlist_id == watchlist_id,
-            WatchlistTicker.ticker == ticker.upper(),
-        )
-    )
-    t = result.scalar_one_or_none()
-    if not t:
-        raise HTTPException(status_code=404, detail="Ticker not found in watchlist")
-    await db.delete(t)
-    await db.commit()
-    return Response(status_code=204)
-
-
-@app.delete("/watchlists/{watchlist_id}", status_code=204)
-async def delete_watchlist(watchlist_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a watchlist and all its tickers."""
-    result = await db.execute(select(Watchlist).where(Watchlist.id == watchlist_id))
-    wl = result.scalar_one_or_none()
-    if not wl:
-        raise HTTPException(status_code=404, detail="Watchlist not found")
-    await db.delete(wl)
     await db.commit()
     return Response(status_code=204)
 
