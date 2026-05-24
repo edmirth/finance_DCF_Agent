@@ -200,6 +200,14 @@ app.include_router(stock_chart_router)
 from backend.watchlists_router import router as watchlists_router
 app.include_router(watchlists_router)
 
+# Register analyses router
+from backend.analyses_router import router as analyses_router
+app.include_router(analyses_router)
+
+# Register system router
+from backend.system_router import create_system_router
+app.include_router(create_system_router(lambda: len(agents_cache)))
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -1381,26 +1389,6 @@ async def memo_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-@app.get("/health")
-async def health_check():
-    """Detailed health check"""
-    # Check if API keys are set
-    api_keys = {
-        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
-        "financial_datasets": bool(os.getenv("FINANCIAL_DATASETS_API_KEY")),
-        "tavily": bool(os.getenv("TAVILY_API_KEY")),
-        "fred": bool(os.getenv("FRED_API_KEY")),
-        "massive": bool(os.getenv("MASSIVE_API_KEY"))
-    }
-
-    return {
-        "status": "healthy",
-        "api_keys_configured": api_keys,
-        "agents_cached": len(agents_cache),
-        "timestamp": datetime.now().isoformat()
-    }
-
-
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".csv"}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
@@ -1557,119 +1545,6 @@ async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
         stale_keys = [k for k in agents_cache if k.endswith(f"_{session_id}")]
         for k in stale_keys:
             del agents_cache[k]
-    return Response(status_code=204)
-
-
-# =============================================================================
-# REST Endpoints — Research Library (Analyses)
-# =============================================================================
-
-class AnalysisPatch(BaseModel):
-    tags: Optional[list[str]] = None
-
-
-@app.get("/analyses")
-async def list_analyses(
-    ticker: Optional[str] = None,
-    tag: Optional[str] = None,
-    q: Optional[str] = None,
-    agent_type: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """List saved analyses with optional filters."""
-    stmt = select(Analysis).order_by(Analysis.created_at.desc())
-    if ticker:
-        stmt = stmt.where(Analysis.ticker == ticker.upper())
-    if agent_type:
-        stmt = stmt.where(Analysis.agent_type == agent_type)
-    if q:
-        stmt = stmt.where(
-            or_(
-                Analysis.title.ilike(f"%{q}%"),
-                Analysis.content.ilike(f"%{q}%"),
-            )
-        )
-    result = await db.execute(stmt)
-    analyses = result.scalars().all()
-
-    rows = []
-    for a in analyses:
-        tags = json.loads(a.tags) if a.tags else []
-        if tag and tag not in tags:
-            continue
-        rows.append({
-            "id": a.id,
-            "ticker": a.ticker,
-            "agent_type": a.agent_type,
-            "title": a.title,
-            "content_preview": a.content[:200],
-            "tags": tags,
-            "session_id": a.session_id,
-            "created_at": a.created_at.isoformat(),
-            "updated_at": a.updated_at.isoformat(),
-        })
-    return rows
-
-
-@app.get("/analyses/{analysis_id}")
-async def get_analysis(analysis_id: str, db: AsyncSession = Depends(get_db)):
-    """Get a single analysis with full content."""
-    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
-    a = result.scalar_one_or_none()
-    if not a:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    return {
-        "id": a.id,
-        "ticker": a.ticker,
-        "agent_type": a.agent_type,
-        "title": a.title,
-        "content": a.content,
-        "tags": json.loads(a.tags) if a.tags else [],
-        "session_id": a.session_id,
-        "created_at": a.created_at.isoformat(),
-        "updated_at": a.updated_at.isoformat(),
-    }
-
-
-@app.patch("/analyses/{analysis_id}")
-async def update_analysis(analysis_id: str, patch: AnalysisPatch, db: AsyncSession = Depends(get_db)):
-    """Update analysis tags."""
-    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
-    a = result.scalar_one_or_none()
-    if not a:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    if patch.tags is not None:
-        a.tags = json.dumps(patch.tags)
-        a.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    return {"id": a.id, "tags": json.loads(a.tags)}
-
-
-@app.get("/analyses/{analysis_id}/export")
-async def export_analysis(analysis_id: str, db: AsyncSession = Depends(get_db)):
-    """Download analysis as a .md file."""
-    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
-    a = result.scalar_one_or_none()
-    if not a:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    date_str = a.created_at.strftime("%Y-%m-%d")
-    filename = f"{a.ticker or 'analysis'}_{a.agent_type}_{date_str}.md"
-    return Response(
-        content=a.content,
-        media_type="text/markdown",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@app.delete("/analyses/{analysis_id}", status_code=204)
-async def delete_analysis(analysis_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a saved analysis."""
-    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
-    a = result.scalar_one_or_none()
-    if not a:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    await db.delete(a)
-    await db.commit()
     return Response(status_code=204)
 
 
