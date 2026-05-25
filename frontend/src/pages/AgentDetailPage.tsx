@@ -244,6 +244,10 @@ export default function AgentDetailPage() {
   const [editingInstruction, setEditingInstruction] = useState(false);
   const [draftInstruction, setDraftInstruction] = useState('');
   const [savingInstruction, setSavingInstruction] = useState(false);
+  const [editingTickers, setEditingTickers] = useState(false);
+  const [draftTickers, setDraftTickers] = useState<string[]>([]);
+  const [tickerInput, setTickerInput] = useState('');
+  const [savingTickers, setSavingTickers] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -351,6 +355,40 @@ export default function AgentDetailPage() {
       setError('Failed to save the agent instruction.');
     } finally {
       setSavingInstruction(false);
+    }
+  };
+
+  const beginEditingTickers = () => {
+    setDraftTickers(agent?.tickers ?? []);
+    setTickerInput('');
+    setEditingTickers(true);
+  };
+
+  const cancelEditingTickers = () => {
+    setDraftTickers([]);
+    setTickerInput('');
+    setEditingTickers(false);
+  };
+
+  const addDraftTicker = () => {
+    const v = tickerInput.trim().toUpperCase();
+    if (v && !draftTickers.includes(v)) setDraftTickers(prev => [...prev, v]);
+    setTickerInput('');
+  };
+
+  const saveTickers = async () => {
+    if (!agent) return;
+    setSavingTickers(true);
+    setError(null);
+    try {
+      const updated = await updateScheduledAgent(agent.id, { tickers: draftTickers });
+      setAgent(updated);
+      setEditingTickers(false);
+      setNotice('Coverage tickers updated.');
+    } catch {
+      setError('Failed to save tickers.');
+    } finally {
+      setSavingTickers(false);
     }
   };
 
@@ -547,15 +585,77 @@ export default function AgentDetailPage() {
                   </div>
 
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Watching</p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {(agent.tickers.length > 0 ? agent.tickers : ['GENERAL']).map((ticker: string) => (
-                          <span key={ticker} className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-700">
-                            {ticker}
-                          </span>
-                        ))}
+                    <div className="sm:col-span-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Watching</p>
+                        {!editingTickers ? (
+                          <button
+                            onClick={beginEditingTickers}
+                            className="text-xs font-medium text-slate-500 hover:text-slate-800 transition-colors"
+                          >
+                            Edit
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={cancelEditingTickers}
+                              className="text-xs font-medium text-slate-400 hover:text-slate-700 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={saveTickers}
+                              disabled={savingTickers}
+                              className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50 transition-colors"
+                            >
+                              {savingTickers && <Loader2 className="h-3 w-3 animate-spin" />}
+                              Save
+                            </button>
+                          </div>
+                        )}
                       </div>
+
+                      {editingTickers ? (
+                        <div className="mt-2 space-y-2">
+                          <div className="flex flex-wrap gap-1.5">
+                            {draftTickers.map(ticker => (
+                              <span key={ticker} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 pl-2 pr-1 py-0.5 font-mono text-xs text-slate-700">
+                                {ticker}
+                                <button
+                                  onClick={() => setDraftTickers(prev => prev.filter(t => t !== ticker))}
+                                  className="text-slate-400 hover:text-red-500 transition-colors"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                          <div className="flex gap-1.5">
+                            <input
+                              value={tickerInput}
+                              onChange={e => setTickerInput(e.target.value.toUpperCase())}
+                              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addDraftTicker(); } }}
+                              placeholder="Add ticker (e.g. AAPL)"
+                              className="h-8 w-36 rounded-lg border border-slate-200 bg-white px-2.5 font-mono text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                            />
+                            <button
+                              onClick={addDraftTicker}
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                            >
+                              <Plus className="h-3 w-3" />
+                              Add
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {(agent.tickers.length > 0 ? agent.tickers : ['GENERAL']).map((ticker: string) => (
+                            <span key={ticker} className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-700">
+                              {ticker}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Cadence</p>
