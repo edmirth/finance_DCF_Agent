@@ -307,39 +307,57 @@ def resolve_role_prompt_profile(
 
 
 def infer_research_intent(instruction: str, tickers: list[str]) -> ResearchIntent:
+    """
+    Score each candidate intent by counting keyword hits, then return the
+    highest-scoring one.  Ties resolve left-to-right in _INTENT_SIGNALS.
+    This replaces a fragile sequential if-chain that could misclassify
+    ambiguous queries (e.g. "compare peers on earnings guidance" was always
+    classified as peer_comparison before earnings_review had a chance to score).
+    """
     text = (instruction or "").lower()
-    normalized_tickers = [ticker for ticker in tickers if str(ticker).strip().upper() != "GENERAL"]
+    normalized_tickers = [t for t in tickers if str(t).strip().upper() != "GENERAL"]
 
-    industry_markers = (
-        "industry",
-        "sector",
-        "theme",
-        "trend",
-        "wave",
-        "ecosystem",
-        "value chain",
-        "beneficiaries",
-        "companies that",
-        "players",
-        "who benefits",
-        "who wins",
-    )
-    if any(marker in text for marker in industry_markers):
-        return INTENT_PROFILES["industry_map"]
+    _INTENT_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
+        (
+            "industry_map",
+            (
+                "industry", "sector", "theme", "trend", "wave", "ecosystem",
+                "value chain", "beneficiaries", "companies that", "players",
+                "who benefits", "who wins",
+            ),
+        ),
+        (
+            "peer_comparison",
+            ("compare", "versus", " vs ", "peer", "relative to", "competitors", "peers"),
+        ),
+        (
+            "earnings_review",
+            ("earnings", "quarter", "guidance", "transcript", "beat", "miss", "revisions", "eps"),
+        ),
+        (
+            "risk_review",
+            ("risk", "downside", "stress", "bear case", "liquidity", "debt", "drawdown", "exposure"),
+        ),
+        (
+            "valuation",
+            ("valuation", "dcf", "price target", "intrinsic", "multiple", "upside", "fair value"),
+        ),
+    ]
 
-    if len(normalized_tickers) > 1 or any(marker in text for marker in ("compare", "versus", " vs ", "peer", "relative to")):
-        return INTENT_PROFILES["peer_comparison"]
+    scores: dict[str, int] = {intent: 0 for intent, _ in _INTENT_SIGNALS}
+    for intent, markers in _INTENT_SIGNALS:
+        for marker in markers:
+            if marker in text:
+                scores[intent] += 1
 
-    if any(marker in text for marker in ("earnings", "quarter", "guidance", "transcript", "beat", "miss", "revisions")):
-        return INTENT_PROFILES["earnings_review"]
+    # Multiple tickers are a strong peer_comparison signal even with no keywords.
+    if len(normalized_tickers) > 1:
+        scores["peer_comparison"] += 2
 
-    if any(marker in text for marker in ("risk", "downside", "stress", "bear case", "liquidity", "debt", "drawdown")):
-        return INTENT_PROFILES["risk_review"]
-
-    if any(marker in text for marker in ("valuation", "dcf", "price target", "intrinsic", "multiple", "upside", "downside")):
-        return INTENT_PROFILES["valuation"]
-
-    return INTENT_PROFILES["single_name"]
+    best_intent = max(_INTENT_SIGNALS, key=lambda pair: scores[pair[0]])[0]
+    if scores[best_intent] == 0:
+        return INTENT_PROFILES["single_name"]
+    return INTENT_PROFILES[best_intent]
 
 
 def format_bullets(items: tuple[str, ...]) -> str:

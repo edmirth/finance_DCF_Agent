@@ -696,6 +696,13 @@ class ResearchOrchestrator:
                 if self.task_id:
                     task = db.query(ResearchTask).filter(ResearchTask.id == self.task_id).one_or_none()
                     if task:
+                        if task.status in ("done", "cancelled"):
+                            logger.warning(
+                                "[Research] Refusing to re-run task %s — already %s",
+                                self.task_id,
+                                task.status,
+                            )
+                            return task.id
                         task.status = "running"
                         task.started_at = task.started_at or _dt.utcnow()
                         task.run_id = self.run_id
@@ -789,6 +796,13 @@ class ResearchOrchestrator:
                 task = db.query(ResearchTask).filter(ResearchTask.id == self.task_id).one_or_none()
                 if not task:
                     return
+                if task.status not in ("running", "in_review"):
+                    logger.warning(
+                        "[Research] Skipping finalize for task %s — unexpected status '%s'",
+                        self.task_id,
+                        task.status,
+                    )
+                    return
                 task.pm_synthesis = _json.dumps(synthesis) if synthesis else None
                 task.overall_sentiment = (synthesis or {}).get("overall_sentiment")
                 task.status = status
@@ -813,6 +827,7 @@ class ResearchOrchestrator:
 
         # 1. Fetch shared data
         self.emit({"type": "fetch_start", "message": f"Fetching shared market data for {self.ticker}..."})
+        data_fetch_failed = False
         try:
             minimal_state = _create_minimal_state(
                 self.ticker,
@@ -825,7 +840,31 @@ class ResearchOrchestrator:
         except Exception as e:
             logger.error(f"[Research] data_fetch_node failed: {e}")
             shared_data = {}
-        self.emit({"type": "fetch_complete", "message": "Market data loaded."})
+            data_fetch_failed = True
+
+        fetch_msg = "Market data loaded." if not data_fetch_failed else "Market data fetch failed — some agents may be limited."
+        self.emit({"type": "fetch_complete", "message": fetch_msg})
+
+        # Circuit breaker: if the fetch completely failed and every selected
+        # agent requires real financial data, fail fast rather than letting all
+        # agents produce empty error sections.
+        if data_fetch_failed:
+            _DATA_REQUIRING = {"dcf", "fundamental", "quant", "risk"}
+            all_blocked = all(a in _DATA_REQUIRING for a in self.selected_agents)
+            if all_blocked:
+                error_msg = (
+                    f"Market data fetch failed for {self.ticker} and no selected agents "
+                    "can run without it. Check API connectivity and retry."
+                )
+                self.emit({"type": "error", "message": error_msg})
+                self._finalize_task({}, status="failed", error_msg=error_msg)
+                if self.task_id:
+                    self.emit({"type": "task_completed", "task_id": self.task_id})
+                return {
+                    "sections": {},
+                    "synthesis": {"summary": error_msg, "overall_sentiment": "neutral"},
+                    "task_id": self.task_id,
+                }
 
         # 2. Run selected agents in parallel
         with ThreadPoolExecutor(max_workers=6) as pool:

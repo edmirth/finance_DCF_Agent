@@ -54,9 +54,20 @@ RISK_VETO_CONFIDENCE = 0.85    # bearish risk agent above this → veto
 LOW_CONFIDENCE_FLAG = 0.40     # avg analyst confidence below this → flag
 STRONG_CONVICTION_BULLISH_AGENTS = 3  # need >= this many bullish to call HIGH conviction
 
+# Importance weights per agent for conviction scoring.
+# DCF and fundamental carry the most weight; sentiment least.
+AGENT_CONVICTION_WEIGHTS: dict[str, float] = {
+    "dcf":         2.0,
+    "fundamental": 1.5,
+    "risk":        1.5,
+    "quant":       1.0,
+    "macro":       0.75,
+    "sentiment":   0.5,
+}
+
 
 # ---------------------------------------------------------------------------
-# Shared signal summary helper
+# Shared signal summary helpers
 # ---------------------------------------------------------------------------
 
 def _summarize_section_sentiments(sections: dict) -> dict:
@@ -80,6 +91,28 @@ def _summarize_section_sentiments(sections: dict) -> dict:
         "neutral_count": neutral,
         "avg_confidence": round(avg_conf, 3),
     }
+
+
+def _weighted_conviction_score(sections: dict) -> tuple[float, float]:
+    """
+    Compute weighted bullish and bearish scores using AGENT_CONVICTION_WEIGHTS.
+    Returns (weighted_bullish, weighted_bearish).
+    DCF and fundamental agents outweigh sentiment to prevent noise from
+    overriding valuation signals.
+    """
+    bullish_score = 0.0
+    bearish_score = 0.0
+    for agent_name, section in sections.items():
+        if section.get("error") and not section.get("content"):
+            continue
+        weight = AGENT_CONVICTION_WEIGHTS.get(agent_name, 1.0)
+        sentiment = (section.get("sentiment") or "").lower()
+        confidence = float(section.get("confidence") or 0.5)
+        if sentiment == "bullish":
+            bullish_score += weight * confidence
+        elif sentiment == "bearish":
+            bearish_score += weight * confidence
+    return round(bullish_score, 3), round(bearish_score, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +276,7 @@ def _call_pm_rationale(
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
+            timeout=45.0,
             messages=[{
                 "role": "user",
                 "content": (
@@ -348,16 +382,26 @@ def evaluate_pm_decision(
     suggested_size = float(risk_verdict["suggested_max_size_pct"]) if action == "BUY" else 0.0
     requires_approval = action == "BUY" and suggested_size > APPROVAL_THRESHOLD_PCT
 
-    # Conviction calculation
+    # Conviction calculation — uses weighted scores so DCF/fundamental
+    # outweigh sentiment in determining signal strength.
+    weighted_bullish, weighted_bearish = _weighted_conviction_score(sections)
+    # Threshold equivalent to STRONG_CONVICTION_BULLISH_AGENTS unweighted agents
+    # at average weight ~1.2 and 0.65 confidence ≈ 2.34
+    weighted_threshold = STRONG_CONVICTION_BULLISH_AGENTS * 1.2 * 0.65
     if (
         action == "BUY"
         and risk_verdict["verdict"] == "approved"
         and bullish >= STRONG_CONVICTION_BULLISH_AGENTS
+        and weighted_bullish >= weighted_threshold
         and risk_verdict["avg_confidence"] >= 0.65
     ):
         conviction = "HIGH"
-    elif action == "HOLD" or risk_verdict["verdict"] == "flagged":
-        conviction = "MEDIUM"
+    elif (
+        risk_verdict["avg_confidence"] < LOW_CONFIDENCE_FLAG
+        or risk_verdict["verdict"] == "flagged"
+        or (action == "SELL" and weighted_bearish < weighted_threshold)
+    ):
+        conviction = "LOW"
     else:
         conviction = "MEDIUM"
 

@@ -637,6 +637,7 @@ Rules:
                     model="claude-haiku-4-5-20251001",
                     max_tokens=1500,
                     messages=[{"role": "user", "content": prompt}],
+                    timeout=60.0,
                 )
                 return ticker_upper, response.content[0].text.strip()
 
@@ -890,6 +891,7 @@ Return ONLY the JSON object — no preamble, no explanation."""
                 model="claude-haiku-4-5-20251001",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=90.0,
             )
             text = response.content[0].text.strip()
             parsed = _extract_json_object(text)

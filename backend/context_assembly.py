@@ -40,6 +40,16 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars - 3] + "..."
 
 
+def _sanitize_xml_content(text: str) -> str:
+    """
+    Prevent user-controlled text from injecting closing XML tags into
+    the <project_context> block the LLM reads for structural cues.
+    Replaces `</` with `< /` so existing XML tags in user content
+    (e.g. `</thesis>`) cannot close the surrounding wrapper tags.
+    """
+    return (text or "").replace("</", "< /")
+
+
 async def assemble_project_context(
     project_id: Optional[str],
     query: str,
@@ -96,11 +106,11 @@ async def assemble_project_context(
     parts: List[str] = []
 
     # Thesis section (always verbatim)
-    parts.append(f"<thesis>\n{project.thesis}\n</thesis>")
+    parts.append(f"<thesis>\n{_sanitize_xml_content(project.thesis)}\n</thesis>")
 
     # Memory document section
     if memory_doc:
-        parts.append(f"<memory_doc>\n{memory_doc}\n</memory_doc>")
+        parts.append(f"<memory_doc>\n{_sanitize_xml_content(memory_doc)}\n</memory_doc>")
 
     # Relevant document excerpts
     if chunks:
@@ -108,7 +118,7 @@ async def assemble_project_context(
         for i, chunk in enumerate(chunks, start=1):
             source_attr = f' source="{chunk["source"]}"' if chunk["source"] else ""
             excerpt_parts.append(
-                f'<excerpt index="{i}"{source_attr}>\n{chunk["text"]}\n</excerpt>'
+                f'<excerpt index="{i}"{source_attr}>\n{_sanitize_xml_content(chunk["text"])}\n</excerpt>'
             )
         parts.append("<document_excerpts>\n" + "\n".join(excerpt_parts) + "\n</document_excerpts>")
 

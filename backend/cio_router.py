@@ -539,6 +539,7 @@ def _cio_chat_sync(system_prompt: str, messages: list[dict]) -> dict:
         max_tokens=1200,
         system=system_prompt,
         messages=messages,
+        timeout=60.0,
     )
     raw = response.content[0].text.strip()
 
@@ -869,6 +870,7 @@ Coverage universe: {coverage}
         model=SCOPE_RESOLUTION_MODEL,
         max_tokens=220,
         messages=[{"role": "user", "content": prompt}],
+        timeout=30.0,
     )
     text = response.content[0].text.strip()
     parsed = _scope_json_object(text) or {}
@@ -1109,17 +1111,27 @@ async def _run_cio_task_review(
             metadata={"event": "ceo_review_follow_up_required"},
         )
     elif response.action is None and task.status in CEO_OPEN_TASK_STATUSES:
-        task.status = "done"
-        task.error = None
-        task.completed_at = task.completed_at or now
-        task.updated_at = now
-        await _append_issue_activity(
-            db,
-            task.id,
-            "CEO reviewed this issue directly and closed it with a final answer.",
-            author_label="CEO",
-            metadata={"event": "ceo_review_completed"},
-        )
+        # Don't close a task that already has an active run in flight.
+        if task.run_id:
+            await _append_issue_activity(
+                db,
+                task.id,
+                "CEO reviewed this issue directly but left it open — an agent run is already in progress.",
+                author_label="CEO",
+                metadata={"event": "ceo_review_deferred_active_run", "run_id": task.run_id},
+            )
+        else:
+            task.status = "done"
+            task.error = None
+            task.completed_at = task.completed_at or now
+            task.updated_at = now
+            await _append_issue_activity(
+                db,
+                task.id,
+                "CEO reviewed this issue directly and closed it with a final answer.",
+                author_label="CEO",
+                metadata={"event": "ceo_review_completed"},
+            )
     return response
 
 
@@ -1213,6 +1225,17 @@ async def _dispatch_agent_for_task(
         return {"run_id": None, "reused": False, "skipped": True}
 
     scope_resolution = await _resolve_task_scope_for_agent(task, agent)
+
+    # Re-read the task after the (potentially slow) LLM scope resolution to
+    # catch concurrent updates — another request may have already claimed it
+    # or cancelled it while we were waiting.
+    await db.refresh(task)
+    if task.status == "cancelled":
+        return {"run_id": None, "reused": False, "skipped": True}
+    if task.run_id:
+        # Another dispatch beat us to it; bail out to avoid a duplicate run.
+        return {"run_id": task.run_id, "reused": True, "skipped": False}
+
     resolved_tickers = _normalize_scope_tickers(scope_resolution.get("tickers") or [], limit=5)
 
     if _agent_requires_explicit_scope(agent) and not resolved_tickers:

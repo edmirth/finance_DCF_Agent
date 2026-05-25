@@ -160,12 +160,30 @@ async def _validate_manager_agent(
     manager_id = (manager_agent_id or "").strip() or None
     if not manager_id:
         return None
-    if current_agent_id and manager_id == current_agent_id:
-        raise HTTPException(status_code=400, detail="An agent cannot report to itself")
     result = await db.execute(select(ScheduledAgent).where(ScheduledAgent.id == manager_id))
     manager = result.scalar_one_or_none()
     if not manager:
         raise HTTPException(status_code=400, detail="Manager agent not found")
+
+    if current_agent_id:
+        # Walk the full management chain to detect cycles (A → B → C → A).
+        # A depth cap of 20 prevents runaway queries on a malformed graph.
+        visited: set[str] = {current_agent_id}
+        node_id: Optional[str] = manager_id
+        depth = 0
+        while node_id and depth < 20:
+            if node_id in visited:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This manager assignment would create a circular reporting chain",
+                )
+            visited.add(node_id)
+            chain_result = await db.execute(
+                select(ScheduledAgent.manager_agent_id).where(ScheduledAgent.id == node_id)
+            )
+            node_id = chain_result.scalar_one_or_none()
+            depth += 1
+
     return manager.id
 
 
@@ -282,6 +300,15 @@ async def create_scheduled_agent(
         if requested_role_key:
             role = resolve_role_definition(role_key=requested_role_key)
             assert role is not None
+            # If the caller explicitly passed both role_key and template, they
+            # must agree — a mismatch means the caller built an inconsistent
+            # request and should be told rather than silently ignored.
+            if payload.template and payload.template != role.template:
+                raise ValueError(
+                    f"role_key '{requested_role_key}' maps to template '{role.template}' "
+                    f"but template '{payload.template}' was also provided. "
+                    "Omit one or make them consistent."
+                )
             template = role.template
         else:
             template = validate_template(payload.template or "")
@@ -698,6 +725,12 @@ async def _execute_run_background(
             "alert_level": "none", "tickers_analyzed": [], "agents_used": [],
             "error": str(exc),
         }
+
+    # A successful manual run clears the scheduled-failure backoff so the
+    # next cron tick fires normally again.
+    if not outcome.get("error"):
+        from backend.scheduler import reset_consecutive_failures
+        reset_consecutive_failures(agent_id)
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))

@@ -54,6 +54,17 @@ SUPPORTED_SCHEDULE_LABELS = frozenset(_CRON_MAP.keys())
 
 _scheduler: Optional[AsyncIOScheduler] = None
 
+# Per-agent consecutive failure counter.  After _MAX_CONSECUTIVE_FAILURES the
+# job is skipped automatically so a broken agent doesn't fill logs on every
+# cron tick.  Call reset_consecutive_failures(agent_id) to re-enable.
+_consecutive_failures: dict[str, int] = {}
+_MAX_CONSECUTIVE_FAILURES = 5
+
+
+def reset_consecutive_failures(agent_id: str) -> None:
+    """Clear the failure counter for an agent (e.g. after a manual trigger succeeds)."""
+    _consecutive_failures.pop(agent_id, None)
+
 
 def get_scheduler_timezone() -> ZoneInfo:
     return ZoneInfo(MARKET_SCHEDULE_TIMEZONE)
@@ -178,6 +189,16 @@ async def _fire_agent_run(agent_id: str) -> None:
 
     logger.info(f"Heartbeat firing for agent {agent_id}")
 
+    # Skip scheduled fires while the agent is in a consecutive-failure backoff.
+    failures = _consecutive_failures.get(agent_id, 0)
+    if failures >= _MAX_CONSECUTIVE_FAILURES:
+        logger.warning(
+            "Agent %s has failed %d consecutive times — skipping scheduled fire. "
+            "Call reset_consecutive_failures('%s') or trigger a manual run to re-enable.",
+            agent_id, failures, agent_id,
+        )
+        return
+
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ScheduledAgent).where(ScheduledAgent.id == agent_id)
@@ -224,8 +245,20 @@ async def _fire_agent_run(agent_id: str) -> None:
             select(HeartbeatRun).where(HeartbeatRun.id == heartbeat_run_id)
         )
         heartbeat_run = heartbeat_result.scalar_one_or_none()
+        run_failed = bool(outcome.get("error"))
+        if run_failed:
+            _consecutive_failures[agent_id] = _consecutive_failures.get(agent_id, 0) + 1
+            if _consecutive_failures[agent_id] >= _MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    "Agent %s has now failed %d consecutive times — future scheduled fires "
+                    "will be skipped until reset_consecutive_failures() is called.",
+                    agent_id, _consecutive_failures[agent_id],
+                )
+        else:
+            _consecutive_failures.pop(agent_id, None)
+
         if run:
-            run.status = "failed" if outcome.get("error") else "completed"
+            run.status = "failed" if run_failed else "completed"
             run.report = outcome.get("report", "")
             run.findings_summary = outcome.get("findings_summary", "")
             run.key_findings = json.dumps(outcome.get("key_findings", []))
