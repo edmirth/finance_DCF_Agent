@@ -42,6 +42,17 @@ class Base(DeclarativeBase):
     pass
 
 
+def _is_column_exists_error(exc: OperationalError) -> bool:
+    """Return True when an ALTER TABLE fails because the column already exists.
+
+    SQLite raises "duplicate column name", PostgreSQL raises "already exists".
+    Centralising the check here keeps the migration blocks DRY and makes it
+    easy to add dialects later without hunting through every try/except.
+    """
+    msg = str(exc).lower()
+    return "duplicate column" in msg or "already exists" in msg
+
+
 async def init_db() -> None:
     """Create all tables if they don't exist. Called on app startup."""
     # Import models so they register with Base.metadata
@@ -52,7 +63,7 @@ async def init_db() -> None:
         try:
             await conn.execute(text("ALTER TABLE messages ADD COLUMN chart_specs TEXT"))
         except OperationalError as e:
-            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+            if _is_column_exists_error(e):
                 pass  # Column already exists — expected on re-start
             else:
                 logger.error(f"Unexpected OperationalError adding chart_specs column: {e}")
@@ -66,7 +77,7 @@ async def init_db() -> None:
             try:
                 await conn.execute(text(_ddl))
             except OperationalError as e:
-                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                if _is_column_exists_error(e):
                     pass
                 else:
                     logger.error(f"Unexpected OperationalError adding {_col} column: {e}")
@@ -161,7 +172,7 @@ async def init_db() -> None:
             try:
                 await conn.execute(text(f"ALTER TABLE scheduled_agents ADD COLUMN {_col} TEXT"))
             except OperationalError as e:
-                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                if _is_column_exists_error(e):
                     pass
                 else:
                     logger.error(f"Unexpected OperationalError adding {_col} column: {e}")
@@ -209,7 +220,7 @@ async def init_db() -> None:
         try:
             await conn.execute(text("ALTER TABLE agent_runs ADD COLUMN key_findings TEXT NOT NULL DEFAULT '[]'"))
         except OperationalError as e:
-            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+            if _is_column_exists_error(e):
                 pass
             else:
                 logger.error(f"Unexpected OperationalError adding key_findings column: {e}")
@@ -302,7 +313,7 @@ async def init_db() -> None:
             try:
                 await conn.execute(text(f"ALTER TABLE hire_proposals ADD COLUMN {_col} TEXT"))
             except OperationalError as e:
-                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                if _is_column_exists_error(e):
                     pass
                 else:
                     logger.error(f"Unexpected OperationalError adding hire_proposals {_col} column: {e}")
@@ -360,7 +371,7 @@ async def init_db() -> None:
             try:
                 await conn.execute(text(f"ALTER TABLE research_tasks ADD COLUMN {_col} TEXT"))
             except OperationalError as e:
-                if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                if _is_column_exists_error(e):
                     pass
                 else:
                     logger.error(f"Unexpected OperationalError adding research_tasks {_col} column: {e}")

@@ -100,14 +100,14 @@ async def lifespan(app: FastAPI):
                 normalization["tasks_moved_to_done"],
             )
     except Exception as _e:
-        logger.warning(f"Stale issue-work recovery failed on startup (non-fatal): {_e}")
+        logger.warning("Stale issue-work recovery failed on startup (non-fatal): %s", _e, exc_info=True)
     # Pre-load Chroma embedding model so the ~90MB download happens before first request
     try:
         from data.chroma_client import ProjectChromaClient
         _ = ProjectChromaClient()
         logger.info("ProjectChromaClient initialised")
     except Exception as _e:
-        logger.warning(f"ProjectChromaClient pre-load failed (non-fatal): {_e}")
+        logger.warning("ProjectChromaClient pre-load failed (non-fatal): %s", _e, exc_info=True)
     # Start heartbeat scheduler
     try:
         from backend.scheduler import start_scheduler, stop_scheduler
@@ -116,7 +116,7 @@ async def lifespan(app: FastAPI):
         yield
         await stop_scheduler()
     except Exception as _e:
-        logger.warning(f"Scheduler startup failed (non-fatal): {_e}")
+        logger.warning("Scheduler startup failed (non-fatal): %s", _e, exc_info=True)
         yield
 
 
@@ -1044,7 +1044,7 @@ async def chat(chat_message: ChatMessage):
         return ChatResponse(
             response=response,
             agent_type=chat_message.agent_type,
-            timestamp=datetime.now().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             session_id=session_id or "default"
         )
 
@@ -2208,9 +2208,9 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
         prev = t.status
         t.status = body.status
         if body.status == "running" and t.started_at is None:
-            t.started_at = datetime.utcnow()
+            t.started_at = datetime.now(timezone.utc)
         if body.status in ("done", "cancelled", "failed") and t.completed_at is None:
-            t.completed_at = datetime.utcnow()
+            t.completed_at = datetime.now(timezone.utc)
         if prev != body.status:
             activity_changes.append(f"Status changed from {prev} to {body.status}")
     if body.priority is not None:
@@ -2285,7 +2285,7 @@ async def patch_task(task_id: str, body: TaskPatch, db: AsyncSession = Depends(g
     if body.error is not None:
         t.error = body.error
 
-    t.updated_at = datetime.utcnow()
+    t.updated_at = datetime.now(timezone.utc)
     if activity_changes:
         await _append_task_activity(
             db,
@@ -2423,7 +2423,7 @@ async def run_task_now(task_id: str, db: AsyncSession = Depends(get_db)):
 
     task.status = "pending"
     task.error = None
-    task.updated_at = datetime.utcnow()
+    task.updated_at = datetime.now(timezone.utc)
     await _append_issue_activity(
         db,
         task.id,

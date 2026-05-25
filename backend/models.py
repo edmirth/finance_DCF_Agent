@@ -18,7 +18,10 @@ Tables:
 """
 from __future__ import annotations
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 from typing import Optional, List
 from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -36,8 +39,8 @@ class Session(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), default="New conversation")
     agent_type: Mapped[str] = mapped_column(String(50), default="auto")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_active_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    last_active_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     messages: Mapped[List["DBMessage"]] = relationship(
         "DBMessage", back_populates="session", cascade="all, delete-orphan", order_by="DBMessage.created_at"
@@ -59,7 +62,7 @@ class DBMessage(Base):
     thinking_steps: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
     follow_ups: Mapped[Optional[str]] = mapped_column(Text, nullable=True)       # JSON
     chart_specs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     session: Mapped["Session"] = relationship("Session", back_populates="messages")
 
@@ -78,8 +81,8 @@ class Analysis(Base):
     tags: Mapped[str] = mapped_column(Text, default="[]")   # JSON array of strings
     share_slug: Mapped[Optional[str]] = mapped_column(String(12), nullable=True, unique=True, index=True)
     checklist_answers: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     session: Mapped[Optional["Session"]] = relationship("Session", back_populates="analyses")
 
@@ -90,7 +93,7 @@ class Watchlist(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="My Watchlist")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     tickers: Mapped[List["WatchlistTicker"]] = relationship(
         "WatchlistTicker", back_populates="watchlist", cascade="all, delete-orphan", order_by="WatchlistTicker.added_at"
@@ -104,7 +107,7 @@ class WatchlistTicker(Base):
     watchlist_id: Mapped[str] = mapped_column(String(36), ForeignKey("watchlists.id", ondelete="CASCADE"), index=True)
     ticker: Mapped[str] = mapped_column(String(20))
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     watchlist: Mapped["Watchlist"] = relationship("Watchlist", back_populates="tickers")
 
@@ -118,8 +121,8 @@ class Project(Base):
     config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
     memory_doc: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     project_sessions: Mapped[List["ProjectSession"]] = relationship(
         "ProjectSession", back_populates="project", cascade="all, delete-orphan"
@@ -139,7 +142,7 @@ class ProjectSession(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"))
     session_id: Mapped[str] = mapped_column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped["Project"] = relationship("Project", back_populates="project_sessions")
     session: Mapped["Session"] = relationship("Session")
@@ -158,7 +161,7 @@ class ProjectDocument(Base):
     raw_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     chroma_ids: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped["Project"] = relationship("Project", back_populates="documents")
 
@@ -193,8 +196,8 @@ class ScheduledAgent(Base):
     next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_run_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # completed | failed
     last_run_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     runs: Mapped[List["AgentRun"]] = relationship(
         "AgentRun", back_populates="scheduled_agent", cascade="all, delete-orphan",
@@ -235,7 +238,7 @@ class AgentRun(Base):
     key_findings: Mapped[str] = mapped_column(Text, default="[]")          # JSON array of strings
     tickers_analyzed: Mapped[str] = mapped_column(Text, default="[]")     # JSON array
     agents_used: Mapped[str] = mapped_column(Text, default="[]")          # JSON array
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -265,8 +268,8 @@ class AgentRoutine(Base):
     last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_run_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="routines")
     heartbeat_runs: Mapped[List["HeartbeatRun"]] = relationship(
@@ -302,7 +305,7 @@ class HeartbeatRun(Base):
     material_change: Mapped[bool] = mapped_column(default=False)
     context_json: Mapped[str] = mapped_column(Text, default="{}")
     outcome_json: Mapped[str] = mapped_column(Text, default="{}")
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -350,8 +353,8 @@ class HireProposal(Base):
         index=True,
     )
     decision_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
@@ -412,10 +415,10 @@ class ResearchTask(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Timing
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class ResearchTaskMessage(Base):
@@ -438,7 +441,7 @@ class ResearchTaskMessage(Base):
     )
     content: Mapped[str] = mapped_column(Text, default="")
     metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
 
 
 class ResearchTaskDocument(Base):
@@ -461,8 +464,8 @@ class ResearchTaskDocument(Base):
         nullable=True,
         index=True,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class InvestmentMandate(Base):
@@ -485,4 +488,4 @@ class InvestmentMandate(Base):
     strategy_style: Mapped[str] = mapped_column(String(50), default="blend")
     investment_horizon: Mapped[str] = mapped_column(String(50), default="12 months")
     restricted_tickers: Mapped[str] = mapped_column(Text, default="[]")   # JSON array
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

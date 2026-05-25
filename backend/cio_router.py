@@ -533,6 +533,30 @@ def _build_task_review_prompt(
     return "\n".join(lines)
 
 
+def _strip_llm_json_fences(text: str) -> str:
+    """Strip markdown code fences (```json ... ```) from an LLM response.
+
+    Falls back to extracting the first {...} object if fences are absent,
+    so callers get a clean JSON string regardless of LLM formatting quirks.
+    """
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        # Remove opening fence line and optional closing fence
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
+        # Strip trailing fence if present
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3].strip()
+        return cleaned
+    # No fences — try to isolate the first JSON object
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end > start:
+        return cleaned[start : end + 1]
+    return cleaned
+
+
 def _cio_chat_sync(system_prompt: str, messages: list[dict]) -> dict:
     response = _anthropic.messages.create(
         model=CIO_MODEL,
@@ -541,14 +565,7 @@ def _cio_chat_sync(system_prompt: str, messages: list[dict]) -> dict:
         messages=messages,
         timeout=60.0,
     )
-    raw = response.content[0].text.strip()
-
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
+    raw = _strip_llm_json_fences(response.content[0].text)
     return json.loads(raw)
 
 
@@ -660,7 +677,7 @@ async def _upsert_issue_document(
         )
     )
     document = result.scalar_one_or_none()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if document is None:
         document = ResearchTaskDocument(
             task_id=task_id,
@@ -821,22 +838,9 @@ def _keyword_scope_candidates(task: ResearchTask, agent: ScheduledAgent) -> list
 
 
 def _scope_json_object(text: str) -> Optional[dict[str, Any]]:
-    cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
+    cleaned = _strip_llm_json_fences(text)
     try:
         parsed = json.loads(cleaned)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    try:
-        parsed = json.loads(cleaned[start : end + 1])
         return parsed if isinstance(parsed, dict) else None
     except Exception:
         return None

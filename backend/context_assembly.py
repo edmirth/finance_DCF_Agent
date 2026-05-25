@@ -37,7 +37,8 @@ def _truncate(text: str, max_chars: int) -> str:
     """Truncate text to max_chars, appending '...' if truncated."""
     if len(text) <= max_chars:
         return text
-    return text[:max_chars - 3] + "..."
+    cut = max(0, max_chars - 3)
+    return text[:cut] + "..."
 
 
 def _sanitize_xml_content(text: str) -> str:
