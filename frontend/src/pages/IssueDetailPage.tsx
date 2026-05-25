@@ -38,6 +38,7 @@ import {
 } from '../api';
 import type { ProjectSummary, ScheduledAgent } from '../types';
 import { formatApiDateTime, formatRelativeApiTime } from '../utils/time';
+import { stripMarkdown } from '../utils/markdown';
 
 type IssueTab = 'chat' | 'activity' | 'related' | 'documents';
 const LIVE_EXECUTION_STATUSES: Array<ResearchTask['status']> = ['pending', 'running', 'in_review'];
@@ -1451,7 +1452,7 @@ export default function IssueDetailPage() {
                               <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Bottom line</p>
                                 <p className="mt-3 text-base leading-8 text-slate-900">
-                                  {selectedDocumentView.summary || 'No summary was saved for this analyst output.'}
+                                  {stripMarkdown(selectedDocumentView.summary || 'No summary was saved for this analyst output.')}
                                 </p>
                               </div>
 

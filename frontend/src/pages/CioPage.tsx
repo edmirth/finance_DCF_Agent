@@ -27,6 +27,7 @@ import {
 import { getRoleMeta } from '../agentRoles';
 import type { HireProposal } from '../types';
 import { formatRelativeApiTime } from '../utils/time';
+import { stripMarkdown } from '../utils/markdown';
 
 type CeoTab = 'dashboard' | 'instructions';
 
@@ -135,7 +136,7 @@ function PendingHireRow({
         </div>
       </div>
       {proposal.rationale && (
-        <p className="mt-3 text-xs leading-relaxed text-slate-600">{proposal.rationale}</p>
+        <p className="mt-3 text-xs leading-relaxed text-slate-600">{stripMarkdown(proposal.rationale)}</p>
       )}
       <div className="mt-3 flex flex-wrap gap-1.5">
         {proposal.tickers.map((ticker) => (

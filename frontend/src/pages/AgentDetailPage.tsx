@@ -29,6 +29,7 @@ import {
 import type { AgentRun, AlertLevel, HeartbeatRun, ScheduledAgent } from '../types';
 import { roleMetaForAgent } from '../agentRoles';
 import { compareApiDatesDesc, formatApiDateTime, formatRelativeApiTime, parseApiDate } from '../utils/time';
+import { stripMarkdown } from '../utils/markdown';
 
 type AgentTab = 'dashboard' | 'instructions';
 
@@ -135,7 +136,7 @@ function MiniHeartbeatRow({ run }: { run: HeartbeatRun }) {
         <span className="text-xs text-slate-400">{formatRelativeApiTime(run.started_at)}</span>
       </div>
       <p className="mt-2 text-sm text-slate-700">
-        {run.summary || run.error || 'Heartbeat wake-up recorded.'}
+        {stripMarkdown(run.summary || run.error || 'Heartbeat wake-up recorded.')}
       </p>
     </div>
   );
@@ -171,7 +172,7 @@ function RunRow({ run }: { run: AgentRun }) {
         </span>
 
         <p className="flex-1 truncate text-left text-sm text-slate-700">
-          {run.findings_summary || run.error || 'Running...'}
+          {stripMarkdown(run.findings_summary || run.error || 'Running...')}
         </p>
 
         <div className="flex flex-shrink-0 items-center gap-4 text-xs text-slate-400">
