@@ -315,8 +315,12 @@ class SearchWebTool(BaseTool):
             )
             return f"Web Research Results:\n\n{result}"
         except Exception as e:
-            logger.error(f"Error researching web: {e}")
-            return f"Error researching web: {str(e)}"
+            logger.warning(f"search_web unavailable ({type(e).__name__}): {e}")
+            return (
+                f"SEARCH_UNAVAILABLE: Web search could not be completed ({type(e).__name__}). "
+                f"Do not fabricate or estimate figures. Rely only on data already retrieved "
+                f"from other tools in this session, and note this limitation in your analysis."
+            )
 
     async def _arun(self, query: str) -> str:
         return self._run(query)

@@ -11,6 +11,48 @@ from shared.tavily_client import get_tavily_client
 
 logger = logging.getLogger(__name__)
 
+_SEARCH_UNAVAILABLE_CAVEAT = (
+    "⚠️ DATA NOTE: Real-time web search was unavailable (API quota exceeded). "
+    "The following analysis is based on training knowledge (cutoff Aug 2025). "
+    "Verify current figures before making trading decisions.\n\n"
+)
+
+
+def _knowledge_based_fallback(structure_prompt: str, company: str, ticker: str) -> str:
+    """Fallback when web search is unavailable: use Claude Haiku training knowledge.
+
+    Returns analysis clearly labeled as training-data-based so callers and the
+    orchestrator can distinguish it from real-time search results.
+    """
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2500,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Real-time web search is unavailable. Using your training knowledge "
+                    f"(cutoff August 2025), provide the best available analysis for "
+                    f"{company} ({ticker}).\n\n"
+                    f"RULES:\n"
+                    f"- Only include figures you are confident about from your training\n"
+                    f"- For uncertain values write 'estimated' or 'verify current figure'\n"
+                    f"- Never fabricate specific numbers you are not confident about\n"
+                    f"- Do NOT include source URLs\n\n"
+                    f"{structure_prompt}"
+                )
+            }]
+        )
+        return _SEARCH_UNAVAILABLE_CAVEAT + response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"Knowledge fallback also failed for {ticker}: {e}")
+        return (
+            f"⚠️ ANALYSIS UNAVAILABLE: Web search quota exceeded and knowledge fallback "
+            f"failed for {company} ({ticker}). Cannot provide this section — do NOT "
+            f"fabricate or estimate data. Report this limitation explicitly."
+        )
+
 
 def _structure_with_llm(raw_data: str, structure_prompt: str) -> str:
     """Use Claude Haiku to extract structured, specific data from raw Tavily results.
@@ -87,28 +129,7 @@ class IndustryAnalysisTool(BaseTool):
 
     def _run(self, company: str, ticker: str, sector: str) -> str:
         """Analyze industry dynamics"""
-        try:
-            tavily = get_tavily_client()
-
-            query = (
-                f"{company} ({ticker}) {sector} industry analysis 2024 2025: "
-                f"(1) Total Addressable Market size in dollars and CAGR growth rate forecast through 2028-2030, "
-                f"(2) Porter's Five Forces — competitive rivalry intensity, barriers to entry, supplier power, buyer power, substitute threats with specific reasons, "
-                f"(3) top 3 structural trends reshaping the industry and their timeline, "
-                f"(4) key regulatory environment, policy risks or tailwinds, "
-                f"(5) industry benchmark margins (gross, EBIT, net) and valuation multiples (P/E, EV/EBITDA). "
-                f"Include specific dollar figures, percentages, and named sources."
-            )
-
-            raw = tavily.search_text(
-                query=query,
-                topic="finance",
-                search_depth="advanced",
-                max_results=7,
-                include_answer="advanced",
-            )
-
-            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker}) in the {sector} sector into a clean, specific industry analysis. Extract only facts present in the source — do not invent numbers.
+        structure_prompt = f"""Provide a specific industry analysis for {company} ({ticker}) in the {sector} sector.
 
 Structure your output using these headings:
 
@@ -132,12 +153,35 @@ State any relevant regulations, pending legislation, or policy tailwinds/headwin
 **Industry Benchmark Metrics**
 Gross margin range, EBIT margin range, typical P/E and EV/EBITDA multiples for the sector (if found in the data)."""
 
-            structured = _structure_with_llm(raw, structure_prompt)
-            return structured
+        try:
+            tavily = get_tavily_client()
+            query = (
+                f"{company} ({ticker}) {sector} industry analysis 2024 2025: "
+                f"(1) Total Addressable Market size in dollars and CAGR growth rate forecast through 2028-2030, "
+                f"(2) Porter's Five Forces — competitive rivalry intensity, barriers to entry, supplier power, buyer power, substitute threats with specific reasons, "
+                f"(3) top 3 structural trends reshaping the industry and their timeline, "
+                f"(4) key regulatory environment, policy risks or tailwinds, "
+                f"(5) industry benchmark margins (gross, EBIT, net) and valuation multiples (P/E, EV/EBITDA). "
+                f"Include specific dollar figures, percentages, and named sources."
+            )
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
+            return _structure_with_llm(
+                raw,
+                f"Extract and structure the following raw research data about {company} ({ticker}) "
+                f"in the {sector} sector into a clean, specific industry analysis. "
+                f"Extract only facts present in the source — do not invent numbers.\n\n"
+                + structure_prompt,
+            )
 
         except Exception as e:
-            logger.error(f"Error in industry analysis: {e}")
-            return f"Error performing industry analysis: {str(e)}"
+            logger.warning(f"Industry analysis: Tavily unavailable ({type(e).__name__}), using knowledge fallback")
+            return _knowledge_based_fallback(structure_prompt, company, ticker)
 
     async def _arun(self, company: str, ticker: str, sector: str) -> str:
         return self._run(company, ticker, sector)
@@ -161,26 +205,43 @@ class CompetitorAnalysisTool(BaseTool):
 
     def _run(self, company: str, ticker: str = None, industry: str = None) -> str:
         """Analyze competitors - handles both structured and JSON string inputs"""
+        # Handle case where all params are passed as JSON string in 'company' field
+        if ticker is None or industry is None:
+            import json
+            import re
+            try:
+                if isinstance(company, str) and ('{' in company or company.startswith('{')):
+                    json_str = re.sub(r'```json\s*|\s*```', '', company)
+                    parsed = json.loads(json_str)
+                    company = parsed.get('company', company)
+                    ticker = parsed.get('ticker', ticker)
+                    industry = parsed.get('industry', industry)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        if not ticker or not industry:
+            return "Error: Missing required parameters. Please provide company, ticker, and industry."
+
+        structure_prompt = f"""Provide a specific competitive analysis for {company} ({ticker}) in {industry}.
+
+Structure your output as follows:
+
+**Market Position**
+State {company}'s estimated market share and rank (e.g., "#2 in North American cloud"). State whether it is gaining or losing share, with supporting evidence.
+
+**Top Competitors**
+For each key competitor, provide a row:
+| Company (Ticker) | Est. Market Share | Revenue (TTM) | Revenue Growth | EBIT Margin | P/E | EV/EBITDA |
+Fill with real data. If a metric is not known, write "N/A".
+
+**Competitive Differentiators**
+What does {company} do measurably better than peers? What are its clear weaknesses vs. competitors?
+
+**Recent Competitive Moves**
+Any new entrants, M&A deals, pricing changes, or product launches that shift the competitive landscape (last 12-18 months)."""
+
         try:
-            # Handle case where all params are passed as JSON string in 'company' field
-            if ticker is None or industry is None:
-                import json
-                import re
-                try:
-                    if isinstance(company, str) and ('{' in company or company.startswith('{')):
-                        json_str = re.sub(r'```json\s*|\s*```', '', company)
-                        parsed = json.loads(json_str)
-                        company = parsed.get('company', company)
-                        ticker = parsed.get('ticker', ticker)
-                        industry = parsed.get('industry', industry)
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-
-            if not ticker or not industry:
-                return f"Error: Missing required parameters. Please provide company, ticker, and industry."
-
             tavily = get_tavily_client()
-
             query = (
                 f"{company} ({ticker}) {industry} competitive landscape 2024 2025: "
                 f"(1) name the top 4-5 direct competitors with their ticker symbols and estimated market share percentages, "
@@ -190,7 +251,6 @@ class CompetitorAnalysisTool(BaseTool):
                 f"(5) any recent competitive moves (new entrants, M&A, pricing changes). "
                 f"Be specific with dollar amounts, percentages, and company names."
             )
-
             raw = tavily.search_text(
                 query=query,
                 topic="finance",
@@ -198,31 +258,17 @@ class CompetitorAnalysisTool(BaseTool):
                 max_results=7,
                 include_answer="advanced",
             )
-
-            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker}) and its competitors in {industry} into a clean, specific competitive analysis.
-
-Structure your output as follows:
-
-**Market Position**
-State {company}'s estimated market share and rank (e.g., "#2 in North American cloud"). State whether it is gaining or losing share, with supporting evidence.
-
-**Top Competitors**
-For each competitor found in the data, provide a row:
-| Company (Ticker) | Est. Market Share | Revenue (TTM) | Revenue Growth | EBIT Margin | P/E | EV/EBITDA |
-Fill with real data from the source. If a metric is not mentioned, write "N/A".
-
-**Competitive Differentiators**
-What does {company} do measurably better than peers? What are its clear weaknesses vs. competitors? Be specific (e.g., "30% lower cost per unit than AWS", "inferior developer tooling vs. Microsoft").
-
-**Recent Competitive Moves**
-Any new entrants, M&A deals, pricing changes, or product launches that shift the competitive landscape (last 12-18 months)."""
-
-            structured = _structure_with_llm(raw, structure_prompt)
-            return structured
+            return _structure_with_llm(
+                raw,
+                f"Extract and structure the following raw research data about {company} ({ticker}) "
+                f"and its competitors in {industry} into a clean, specific competitive analysis. "
+                f"Extract only facts present in the source — do not invent numbers.\n\n"
+                + structure_prompt,
+            )
 
         except Exception as e:
-            logger.error(f"Error in competitor analysis: {e}")
-            return f"Error performing competitor analysis: {str(e)}"
+            logger.warning(f"Competitor analysis: Tavily unavailable ({type(e).__name__}), using knowledge fallback")
+            return _knowledge_based_fallback(structure_prompt, company, ticker)
 
     async def _arun(self, company: str, ticker: str = None, industry: str = None) -> str:
         return self._run(company, ticker, industry)
@@ -245,9 +291,36 @@ class MoatAnalysisTool(BaseTool):
 
     def _run(self, company: str, ticker: str) -> str:
         """Analyze competitive moat"""
+        structure_prompt = f"""Provide a specific economic moat analysis for {company} ({ticker}).
+
+Structure your output as follows:
+
+**Moat Rating: WIDE / NARROW / NONE**
+State clearly which rating applies and give the single most compelling reason in one sentence.
+
+**Moat Sources — Evidence**
+For each moat type that applies to {company}, give one specific, concrete piece of evidence:
+- **Switching Costs**: [customer retention rate %, average contract length, or cost-to-switch estimate]
+- **Network Effects**: [user count, platform stickiness metric, or lock-in mechanism]
+- **Brand Power**: [brand value ranking, pricing premium vs. generic, NPS score]
+- **Cost Advantage / Scale**: [gross margin vs. peer median, unit cost advantage]
+- **Intangible Assets**: [number of patents, exclusive licenses, regulatory moats]
+If a moat type does NOT apply, omit it.
+
+**Pricing Power**
+Has {company} raised prices without meaningful customer loss? Give the most recent specific example if available.
+
+**Moat Durability**
+Is the moat strengthening, stable, or at risk of erosion? Give one specific reason supporting your assessment.
+
+**Machine-readable summary (append at the very end of your response, after all other content):**
+```json
+{{"moat_rating": "WIDE|NARROW|NONE"}}
+```
+Replace WIDE|NARROW|NONE with exactly one of those three values matching your assessment."""
+
         try:
             tavily = get_tavily_client()
-
             query = (
                 f"{company} ({ticker}) economic moat competitive advantage analysis 2024 2025: "
                 f"(1) does {company} have a WIDE, NARROW, or NO economic moat — give a clear rating and why, "
@@ -261,7 +334,6 @@ class MoatAnalysisTool(BaseTool):
                 f"(4) durability — is the moat strengthening, stable, or at risk of erosion. "
                 f"Be concrete — cite customer retention rates, specific products, named examples."
             )
-
             raw = tavily.search_text(
                 query=query,
                 topic="finance",
@@ -269,41 +341,17 @@ class MoatAnalysisTool(BaseTool):
                 max_results=7,
                 include_answer="advanced",
             )
-
-            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker})'s economic moat into a clean, specific analysis.
-
-Structure your output as follows:
-
-**Moat Rating: WIDE / NARROW / NONE**
-State clearly which rating applies and give the single most compelling reason in one sentence.
-
-**Moat Sources — Evidence**
-For each moat type that applies to {company}, give one specific, concrete piece of evidence:
-- **Switching Costs**: [customer retention rate %, average contract length, or cost-to-switch estimate — if found]
-- **Network Effects**: [user count, platform stickiness metric, or lock-in mechanism — if found]
-- **Brand Power**: [brand value ranking, pricing premium vs. generic, NPS score — if found]
-- **Cost Advantage / Scale**: [gross margin vs. peer median, unit cost advantage — if found]
-- **Intangible Assets**: [number of patents, exclusive licenses, regulatory moats — if found]
-If a moat type does NOT apply or no data was found, omit it.
-
-**Pricing Power**
-Has {company} raised prices without meaningful customer loss? Give the most recent specific example (product name, price increase %, date) if available.
-
-**Moat Durability**
-Is the moat strengthening, stable, or at risk of erosion? Give one specific reason supporting your assessment.
-
-**Machine-readable summary (append at the very end of your response, after all other content):**
-```json
-{"moat_rating": "WIDE|NARROW|NONE"}
-```
-Replace WIDE|NARROW|NONE with exactly one of those three values matching your assessment."""
-
-            structured = _structure_with_llm(raw, structure_prompt)
-            return structured
+            return _structure_with_llm(
+                raw,
+                f"Extract and structure the following raw research data about {company} ({ticker})'s "
+                f"economic moat into a clean, specific analysis. "
+                f"Extract only facts present in the source — do not invent numbers.\n\n"
+                + structure_prompt,
+            )
 
         except Exception as e:
-            logger.error(f"Error in moat analysis: {e}")
-            return f"Error performing moat analysis: {str(e)}"
+            logger.warning(f"Moat analysis: Tavily unavailable ({type(e).__name__}), using knowledge fallback")
+            return _knowledge_based_fallback(structure_prompt, company, ticker)
 
     async def _arun(self, company: str, ticker: str) -> str:
         return self._run(company, ticker)
@@ -325,44 +373,17 @@ class ManagementAnalysisTool(BaseTool):
 
     def _run(self, company: str, ticker: str) -> str:
         """Analyze management quality"""
-        try:
-            tavily = get_tavily_client()
-
-            query = (
-                f"{company} ({ticker}) management quality assessment 2024 2025: "
-                f"(1) CEO full name, how long they have been CEO, and their professional background before joining, "
-                f"(2) CFO and 1-2 other key executives if notable, "
-                f"(3) capital allocation track record over the past 3-5 years: "
-                f"    — M&A history (named deals, were they accretive or dilutive?), "
-                f"    — share buybacks (total amount spent, was timing good?), "
-                f"    — dividends (yield, payout ratio, growth history), "
-                f"    — R&D investment (% of revenue, key bets), "
-                f"(4) insider ownership percentage for CEO and board — is it meaningful?, "
-                f"(5) any notable insider purchases or sales in the last 12 months, "
-                f"(6) executive compensation structure — is pay aligned with shareholder value creation?, "
-                f"(7) any governance red flags (related-party transactions, board independence issues). "
-                f"Name specific people, deals, and dollar amounts."
-            )
-
-            raw = tavily.search_text(
-                query=query,
-                topic="finance",
-                search_depth="advanced",
-                max_results=7,
-                include_answer="advanced",
-            )
-
-            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker})'s management team into a clean, specific management quality assessment.
+        structure_prompt = f"""Provide a specific management quality assessment for {company} ({ticker}).
 
 Structure your output as follows:
 
 **Leadership Team**
 - CEO: [Full name, years as CEO, background before joining, key strategic initiatives under their tenure]
-- CFO: [Full name if found, background]
+- CFO: [Full name if known, background]
 - Other key executives if noteworthy
 
 **Capital Allocation Track Record**
-Rate each category found in the data: Excellent / Good / Fair / Poor
+Rate each category: Excellent / Good / Fair / Poor
 - M&A: [Named deals, whether accretive or dilutive, approximate values]
 - Share Buybacks: [Total spent in last 3 years, were they well-timed?]
 - Dividends: [Current yield, payout ratio, growth history]
@@ -380,16 +401,45 @@ Overall Capital Allocation Rating: [Excellent / Good / Fair / Poor] — one sent
 
 **Machine-readable summary (append at the very end of your response, after all other content):**
 ```json
-{"management_quality": "EXCELLENT|GOOD|FAIR|POOR"}
+{{"management_quality": "EXCELLENT|GOOD|FAIR|POOR"}}
 ```
-Replace EXCELLENT|GOOD|FAIR|POOR with exactly one of those four values matching your Overall Capital Allocation Rating and leadership assessment."""
+Replace EXCELLENT|GOOD|FAIR|POOR with exactly one of those four values matching your assessment."""
 
-            structured = _structure_with_llm(raw, structure_prompt)
-            return structured
+        try:
+            tavily = get_tavily_client()
+            query = (
+                f"{company} ({ticker}) management quality assessment 2024 2025: "
+                f"(1) CEO full name, how long they have been CEO, and their professional background before joining, "
+                f"(2) CFO and 1-2 other key executives if notable, "
+                f"(3) capital allocation track record over the past 3-5 years: "
+                f"    — M&A history (named deals, were they accretive or dilutive?), "
+                f"    — share buybacks (total amount spent, was timing good?), "
+                f"    — dividends (yield, payout ratio, growth history), "
+                f"    — R&D investment (% of revenue, key bets), "
+                f"(4) insider ownership percentage for CEO and board — is it meaningful?, "
+                f"(5) any notable insider purchases or sales in the last 12 months, "
+                f"(6) executive compensation structure — is pay aligned with shareholder value creation?, "
+                f"(7) any governance red flags (related-party transactions, board independence issues). "
+                f"Name specific people, deals, and dollar amounts."
+            )
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
+            return _structure_with_llm(
+                raw,
+                f"Extract and structure the following raw research data about {company} ({ticker})'s "
+                f"management team into a clean, specific management quality assessment. "
+                f"Extract only facts present in the source — do not invent numbers.\n\n"
+                + structure_prompt,
+            )
 
         except Exception as e:
-            logger.error(f"Error in management analysis: {e}")
-            return f"Error performing management analysis: {str(e)}"
+            logger.warning(f"Management analysis: Tavily unavailable ({type(e).__name__}), using knowledge fallback")
+            return _knowledge_based_fallback(structure_prompt, company, ticker)
 
     async def _arun(self, company: str, ticker: str) -> str:
         return self._run(company, ticker)
@@ -417,28 +467,7 @@ class MultiplesValuationTool(BaseTool):
 
     def _run(self, company: str, ticker: str, sector: str) -> str:
         """Perform multiples-based valuation"""
-        try:
-            tavily = get_tavily_client()
-
-            query = (
-                f"{company} ({ticker}) valuation multiples 2024 2025: "
-                f"(1) current trailing P/E ratio, forward P/E ratio, EV/EBITDA, Price/Sales, Price/Book for {ticker}, "
-                f"(2) sector median P/E, EV/EBITDA, P/S for {sector} peers — give specific numbers, "
-                f"(3) Wall Street analyst consensus price target for {ticker} — 12-month target, "
-                f"(4) analyst rating breakdown — number of Buy, Hold, Sell ratings, "
-                f"(5) current EPS (TTM and forward estimate), EBITDA, revenue for implied value math. "
-                f"Include specific dollar figures and named sources."
-            )
-
-            raw = tavily.search_text(
-                query=query,
-                topic="finance",
-                search_depth="advanced",
-                max_results=7,
-                include_answer="advanced",
-            )
-
-            structure_prompt = f"""Extract and structure the following raw research data about {company} ({ticker}) valuation into a clean, specific multiples analysis. Only use numbers actually found in the source data.
+        structure_prompt = f"""Provide a specific multiples-based valuation for {company} ({ticker}) in the {sector} sector.
 
 Structure your output exactly as follows:
 
@@ -450,10 +479,9 @@ Structure your output exactly as follows:
 | EV/EBITDA | Xx | Xx | +/-X% |
 | P/S | Xx | Xx | +/-X% |
 | P/B | Xx | Xx | +/-X% |
-Fill with real data. Write "N/A" only if the metric is genuinely not found in the source.
+Fill with real data. Write "N/A" for any metric you are not confident about.
 
 **Implied Fair Value by Method**
-For each method where you have both the company metric and the peer median, compute an implied price by applying the sector median multiple to the company's own earnings/EBITDA/sales/book. Show your math.
 | Method | Implied Price | Weight |
 |--------|--------------|--------|
 | P/E (sector median applied) | $XXX | 30% |
@@ -463,19 +491,41 @@ For each method where you have both the company metric and the peer median, comp
 If a method cannot be computed (missing data), omit that row and redistribute weights proportionally.
 
 **Weighted Fair Value: $XXX.XX**
-State the single weighted average price on its own line in exactly this format: "Weighted Fair Value: $XXX.XX"
 
 **Analyst Consensus**
 - 12-month consensus price target: $XXX
 - Rating breakdown: X Buy / X Hold / X Sell
 - Implied upside from consensus: +/-X%"""
 
-            structured = _structure_with_llm(raw, structure_prompt)
-            return structured
+        try:
+            tavily = get_tavily_client()
+            query = (
+                f"{company} ({ticker}) valuation multiples 2024 2025: "
+                f"(1) current trailing P/E ratio, forward P/E ratio, EV/EBITDA, Price/Sales, Price/Book for {ticker}, "
+                f"(2) sector median P/E, EV/EBITDA, P/S for {sector} peers — give specific numbers, "
+                f"(3) Wall Street analyst consensus price target for {ticker} — 12-month target, "
+                f"(4) analyst rating breakdown — number of Buy, Hold, Sell ratings, "
+                f"(5) current EPS (TTM and forward estimate), EBITDA, revenue for implied value math. "
+                f"Include specific dollar figures and named sources."
+            )
+            raw = tavily.search_text(
+                query=query,
+                topic="finance",
+                search_depth="advanced",
+                max_results=7,
+                include_answer="advanced",
+            )
+            return _structure_with_llm(
+                raw,
+                f"Extract and structure the following raw research data about {company} ({ticker}) "
+                f"valuation into a clean, specific multiples analysis. "
+                f"Only use numbers actually found in the source data.\n\n"
+                + structure_prompt,
+            )
 
         except Exception as e:
-            logger.error(f"Error in multiples valuation: {e}")
-            return f"Error performing multiples valuation: {str(e)}"
+            logger.warning(f"Multiples valuation: Tavily unavailable ({type(e).__name__}), using knowledge fallback")
+            return _knowledge_based_fallback(structure_prompt, company, ticker)
 
     async def _arun(self, company: str, ticker: str, sector: str) -> str:
         return self._run(company, ticker, sector)
