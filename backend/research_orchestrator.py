@@ -40,32 +40,36 @@ AGENT_META = {
     "dcf": {
         "title": "DCF Valuation",
         "role": "FMP DCF engine · Bull / Base / Bear · Levered + Unlevered",
-        "tools": ["FMP Custom DCF", "Financial Datasets AI", "Macro rates"],
+        "tools": ["Financial Datasets AI", "DCF calculator", "Web search"],
     },
     "fundamental": {
         "title": "Fundamental Analysis",
-        "role": "Revenue, margins, moat, SEC filings",
-        "tools": ["Financial Datasets AI", "SEC EDGAR", "Tavily search"],
+        "role": "Revenue, margins, moat, management quality, SEC filings — ReAct loop",
+        "tools": ["get_stock_info", "get_financial_metrics", "analyze_industry",
+                  "analyze_moat", "analyze_management", "get_sec_filings",
+                  "analyze_sec_filing", "search_web"],
     },
     "quant": {
         "title": "Quantitative Signals",
-        "role": "Price momentum, volatility, relative performance",
-        "tools": ["FMP price history", "SPY benchmark", "Analyst revisions"],
+        "role": "Price momentum, factor scores, analyst revisions — ReAct loop",
+        "tools": ["get_stock_info", "get_financial_metrics", "search_web", "calculate"],
     },
     "risk": {
         "title": "Risk Assessment",
-        "role": "Leverage, debt, dilution, stress testing",
-        "tools": ["Financial Datasets AI", "FMP multiples", "SEC filings"],
+        "role": "Leverage, liquidity, debt covenants, tail risks — ReAct loop",
+        "tools": ["get_stock_info", "get_financial_metrics", "get_sec_filings",
+                  "analyze_sec_filing", "search_web"],
     },
     "macro": {
         "title": "Macro Environment",
-        "role": "Interest rates, GDP, inflation, sector cycle",
-        "tools": ["Fed rates API", "Tavily macro search", "Sector analysis"],
+        "role": "Interest rates, GDP, inflation, sector cycle — ReAct loop",
+        "tools": ["get_market_overview", "get_macro_context", "get_sector_rotation",
+                  "get_market_news", "search_web"],
     },
     "sentiment": {
         "title": "Market Sentiment",
-        "role": "News flow, insider activity, institutional ownership",
-        "tools": ["SEC Form 4", "Tavily news", "13F filings"],
+        "role": "News flow, insider activity, institutional ownership — ReAct loop",
+        "tools": ["get_recent_news", "get_sentiment_score", "get_sec_filings", "search_web"],
     },
 }
 
@@ -207,6 +211,57 @@ def _shared_data_validation_error(agent_name: str, ticker: str, shared_data: dic
 # Individual agent runner functions
 # ---------------------------------------------------------------------------
 
+def _run_react_specialist(
+    agent_name: str,
+    ticker: str,
+    emit: Callable,
+    start_time: float,
+    assignment_title: str = "",
+    assignment_focus: str = "",
+) -> AgentSection:
+    """Generic wrapper that runs a ReAct specialist agent and maps its output to AgentSection."""
+    from arena.react_agents import REACT_RUNNERS
+
+    step_labels = {
+        "fundamental": "Fetching financial statements, SEC filings & moat analysis...",
+        "quant":       "Computing price momentum, factor scores & analyst revisions...",
+        "risk":        "Evaluating leverage, liquidity & tail risks...",
+        "macro":       "Analysing rates, GDP, inflation & sector cycle...",
+        "sentiment":   "Scanning news flow, insiders & analyst ratings...",
+    }
+    emit({"type": "agent_step", "agent": agent_name, "step": step_labels.get(agent_name, "Running analysis...")})
+
+    query = assignment_title.strip() or f"Analyze {ticker}"
+    if assignment_focus:
+        query += f"\n\nFocus: {assignment_focus}"
+
+    runner = REACT_RUNNERS[agent_name]
+    try:
+        result = runner(ticker, query)
+        sentiment = _signal_to_sentiment(result["view"])
+        return AgentSection(
+            agent=agent_name,
+            title=AGENT_META[agent_name]["title"],
+            sentiment=sentiment,
+            confidence=result["confidence"],
+            content=result["content"],
+            key_points=result["key_points"] or _extract_key_points(result["content"]),
+            duration_seconds=time.time() - start_time,
+        )
+    except Exception as e:
+        logger.error(f"[Research] {agent_name} ReAct agent failed: {e}", exc_info=True)
+        return AgentSection(
+            agent=agent_name,
+            title=AGENT_META[agent_name]["title"],
+            sentiment="neutral",
+            confidence=0.0,
+            content="",
+            key_points=[],
+            duration_seconds=time.time() - start_time,
+            error=str(e),
+        )
+
+
 def _run_fundamental(
     ticker: str,
     shared_data: dict,
@@ -215,40 +270,7 @@ def _run_fundamental(
     assignment_title: str = "",
     assignment_focus: str = "",
 ) -> AgentSection:
-    from arena.fundamental_agent import run_fundamental_agent
-
-    emit({"type": "agent_step", "agent": "fundamental", "step": "Fetching financial statements & SEC filings..."})
-    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
-
-    try:
-        result = run_fundamental_agent(state)
-        signal = result.get("agent_signals", {}).get("fundamental")
-        content = result.get("raw_outputs", {}).get("fundamental", "No analysis available.")
-
-        sentiment = _signal_to_sentiment(signal["view"] if signal else "NEUTRAL")
-        confidence = float(signal["confidence"] if signal else 0.5)
-
-        return AgentSection(
-            agent="fundamental",
-            title=AGENT_META["fundamental"]["title"],
-            sentiment=sentiment,
-            confidence=confidence,
-            content=content,
-            key_points=_extract_key_points(content),
-            duration_seconds=time.time() - start_time,
-        )
-    except Exception as e:
-        logger.error(f"[Research] fundamental agent failed: {e}")
-        return AgentSection(
-            agent="fundamental",
-            title=AGENT_META["fundamental"]["title"],
-            sentiment="neutral",
-            confidence=0.0,
-            content="",
-            key_points=[],
-            duration_seconds=time.time() - start_time,
-            error=str(e),
-        )
+    return _run_react_specialist("fundamental", ticker, emit, start_time, assignment_title, assignment_focus)
 
 
 def _run_quant(
@@ -259,40 +281,7 @@ def _run_quant(
     assignment_title: str = "",
     assignment_focus: str = "",
 ) -> AgentSection:
-    from arena.quant_agent import run_quant_agent
-
-    emit({"type": "agent_step", "agent": "quant", "step": "Computing price momentum, factor scores & volatility..."})
-    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
-
-    try:
-        result = run_quant_agent(state)
-        signal = result.get("agent_signals", {}).get("quant")
-        content = result.get("raw_outputs", {}).get("quant", "No analysis available.")
-
-        sentiment = _signal_to_sentiment(signal["view"] if signal else "NEUTRAL")
-        confidence = float(signal["confidence"] if signal else 0.5)
-
-        return AgentSection(
-            agent="quant",
-            title=AGENT_META["quant"]["title"],
-            sentiment=sentiment,
-            confidence=confidence,
-            content=content,
-            key_points=_extract_key_points(content),
-            duration_seconds=time.time() - start_time,
-        )
-    except Exception as e:
-        logger.error(f"[Research] quant agent failed: {e}")
-        return AgentSection(
-            agent="quant",
-            title=AGENT_META["quant"]["title"],
-            sentiment="neutral",
-            confidence=0.0,
-            content="",
-            key_points=[],
-            duration_seconds=time.time() - start_time,
-            error=str(e),
-        )
+    return _run_react_specialist("quant", ticker, emit, start_time, assignment_title, assignment_focus)
 
 
 def _run_risk(
@@ -303,40 +292,7 @@ def _run_risk(
     assignment_title: str = "",
     assignment_focus: str = "",
 ) -> AgentSection:
-    from arena.risk_agent import run_risk_agent
-
-    emit({"type": "agent_step", "agent": "risk", "step": "Evaluating leverage, liquidity & earnings stability..."})
-    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
-
-    try:
-        result = run_risk_agent(state)
-        signal = result.get("agent_signals", {}).get("risk")
-        content = result.get("raw_outputs", {}).get("risk", "No analysis available.")
-
-        sentiment = _signal_to_sentiment(signal["view"] if signal else "NEUTRAL")
-        confidence = float(signal["confidence"] if signal else 0.5)
-
-        return AgentSection(
-            agent="risk",
-            title=AGENT_META["risk"]["title"],
-            sentiment=sentiment,
-            confidence=confidence,
-            content=content,
-            key_points=_extract_key_points(content),
-            duration_seconds=time.time() - start_time,
-        )
-    except Exception as e:
-        logger.error(f"[Research] risk agent failed: {e}")
-        return AgentSection(
-            agent="risk",
-            title=AGENT_META["risk"]["title"],
-            sentiment="neutral",
-            confidence=0.0,
-            content="",
-            key_points=[],
-            duration_seconds=time.time() - start_time,
-            error=str(e),
-        )
+    return _run_react_specialist("risk", ticker, emit, start_time, assignment_title, assignment_focus)
 
 
 def _run_macro(
@@ -347,40 +303,7 @@ def _run_macro(
     assignment_title: str = "",
     assignment_focus: str = "",
 ) -> AgentSection:
-    from arena.macro_agent import run_macro_agent
-
-    emit({"type": "agent_step", "agent": "macro", "step": "Analysing rates, GDP, inflation & sector cycle..."})
-    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
-
-    try:
-        result = run_macro_agent(state)
-        signal = result.get("agent_signals", {}).get("macro")
-        content = result.get("raw_outputs", {}).get("macro", "No analysis available.")
-
-        sentiment = _signal_to_sentiment(signal["view"] if signal else "NEUTRAL")
-        confidence = float(signal["confidence"] if signal else 0.5)
-
-        return AgentSection(
-            agent="macro",
-            title=AGENT_META["macro"]["title"],
-            sentiment=sentiment,
-            confidence=confidence,
-            content=content,
-            key_points=_extract_key_points(content),
-            duration_seconds=time.time() - start_time,
-        )
-    except Exception as e:
-        logger.error(f"[Research] macro agent failed: {e}")
-        return AgentSection(
-            agent="macro",
-            title=AGENT_META["macro"]["title"],
-            sentiment="neutral",
-            confidence=0.0,
-            content="",
-            key_points=[],
-            duration_seconds=time.time() - start_time,
-            error=str(e),
-        )
+    return _run_react_specialist("macro", ticker, emit, start_time, assignment_title, assignment_focus)
 
 
 def _run_sentiment(
@@ -391,40 +314,7 @@ def _run_sentiment(
     assignment_title: str = "",
     assignment_focus: str = "",
 ) -> AgentSection:
-    from arena.sentiment_agent import run_sentiment_agent
-
-    emit({"type": "agent_step", "agent": "sentiment", "step": "Scanning news flow, insiders & analyst ratings..."})
-    state = _create_minimal_state(ticker, shared_data, assignment_title, assignment_focus)
-
-    try:
-        result = run_sentiment_agent(state)
-        signal = result.get("agent_signals", {}).get("sentiment")
-        content = result.get("raw_outputs", {}).get("sentiment", "No analysis available.")
-
-        sentiment = _signal_to_sentiment(signal["view"] if signal else "NEUTRAL")
-        confidence = float(signal["confidence"] if signal else 0.5)
-
-        return AgentSection(
-            agent="sentiment",
-            title=AGENT_META["sentiment"]["title"],
-            sentiment=sentiment,
-            confidence=confidence,
-            content=content,
-            key_points=_extract_key_points(content),
-            duration_seconds=time.time() - start_time,
-        )
-    except Exception as e:
-        logger.error(f"[Research] sentiment agent failed: {e}")
-        return AgentSection(
-            agent="sentiment",
-            title=AGENT_META["sentiment"]["title"],
-            sentiment="neutral",
-            confidence=0.0,
-            content="",
-            key_points=[],
-            duration_seconds=time.time() - start_time,
-            error=str(e),
-        )
+    return _run_react_specialist("sentiment", ticker, emit, start_time, assignment_title, assignment_focus)
 
 
 def _run_dcf(
