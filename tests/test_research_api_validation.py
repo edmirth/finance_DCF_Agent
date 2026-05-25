@@ -927,6 +927,77 @@ async def test_task_chat_uses_issue_documents_when_live_agent_reply_fails():
 
 
 @pytest.mark.asyncio
+async def test_task_chat_analysis_followup_uses_live_model_with_saved_documents():
+    agent_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+    captured: dict[str, object] = {}
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ScheduledAgent(
+                id=agent_id,
+                name="Generalist Analyst",
+                description="General coverage",
+                template="fundamental_analyst",
+                role_key="generalist_analyst",
+                role_title="Generalist Analyst",
+                role_family="coverage",
+                tickers='["AAPL"]',
+                topics="[]",
+                instruction="Cover assigned issues.",
+                schedule_label="weekly_monday",
+                delivery_email=None,
+                delivery_inapp=True,
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await db.commit()
+
+    def fake_live_reply(model, system_prompt, messages):
+        captured["model"] = model
+        captured["system_prompt"] = system_prompt
+        captured["messages"] = messages
+        return "Fresh live answer: Apple's moat depends on installed base, services attach, and supply-chain execution."
+
+    with patch("backend.cio_router.spawn_background", side_effect=lambda coro: coro.close()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            task_response = await client.post(
+                "/tasks",
+                json={
+                    "title": "Apple follow-up",
+                    "ticker": "AAPL",
+                    "assigned_agent_id": agent_id,
+                },
+            )
+            task_id = task_response.json()["id"]
+            await client.post(
+                f"/tasks/{task_id}/documents",
+                json={
+                    "title": "Apple report",
+                    "content_md": "# Apple report\n\nRevenue growth stayed resilient despite FX pressure.",
+                    "document_type": "brief",
+                },
+            )
+
+            with patch(
+                "backend.api_server._anthropic_text_response_sync",
+                side_effect=fake_live_reply,
+            ):
+                response = await client.post(
+                    f"/tasks/{task_id}/chat",
+                    json={"content": "Give me a deeper analysis of the moat and downside risks."},
+                )
+
+    assert response.status_code == 200
+    assistant_message = response.json()["assistant_message"]["content"]
+    assert assistant_message.startswith("Fresh live answer")
+    assert "Open the Documents tab" not in assistant_message
+    assert "Apple report" in str(captured["system_prompt"])
+
+
+@pytest.mark.asyncio
 async def test_task_chat_answers_status_from_issue_state_without_live_model():
     agent_id = str(uuid4())
     created_at = datetime.now(timezone.utc)

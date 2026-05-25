@@ -36,6 +36,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.config import (
     SSE_CHUNK_SIZE, SSE_STREAM_DELAY_SECONDS,
     CORS_ORIGINS,
+    CIO_MODEL,
 )
 from shared.ticker_utils import extract_ticker as _extract_ticker_shared
 from backend.callbacks.streaming import StreamingCallbackHandler
@@ -1720,41 +1721,120 @@ def _build_task_chat_fallback(
 
 
 def _looks_like_status_query(prompt: str) -> bool:
-    normalized = prompt.lower()
-    return any(
-        token in normalized
-        for token in (
-            "status",
-            "progress",
-            "where are we",
-            "what's happening",
-            "what is happening",
-            "update",
-            "running",
-            "complete",
-            "completed",
-            "done",
-            "failed",
-            "blocked",
-        )
+    normalized = " ".join(prompt.lower().split())
+    token_count = len(normalized.split())
+    status_phrases = (
+        "where are we",
+        "what's happening",
+        "what is happening",
+        "give me an update",
+        "give me a status update",
+        "status update",
+        "what is the update",
+        "what's the update",
+        "any update",
+        "latest update",
+        "progress update",
+    )
+    if any(phrase in normalized for phrase in status_phrases):
+        return True
+
+    if any(re.search(rf"\b{token}\b", normalized) is not None for token in ("status", "progress")):
+        return True
+
+    state_tokens = ("running", "complete", "completed", "done", "failed", "blocked")
+    has_state_token = any(
+        re.search(rf"\b{re.escape(token)}\b", normalized) is not None
+        for token in state_tokens
+    )
+    if not has_state_token:
+        return False
+
+    question_or_state_prefixes = (
+        "what ",
+        "why ",
+        "is ",
+        "are ",
+        "was ",
+        "were ",
+        "did ",
+        "has ",
+        "have ",
+        "can ",
+    )
+    return (
+        "?" in prompt
+        or token_count <= 3
+        or normalized.startswith(question_or_state_prefixes)
+        or "marked done" in normalized
     )
 
 
-def _looks_like_report_query(prompt: str) -> bool:
-    normalized = prompt.lower()
-    return any(
-        token in normalized
-        for token in (
-            "report",
-            "document",
-            "memo",
-            "writeup",
-            "write-up",
-            "analysis",
-            "brief",
-            "summary",
-        )
+def _looks_like_existing_artifact_query(prompt: str) -> bool:
+    normalized = " ".join(prompt.lower().split())
+    artifact_terms = (
+        "report",
+        "document",
+        "memo",
+        "writeup",
+        "write-up",
+        "analysis",
+        "brief",
+        "summary",
+        "output",
+        "deliverable",
+        "artifact",
     )
+    has_artifact_term = any(
+        re.search(rf"\b{re.escape(term)}\b", normalized) is not None
+        for term in artifact_terms
+    )
+    if not has_artifact_term:
+        return False
+
+    existing_artifact_phrases = (
+        "any report",
+        "any document",
+        "any memo",
+        "any analysis",
+        "any output",
+        "do we have",
+        "did we get",
+        "did it save",
+        "has it saved",
+        "is there",
+        "was there",
+        "what report",
+        "which report",
+        "show report",
+        "show me the report",
+        "open the report",
+        "latest report",
+        "saved report",
+        "existing report",
+        "report made",
+        "report saved",
+        "what document",
+        "which document",
+        "show document",
+        "show me the document",
+        "open the document",
+        "latest document",
+        "saved document",
+        "existing document",
+        "analysis saved",
+        "saved analysis",
+        "latest analysis",
+        "what output",
+        "show output",
+        "show me the output",
+        "latest output",
+        "saved output",
+        "existing output",
+        "full report",
+        "documents tab",
+    )
+    return any(phrase in normalized for phrase in existing_artifact_phrases)
 
 
 def _build_issue_state_reply(
@@ -1765,8 +1845,8 @@ def _build_issue_state_reply(
     artifact_context: dict[str, Any],
 ) -> Optional[str]:
     status_query = _looks_like_status_query(prompt)
-    report_query = _looks_like_report_query(prompt)
-    if not status_query and not report_query:
+    existing_artifact_query = _looks_like_existing_artifact_query(prompt)
+    if not status_query and not existing_artifact_query:
         return None
 
     documents = artifact_context.get("documents") or []
@@ -1790,7 +1870,7 @@ def _build_issue_state_reply(
         else:
             lines.append("No agent is currently assigned to this issue.")
 
-    if report_query:
+    if existing_artifact_query:
         if documents:
             latest_document = documents[0]
             lines.append(
@@ -1823,7 +1903,7 @@ def _build_issue_state_reply(
 
     if not lines:
         return None
-    if documents and report_query:
+    if documents and existing_artifact_query:
         lines.append("Open the Documents tab for the full report.")
     return "\n\n".join(lines)
 
@@ -1927,6 +2007,13 @@ async def _run_task_chat_reply(
         f"You are the {role_title} in a finance research firm.\n"
         f"Your job is to respond inside one issue workspace.\n"
         f"Stay focused on the specific issue and give concrete next-step guidance.\n"
+        f"Format every reply as clean Markdown for a professional research UI:\n"
+        f"- Use short `###` section headings.\n"
+        f"- Use bullets for lists and numbered steps.\n"
+        f"- Use GitHub-flavored pipe tables for comparisons; never align columns with spaces.\n"
+        f"- Put the direct answer first, then evidence, then next steps when useful.\n"
+        f"- Do not paste raw issue metadata, full instructions, or old reports unless the user explicitly asks for them.\n"
+        f"- Keep paragraphs short and avoid dense walls of text.\n"
         f"Your current instruction:\n{instruction}\n\n"
         f"Issue context:\n"
         f"- Title: {task.title}\n"

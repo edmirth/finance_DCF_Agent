@@ -1014,6 +1014,7 @@ function NavItem({
       end={end}
       onClick={onClick}
       title={isCollapsed ? label : undefined}
+      className="block w-full"
       style={{ textDecoration: 'none' }}
     >
       {({ isActive }) => (
@@ -1024,6 +1025,8 @@ function NavItem({
             marginBottom: 2,
             background: isActive ? '#F5F5F5' : 'transparent',
             cursor: 'pointer',
+            width: '100%',
+            height: isCollapsed ? 44 : undefined,
             justifyContent: isCollapsed ? 'center' : 'flex-start',
             minHeight: 44, // Touch-friendly
             transitionTimingFunction: SIDEBAR_EASE,
@@ -1046,6 +1049,7 @@ function NavItem({
           {/* Label + subtitle */}
           <SidebarReveal
             show={!isCollapsed}
+            collapseBlock
             style={{
               flex: isCollapsed ? '0 0 0px' : '1 1 auto',
             }}

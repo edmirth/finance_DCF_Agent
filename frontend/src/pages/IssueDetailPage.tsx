@@ -482,6 +482,42 @@ const markdownComponents = {
   blockquote: (props: any) => <blockquote className="mt-4 border-l-4 border-slate-200 pl-4 italic text-slate-600" {...props} />,
 };
 
+const chatMarkdownComponents = {
+  h1: (props: any) => <h2 className="mt-4 text-lg font-semibold tracking-tight text-slate-950 first:mt-0" {...props} />,
+  h2: (props: any) => <h3 className="mt-5 border-t border-slate-100 pt-4 text-base font-semibold tracking-tight text-slate-950 first:mt-0 first:border-t-0 first:pt-0" {...props} />,
+  h3: (props: any) => <h4 className="mt-4 text-sm font-semibold uppercase tracking-[0.12em] text-slate-500 first:mt-0" {...props} />,
+  p: (props: any) => <p className="my-2 text-sm leading-7 text-slate-700" {...props} />,
+  ul: (props: any) => <ul className="my-3 list-disc space-y-1.5 pl-5 text-sm leading-7 text-slate-700" {...props} />,
+  ol: (props: any) => <ol className="my-3 list-decimal space-y-1.5 pl-5 text-sm leading-7 text-slate-700" {...props} />,
+  li: (props: any) => <li className="pl-1 marker:text-slate-400" {...props} />,
+  strong: (props: any) => <strong className="font-semibold text-slate-950" {...props} />,
+  hr: (props: any) => <hr className="my-4 border-slate-100" {...props} />,
+  code: ({ inline, ...props }: any) =>
+    inline ? (
+      <code className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] text-slate-700" {...props} />
+    ) : (
+      <code className="block overflow-x-auto rounded-2xl bg-slate-950 p-4 font-mono text-[12px] leading-6 text-slate-100" {...props} />
+    ),
+  table: (props: any) => (
+    <div className="my-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+      <table className="w-full min-w-[560px] border-collapse text-left text-sm" {...props} />
+    </div>
+  ),
+  thead: (props: any) => <thead className="bg-slate-50 text-slate-500" {...props} />,
+  th: (props: any) => <th className="border-b border-slate-200 px-3 py-2.5 text-xs font-semibold uppercase tracking-[0.08em]" {...props} />,
+  td: (props: any) => <td className="border-b border-slate-100 px-3 py-2.5 align-top text-sm leading-6 text-slate-700 last:border-b-0" {...props} />,
+  blockquote: (props: any) => <blockquote className="my-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-600" {...props} />,
+};
+
+const userChatMarkdownComponents = {
+  p: (props: any) => <p className="my-1 text-sm leading-7 text-white" {...props} />,
+  ul: (props: any) => <ul className="my-2 list-disc space-y-1 pl-5 text-sm leading-7 text-white" {...props} />,
+  ol: (props: any) => <ol className="my-2 list-decimal space-y-1 pl-5 text-sm leading-7 text-white" {...props} />,
+  li: (props: any) => <li className="pl-1 marker:text-white/60" {...props} />,
+  strong: (props: any) => <strong className="font-semibold text-white" {...props} />,
+  code: (props: any) => <code className="rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[12px] text-white" {...props} />,
+};
+
 function WorkspaceTabButton({
   label,
   active,
@@ -606,13 +642,18 @@ function ThreadMessage({
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] rounded-[24px] px-4 py-3 shadow-sm ${bubbleClasses}`}>
+      <div className={`max-w-[85%] rounded-[24px] px-5 py-4 shadow-sm ${bubbleClasses}`}>
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
           <span>{message.author_label}</span>
           <span className={isUser ? 'text-white/60' : 'text-slate-400'}>{formatRelativeApiTime(message.created_at)}</span>
         </div>
-        <div className={`prose prose-sm max-w-none prose-p:my-2 prose-p:leading-7 prose-ul:my-2 prose-ul:pl-5 prose-li:my-1 ${isUser ? 'prose-invert' : 'prose-strong:text-slate-900 prose-headings:text-slate-900'}`}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+        <div className="max-w-none">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={isUser ? userChatMarkdownComponents : chatMarkdownComponents}
+          >
+            {message.content}
+          </ReactMarkdown>
         </div>
       </div>
     </div>
