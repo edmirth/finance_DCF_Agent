@@ -170,7 +170,15 @@ def _count_statement_rows(shared_data: dict, key: str) -> int:
     return 0
 
 
+_REACT_AGENTS = frozenset({"fundamental", "quant", "risk", "macro", "sentiment"})
+
+
 def _shared_data_validation_error(agent_name: str, ticker: str, shared_data: dict) -> Optional[str]:
+    # ReAct agents fetch their own data via tools — the shared_data pre-fetch
+    # is irrelevant to them, so skip the gate entirely.
+    if agent_name in _REACT_AGENTS:
+        return None
+
     stock_info = shared_data.get("stock_info") or {}
     key_metrics = shared_data.get("key_metrics") or {}
     income_count = _count_statement_rows(shared_data, "income_statements")
@@ -739,7 +747,10 @@ class ResearchOrchestrator:
         # agent requires real financial data, fail fast rather than letting all
         # agents produce empty error sections.
         if data_fetch_failed:
-            _DATA_REQUIRING = {"dcf", "fundamental", "quant", "risk"}
+            # Only DCF still depends on the pre-fetched shared_data blob.
+            # fundamental, quant, risk, macro, and sentiment are ReAct agents
+            # that fetch their own data via tools.
+            _DATA_REQUIRING = {"dcf"}
             all_blocked = all(a in _DATA_REQUIRING for a in self.selected_agents)
             if all_blocked:
                 error_msg = (
