@@ -1,4 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
+
+const stripMarkdown = (text: string) =>
+  text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/_(.*?)_/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/#+\s/g, '')
+    .trim();
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
@@ -331,7 +341,7 @@ function AgentCard({
 
       {agent.last_run_summary ? (
         <p className="mb-3 line-clamp-2 text-xs leading-relaxed text-slate-500">
-          {agent.last_run_summary}
+          {stripMarkdown(agent.last_run_summary)}
         </p>
       ) : (
         <p className="mb-3 text-xs italic text-slate-400">No runs yet</p>
