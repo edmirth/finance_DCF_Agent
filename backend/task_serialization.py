@@ -195,62 +195,106 @@ def _render_markdown_section_to_docx(doc, body: str) -> None:
         flush_table()
 
 
+def _add_cover_page(doc, document, task) -> None:
+    """Write a professional report cover block into *doc* (mutates in place)."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from docx.shared import Pt, RGBColor
+
+    snapshot_pairs = _extract_snapshot_pairs(document.content_md or "")
+    scope_value = next((v for lbl, v in snapshot_pairs if lbl.lower() == "scope"), None)
+    analyst_value = next((v for lbl, v in snapshot_pairs if lbl.lower() == "analyst"), None)
+
+    # Derive the display title
+    report_title = document.title
+    if document.document_type == "analysis":
+        scope_label = scope_value or ((task.ticker or "").strip() if task else "")
+        if scope_label and scope_label.upper() != "GENERAL":
+            report_title = f"{scope_label.upper()} Equity Research Report"
+        elif task and task.title:
+            report_title = f"{task.title} — Equity Research Report"
+
+    # ── Classification label ──────────────────────────────────────────────────
+    label_para = doc.add_paragraph()
+    label_run = label_para.add_run("EQUITY RESEARCH  ·  ANALYST NOTE")
+    label_run.font.size = Pt(8)
+    label_run.font.color.rgb = RGBColor(0x94, 0x97, 0x9E)  # slate-400
+    label_run.font.bold = True
+
+    # ── Thin top rule (paragraph border) ─────────────────────────────────────
+    # Abuse the paragraph top border to draw a hairline above the label.
+    pPr = label_para._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    top = OxmlElement("w:top")
+    top.set(qn("w:val"), "single")
+    top.set(qn("w:sz"), "4")          # ½ pt
+    top.set(qn("w:space"), "6")
+    top.set(qn("w:color"), "E2E8F0")  # slate-200
+    pBdr.append(top)
+    pPr.append(pBdr)
+
+    # ── Company / report title ────────────────────────────────────────────────
+    title_para = doc.add_paragraph()
+    title_run = title_para.add_run(report_title)
+    title_run.bold = True
+    title_run.font.size = Pt(26)
+    title_run.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)  # near-black
+
+    # ── Issue brief (research mandate) ───────────────────────────────────────
+    if task and task.title and task.title != report_title:
+        brief_para = doc.add_paragraph()
+        brief_run = brief_para.add_run(task.title)
+        brief_run.font.size = Pt(11)
+        brief_run.font.color.rgb = RGBColor(0x4B, 0x55, 0x63)  # slate-600
+
+    # ── Metadata row: Analyst  |  Date ───────────────────────────────────────
+    meta_parts: list[str] = []
+    if analyst_value:
+        meta_parts.append(f"Prepared by  {analyst_value}")
+    updated_at = (
+        document.updated_at.strftime("%B %d, %Y")
+        if getattr(document, "updated_at", None)
+        else None
+    )
+    if updated_at:
+        meta_parts.append(updated_at)
+
+    if meta_parts:
+        meta_para = doc.add_paragraph()
+        meta_run = meta_para.add_run("    ·    ".join(meta_parts))
+        meta_run.font.size = Pt(10)
+        meta_run.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)  # slate-500
+
+    # ── Spacer then thick bottom rule ────────────────────────────────────────
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_before = Pt(2)
+    spacer.paragraph_format.space_after = Pt(0)
+
+    rule_para = doc.add_paragraph()
+    rPr = rule_para._p.get_or_add_pPr()
+    rBdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "12")       # 1½ pt — heavier rule
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), "1E3A5F")  # dark navy
+    rBdr.append(bottom)
+    rPr.append(rBdr)
+    rule_para.paragraph_format.space_after = Pt(14)
+
+
 def build_task_document_docx(document, task) -> bytes:
     from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
 
     doc = Document()
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Aptos"
     normal_style.font.size = Pt(11)
+    doc.styles["Heading 1"].font.name = "Aptos Display"
 
-    heading_style = doc.styles["Heading 1"]
-    heading_style.font.name = "Aptos Display"
-
-    report_title = document.title
-    snapshot_pairs = _extract_snapshot_pairs(document.content_md or "")
-    scope_value = next((value for label, value in snapshot_pairs if label.lower() == "scope"), None)
-    analyst_value = next((value for label, value in snapshot_pairs if label.lower() == "analyst"), None)
-
-    if document.document_type == "analysis":
-        scope_label = scope_value or ((task.ticker or "").strip() if task else "")
-        if scope_label and scope_label.upper() != "GENERAL":
-            report_title = f"{scope_label.upper()} Equity Research Report"
-        elif task and task.title:
-            report_title = f"{task.title} - Equity Research Report"
-
-    title_paragraph = doc.add_paragraph()
-    title_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    title_run = title_paragraph.add_run(report_title)
-    title_run.bold = True
-    title_run.font.size = Pt(22)
-
-    subtitle_parts = []
-    if task and task.title and task.title != report_title:
-        subtitle_parts.append(f"Issue: {task.title}")
-    if analyst_value:
-        subtitle_parts.append(f"Prepared by: {analyst_value}")
-    updated_at = document.updated_at.strftime("%b %d, %Y %H:%M") if getattr(document, "updated_at", None) else None
-    if updated_at:
-        subtitle_parts.append(f"Updated: {updated_at}")
-    if subtitle_parts:
-        subtitle = doc.add_paragraph()
-        subtitle_run = subtitle.add_run(" | ".join(subtitle_parts))
-        subtitle_run.italic = True
-
-    if snapshot_pairs:
-        table = doc.add_table(rows=1, cols=2)
-        table.style = "Table Grid"
-        header_cells = table.rows[0].cells
-        header_cells[0].text = "Field"
-        header_cells[1].text = "Value"
-        for label, value in snapshot_pairs:
-            row_cells = table.add_row().cells
-            row_cells[0].text = label
-            row_cells[1].text = value
-        doc.add_paragraph("")
-
+    _add_cover_page(doc, document, task)
     _render_markdown_section_to_docx(doc, document.content_md or "")
 
     buffer = io.BytesIO()

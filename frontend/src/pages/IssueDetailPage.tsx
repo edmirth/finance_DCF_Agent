@@ -381,6 +381,52 @@ function stripDetailFactRows(lines: string[]): string[] {
   });
 }
 
+// Sections that are already rendered as structured UI cards above the detail block.
+// Strip them from the detail markdown so they don't appear twice.
+const DETAIL_SKIP_SECTIONS = new Set([
+  'snapshot', 'executive summary', 'key findings', 'agent suggestions',
+]);
+
+/**
+ * Remove the cover header from the detail markdown:
+ *   - leading `# <h1 title>` line (document title, already shown in the header)
+ *   - `## Snapshot`, `## Executive summary`, `## Key findings`, `## Agent suggestions`
+ *     sections (already shown as structured cards in the UI above the detail block)
+ */
+function stripDetailCoverHeader(text: string): string {
+  const lines = (text || '').split(/\r?\n/);
+  let output: string[] = [];
+  let inSkippedSection = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    // Drop top-level `# Title` lines entirely
+    if (/^# /.test(line)) {
+      inSkippedSection = false;
+      continue;
+    }
+
+    // Check for an h2 section heading
+    const h2Match = line.match(/^## (.+)$/);
+    if (h2Match) {
+      const sectionName = h2Match[1].trim().toLowerCase();
+      if (DETAIL_SKIP_SECTIONS.has(sectionName)) {
+        inSkippedSection = true;
+        continue;
+      }
+      inSkippedSection = false;
+    }
+
+    if (inSkippedSection) continue;
+    output.push(rawLine);
+  }
+
+  // Drop leading blank lines left behind after stripping
+  while (output.length > 0 && output[0].trim() === '') output.shift();
+  return output.join('\n');
+}
+
 function cleanDocumentReportMarkdown(text: string, scopeLabel?: string): string {
   const lines = (text || '').split(/\r?\n/);
   const cleanedLines: string[] = [];
@@ -441,7 +487,10 @@ function buildDocumentViewModel(document: TaskDocument, task: ResearchTask) {
   const detailFactRows = extractDetailFactRows(detailLines);
   const detailBodyLines = stripDetailFactRows(detailLines);
   const fallbackScope = task.ticker === 'GENERAL' ? undefined : task.ticker;
-  const detailMarkdown = cleanDocumentReportMarkdown(detailBodyLines.join('\n').trim(), fallbackScope);
+  const detailMarkdown = cleanDocumentReportMarkdown(
+    stripDetailCoverHeader(detailBodyLines.join('\n').trim()),
+    fallbackScope,
+  );
   const derivedDetailSummary = extractFirstMeaningfulLine(detailMarkdown.split(/\r?\n/));
   const summaryIsGeneric = !summary || summary === 'Research completed. See full report for details.';
   const findingsAreGeneric = findings.length === 0 || findings.every((item) => item.toLowerCase() === 'none recorded');
@@ -1436,18 +1485,31 @@ export default function IssueDetailPage() {
                         <div className="space-y-6">
                           {selectedDocument.document_type === 'analysis' && selectedDocumentView ? (
                             <>
-                              {selectedDocumentView.snapshotRows.length > 0 && (
-                                <div className="grid gap-3 md:grid-cols-4">
+                              {/* ── Report cover header ── */}
+                              <div className="border-b border-slate-200 pb-6">
+                                <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                                  Equity Research · Analyst Note
+                                </p>
+                                <h1 className="text-2xl font-bold leading-tight text-slate-900">
+                                  {selectedDocument.title}
+                                </h1>
+                                {task?.title && task.title !== selectedDocument.title && (
+                                  <p className="mt-1.5 text-sm leading-6 text-slate-500">{task.title}</p>
+                                )}
+                                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                                   {selectedDocumentView.snapshotRows.map((row) => (
-                                    <div key={row.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                                        {row.label}
-                                      </p>
-                                      <p className="mt-2 text-sm font-medium text-slate-900">{row.value}</p>
-                                    </div>
+                                    <span key={row.label}>
+                                      <span className="font-semibold text-slate-700">{row.label}:</span>{' '}
+                                      {row.value}
+                                    </span>
                                   ))}
+                                  {selectedDocument.updated_at && (
+                                    <span className="text-slate-400">
+                                      Updated {new Date(selectedDocument.updated_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                                    </span>
+                                  )}
                                 </div>
-                              )}
+                              </div>
 
                               <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Bottom line</p>
