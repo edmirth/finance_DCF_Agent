@@ -113,6 +113,33 @@ class GetFinancialMetricsTool(BaseTool):
         )
         earnings_growth = metrics.get('earnings_growth_rate')
 
+        # ── Derived EBITDA / EV / EV-multiples ───────────────────────────────
+        # Compute EBITDA = EBIT + D&A so agents always get an exact figure,
+        # not an "estimated" range. D&A comes from the cash-flow statement.
+        ebit_val = metrics.get('latest_ebit') or 0
+        da_val = metrics.get('latest_depreciation_amortization') or 0
+        ebitda = ebit_val + da_val  # 0 if both are 0
+
+        # Enterprise Value: prefer the pre-computed API value; fall back to
+        # market_cap + net_debt (market_cap comes from get_stock_info which is cached).
+        ev_api = metrics.get('enterprise_value_api') or 0
+        if not ev_api:
+            stock_info = fetcher.get_stock_info(ticker.strip().upper())
+            market_cap_val = stock_info.get('market_cap') or 0
+            ev_api = market_cap_val + (metrics.get('total_debt') or 0) - (metrics.get('cash_and_equivalents') or 0)
+
+        # EV / EBITDA: prefer API ratio; compute from our own EV and EBITDA otherwise.
+        ev_to_ebitda_val = metrics.get('ev_to_ebitda') or (
+            ev_api / ebitda if ev_api and ebitda and ebitda > 0 else None
+        )
+
+        # EV / Revenue: prefer API; compute if we have EV and revenue.
+        ev_to_revenue_val = metrics.get('ev_to_revenue') or (
+            ev_api / latest_rev if ev_api and has_rev else None
+        )
+
+        ebitda_margin = ebitda / latest_rev if has_rev and ebitda else None
+
         def pct(v):
             return f"{v * 100:.1f}%" if v is not None else "N/A"
 
@@ -132,16 +159,17 @@ class GetFinancialMetricsTool(BaseTool):
 Current Financials (TTM):
 - Revenue: {dollar(metrics.get('latest_revenue', 0))}
 - Gross Profit: {dollar(metrics.get('latest_gross_profit', 0))} (Gross Margin: {pct(gross_margin)})
-- EBIT (Operating Income): {dollar(metrics.get('latest_ebit', 0))} (EBIT Margin: {pct(operating_margin)})
+- EBIT (Operating Income): {dollar(ebit_val)} (EBIT Margin: {pct(operating_margin)})
+- EBITDA: {dollar(ebitda if ebitda else None)} (EBITDA Margin: {pct(ebitda_margin)})
 - Net Income: {dollar(metrics.get('latest_net_income', 0))} (Net Margin: {pct(net_margin)})
 - Free Cash Flow: {dollar(metrics.get('latest_fcf', 0))} (FCF Margin: {pct(fcf_margin)})
 - CapEx: {dollar(metrics.get('latest_capex', 0))}
-- D&A: {dollar(metrics.get('latest_depreciation_amortization', 0))}
+- D&A: {dollar(da_val if da_val else None)}
 
 Balance Sheet:
 - Total Debt: {dollar(metrics.get('total_debt', 0))}
 - Cash & Equivalents: {dollar(metrics.get('cash_and_equivalents', 0))}
-- Net Debt: {dollar(metrics.get('total_debt', 0) - metrics.get('cash_and_equivalents', 0))}
+- Net Debt: {dollar((metrics.get('total_debt') or 0) - (metrics.get('cash_and_equivalents') or 0))}
 - Shareholders Equity: {dollar(metrics.get('shareholders_equity', 0))}
 - Net Working Capital: {dollar(metrics.get('net_working_capital', 0))}
 - Shares Outstanding: {metrics.get('shares_outstanding', 0):,.0f}
@@ -155,6 +183,7 @@ Capital Structure:
 Profitability Margins:
 - Gross Margin: {pct(gross_margin)}
 - Operating (EBIT) Margin: {pct(operating_margin)}
+- EBITDA Margin: {pct(ebitda_margin)}
 - Net Margin: {pct(net_margin)}
 - FCF Margin: {pct(fcf_margin)}
 
@@ -167,11 +196,11 @@ Valuation Multiples:
 - P/E Ratio: {f"{metrics['price_to_earnings']:.1f}x" if metrics.get('price_to_earnings') else "N/A"}
 - Price / Book: {f"{metrics['price_to_book']:.2f}x" if metrics.get('price_to_book') else "N/A"}
 - Price / Sales: {f"{metrics['price_to_sales']:.2f}x" if metrics.get('price_to_sales') else "N/A"}
-- EV / EBITDA: {f"{metrics['ev_to_ebitda']:.1f}x" if metrics.get('ev_to_ebitda') else "N/A"}
-- EV / Revenue: {f"{metrics['ev_to_revenue']:.2f}x" if metrics.get('ev_to_revenue') else "N/A"}
+- EV / EBITDA: {f"{ev_to_ebitda_val:.1f}x" if ev_to_ebitda_val else "N/A"}
+- EV / Revenue: {f"{ev_to_revenue_val:.2f}x" if ev_to_revenue_val else "N/A"}
 - PEG Ratio: {f"{metrics['peg_ratio']:.2f}" if metrics.get('peg_ratio') else "N/A"}
 - FCF Yield: {pct(metrics.get('fcf_yield'))}
-- Enterprise Value: {dollar(metrics.get('enterprise_value_api'))}
+- Enterprise Value: {dollar(ev_api if ev_api else None)}
 
 Per-Share Metrics:
 - EPS: {f"${metrics['earnings_per_share']:.2f}" if metrics.get('earnings_per_share') else "N/A"}
