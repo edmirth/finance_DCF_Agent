@@ -365,6 +365,7 @@ class AgentRunnerService:
                 "alert_level": synthesis.get("alert_level", "none"),
                 "tickers_analyzed": tickers,
                 "agents_used": agents_used,
+                "hire_proposal": synthesis.get("hire_proposal"),
                 "error": None,
             }
 
@@ -1114,6 +1115,7 @@ Return ONLY the markdown report — no JSON, no preamble."""
                 timeout=90.0,
             )
             parsed["full_report"] = report_response.content[0].text.strip()
+            parsed["hire_proposal"] = self._maybe_propose_hire(shared_context, agent_config)
             return parsed
         except Exception as exc:
             logger.error(f"Synthesis Haiku call failed: {exc}")
@@ -1162,7 +1164,74 @@ Return ONLY the markdown report — no JSON, no preamble."""
                 "material_change": True,
                 "alert_level": "low",
                 "full_report": fallback_report,
+                "hire_proposal": None,
             }
+
+    def _maybe_propose_hire(self, shared_context: str, agent_config) -> Optional[dict]:
+        """
+        Ask the agent whether it needs to propose hiring a direct-report specialist.
+        Only runs for properly role-keyed agents. Returns a hire spec dict or None.
+        """
+        agent_role_key = _agent_config_attr(agent_config, "role_key") or ""
+        agent_id = _agent_config_attr(agent_config, "id") or ""
+        if not agent_role_key or not agent_id:
+            return None
+
+        from backend.agent_roles import ROLE_CATALOG
+        role_catalog_lines = "\n".join(
+            f"- {role.key}: {role.title} ({role.family})"
+            for role in ROLE_CATALOG.values()
+        )
+
+        hire_prompt = f"""{shared_context}
+
+You are {_agent_config_attr(agent_config, "role_title") or agent_role_key}. Based on the research above, decide if you need to propose hiring ONE direct-report specialist under you.
+
+AVAILABLE ROLES:
+{role_catalog_lines}
+
+Rules (strict — default is null):
+- Only propose if findings reveal a PERSISTENT gap that recurs every run and you cannot fill it alone
+- The proposed role must clearly complement your mandate, not duplicate it
+- Do NOT propose if you could cover the gap yourself with a different instruction
+- Do NOT propose a role that already sounds like your own role
+- When in doubt, return null
+
+If proposing, return JSON:
+{{
+  "propose_hire": {{
+    "role_key": "<valid key from the list above>",
+    "role_title": "<title>",
+    "name": "<specific name, e.g. 'NVDA Risk Monitor'>",
+    "description": "<one sentence>",
+    "tickers": ["TICKER"],
+    "topics": ["topic"],
+    "instruction": "<clear mandate, 2-4 sentences>",
+    "schedule_label": "weekly_monday"
+  }}
+}}
+
+If NOT proposing (the default):
+{{"propose_hire": null}}
+
+Return ONLY valid JSON. No preamble, no markdown fences."""
+
+        try:
+            response = self._anthropic.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                messages=[{"role": "user", "content": hire_prompt}],
+                timeout=30.0,
+            )
+            parsed = _extract_json_object(response.content[0].text.strip())
+            if not parsed or not parsed.get("propose_hire"):
+                return None
+            proposal = parsed["propose_hire"]
+            proposal["manager_agent_id"] = agent_id
+            return proposal
+        except Exception as exc:
+            logger.warning("Hire proposal LLM call failed: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Helpers

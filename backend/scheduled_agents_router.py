@@ -793,6 +793,35 @@ async def _execute_run_background(
     if planned_dispatches:
         dispatch_manager_heartbeat_actions(planned_dispatches)
 
+    # Persist any hire proposal the agent generated during this run
+    hire_proposal_data = outcome.get("hire_proposal")
+    if hire_proposal_data and not outcome.get("error"):
+        try:
+            from backend.cio_router import CioAction, _create_hire_proposal
+            action = CioAction(
+                type="propose_hire",
+                role_key=hire_proposal_data.get("role_key"),
+                role_title=hire_proposal_data.get("role_title"),
+                name=hire_proposal_data.get("name") or hire_proposal_data.get("role_title") or "New Analyst",
+                description=hire_proposal_data.get("description"),
+                template=hire_proposal_data.get("template"),
+                tickers=hire_proposal_data.get("tickers") or [],
+                topics=hire_proposal_data.get("topics") or [],
+                instruction=hire_proposal_data.get("instruction") or "",
+                schedule_label=hire_proposal_data.get("schedule_label") or "weekly_monday",
+                manager_agent_id=agent_id,
+            )
+            async with AsyncSessionLocal() as proposal_db:
+                await _create_hire_proposal(
+                    proposal_db,
+                    action,
+                    proposed_by=f"agent:{agent_id}",
+                    rationale=outcome.get("findings_summary", ""),
+                )
+            logger.info("Agent %s proposed a hire: %s", agent_id, action.name)
+        except Exception as exc:
+            logger.warning("Failed to persist agent hire proposal from %s: %s", agent_id, exc)
+
     # Send email notification (same as scheduled path)
     if delivery_email and not outcome.get("error"):
         try:
