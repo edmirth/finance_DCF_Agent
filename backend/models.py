@@ -242,6 +242,7 @@ class AgentRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    chart_specs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of chart specs
 
     scheduled_agent: Mapped["ScheduledAgent"] = relationship("ScheduledAgent", back_populates="runs")
     heartbeat_runs: Mapped[List["HeartbeatRun"]] = relationship(

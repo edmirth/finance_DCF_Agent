@@ -271,6 +271,124 @@ def _render_structured_fallback_report(
     return "\n".join(parts).strip()
 
 
+def _extract_financial_charts(
+    ticker: str,
+    stock_info: dict,
+    financials: dict,
+    key_metrics: Optional[dict],
+) -> list[dict]:
+    """
+    Generate dark-themed chart specs from raw financial data.
+    Returns a list of AgentChartProps-compatible dicts (serialisable to JSON).
+    Only includes charts that have at least 3 data points.
+    """
+    charts: list[dict] = []
+
+    income = financials.get("income_statements") or []
+    cashflow = financials.get("cash_flow_statements") or []
+
+    # Sort ascending by report_period so charts read left-to-right chronologically.
+    income_sorted = sorted(
+        [r for r in income if isinstance(r, dict) and r.get("report_period")],
+        key=lambda r: r["report_period"],
+    )[-8:]
+
+    cf_sorted = sorted(
+        [r for r in cashflow if isinstance(r, dict) and r.get("report_period")],
+        key=lambda r: r["report_period"],
+    )[-8:]
+
+    # ── Chart 1: Revenue + Gross Margin (bar_line) ──────────────────────────
+    rev_margin_rows: list[dict] = []
+    for row in income_sorted:
+        rev = row.get("revenue")
+        gp = row.get("gross_profit")
+        if not rev or not gp:
+            continue
+        try:
+            rev_margin_rows.append({
+                "period": row["report_period"][:7],
+                "revenue": round(float(rev) / 1e6, 1),
+                "gross_margin": round(float(gp) / float(rev) * 100, 1),
+            })
+        except (ZeroDivisionError, TypeError, ValueError):
+            continue
+
+    if len(rev_margin_rows) >= 3:
+        charts.append({
+            "id": f"{ticker}_revenue_margin",
+            "chart_type": "bar_line",
+            "title": f"{ticker} — Revenue & Gross Margin",
+            "subtitle": "Annual, $M",
+            "x_key": "period",
+            "y_format": "currency_m",
+            "y_right_format": "percent",
+            "data": rev_margin_rows,
+            "series": [
+                {"key": "revenue", "label": "Revenue ($M)", "type": "bar", "color": "#E8522A", "yAxis": "left"},
+                {"key": "gross_margin", "label": "Gross Margin %", "type": "line", "color": "#3B82F6", "yAxis": "right"},
+            ],
+        })
+
+    # ── Chart 2: Net Income trend (bar) ─────────────────────────────────────
+    net_income_rows: list[dict] = []
+    for row in income_sorted:
+        ni = row.get("net_income")
+        if ni is None:
+            continue
+        try:
+            net_income_rows.append({
+                "period": row["report_period"][:7],
+                "net_income": round(float(ni) / 1e6, 1),
+            })
+        except (TypeError, ValueError):
+            continue
+
+    if len(net_income_rows) >= 3:
+        charts.append({
+            "id": f"{ticker}_net_income",
+            "chart_type": "bar",
+            "title": f"{ticker} — Net Income",
+            "subtitle": "Annual, $M",
+            "x_key": "period",
+            "y_format": "currency_m",
+            "data": net_income_rows,
+            "series": [
+                {"key": "net_income", "label": "Net Income ($M)", "type": "bar", "color": "#A78BFA", "yAxis": "left"},
+            ],
+        })
+
+    # ── Chart 3: Operating Cash Flow (bar) ──────────────────────────────────
+    ocf_rows: list[dict] = []
+    for row in cf_sorted:
+        ocf = row.get("operating_cash_flow")
+        if ocf is None:
+            continue
+        try:
+            ocf_rows.append({
+                "period": row["report_period"][:7],
+                "operating_cash_flow": round(float(ocf) / 1e6, 1),
+            })
+        except (TypeError, ValueError):
+            continue
+
+    if len(ocf_rows) >= 3:
+        charts.append({
+            "id": f"{ticker}_fcf",
+            "chart_type": "bar",
+            "title": f"{ticker} — Operating Cash Flow",
+            "subtitle": "Annual, $M",
+            "x_key": "period",
+            "y_format": "currency_m",
+            "data": ocf_rows,
+            "series": [
+                {"key": "operating_cash_flow", "label": "Operating Cash Flow ($M)", "type": "bar", "color": "#10B981", "yAxis": "left"},
+            ],
+        })
+
+    return charts
+
+
 def _statement_row_count(financials: dict, key: str) -> int:
     rows = (financials or {}).get(key) or []
     return len(rows) if isinstance(rows, list) else 0
@@ -311,6 +429,7 @@ class AgentRunnerService:
 
             raw_outputs: dict[str, str] = {}
             agents_used: list[str] = []
+            chart_specs_list: list[dict] = []
 
             if template == "market_pulse":
                 raw_outputs, agents_used = self._run_market_pulse(agent_config.instruction)
@@ -332,7 +451,7 @@ class AgentRunnerService:
                 )
 
             elif template in SPECIALIST_TEMPLATE_TO_AGENT:
-                raw_outputs, agents_used = self._run_instruction_driven_research(
+                raw_outputs, agents_used, chart_specs_list = self._run_instruction_driven_research(
                     tickers,
                     agent_config.instruction,
                     template,
@@ -366,6 +485,7 @@ class AgentRunnerService:
                 "tickers_analyzed": tickers,
                 "agents_used": agents_used,
                 "hire_proposal": synthesis.get("hire_proposal"),
+                "chart_specs": chart_specs_list,
                 "error": None,
             }
 
@@ -504,7 +624,7 @@ class AgentRunnerService:
         role_title: Optional[str] = None,
         role_family: Optional[str] = None,
         description: Optional[str] = None,
-    ) -> tuple[dict, list]:
+    ) -> tuple[dict, list, list[dict]]:
         """
         Instruction-driven analysis for hired agents.
         Fetches real financial data + current news per ticker, then runs a
@@ -559,7 +679,7 @@ class AgentRunnerService:
                 )
             return None
 
-        def _analyze_general_screen() -> tuple[str, Optional[str]]:
+        def _analyze_general_screen() -> tuple[str, Optional[str], list[dict]]:
             """Handle screening/discovery requests where no specific ticker is set."""
             try:
                 focus = instruction[:200] if instruction else "investment opportunities"
@@ -610,17 +730,17 @@ Rules:
                     messages=[{"role": "user", "content": prompt}],
                     timeout=60.0,
                 )
-                return "SCREEN", response.content[0].text.strip()
+                return "SCREEN", response.content[0].text.strip(), []
             except Exception as exc:
                 logger.error(f"General screen analysis failed: {exc}")
-                return "SCREEN", None
+                return "SCREEN", None, []
 
         # Templates whose instruments (indices, FX, rates, commodities) have no
         # equity financials in Financial Datasets.  Skip the equity fetch/validation
         # gate and drive the report entirely from web research.
         _WEBRESEARCH_ONLY_TEMPLATES = {"macro_analyst", "sentiment_analyst"}
 
-        def _analyze_macro(ticker_upper: str) -> tuple[str, Optional[str]]:
+        def _analyze_macro(ticker_upper: str) -> tuple[str, Optional[str], list[dict]]:
             """Web-research + FRED-driven analysis for macro instruments and sentiment tickers."""
             try:
                 from data.fred_client import get_fred_client
@@ -702,12 +822,12 @@ Rules:
                     messages=[{"role": "user", "content": prompt}],
                     timeout=60.0,
                 )
-                return ticker_upper, response.content[0].text.strip()
+                return ticker_upper, response.content[0].text.strip(), []
             except Exception as exc:
                 logger.error(f"Macro analysis failed for {ticker_upper}: {exc}")
-                return ticker_upper, None
+                return ticker_upper, None, []
 
-        def _analyze(ticker: str) -> tuple[str, Optional[str]]:
+        def _analyze(ticker: str) -> tuple[str, Optional[str], list[dict]]:
             try:
                 ticker_upper = ticker.strip().upper()
 
@@ -723,7 +843,7 @@ Rules:
                 validation_error = _validation_error(ticker_upper, stock_info, financials, key_metrics)
                 if validation_error:
                     logger.warning("Instruction-driven research blocked for %s: %s", ticker_upper, validation_error)
-                    return ticker_upper, None
+                    return ticker_upper, None, []
 
                 data_block = self._format_financial_data(ticker_upper, stock_info, financials, key_metrics)
 
@@ -810,21 +930,24 @@ Rules:
                     messages=[{"role": "user", "content": prompt}],
                     timeout=60.0,
                 )
-                return ticker_upper, response.content[0].text.strip()
+                charts = _extract_financial_charts(ticker_upper, stock_info, financials, key_metrics)
+                return ticker_upper, response.content[0].text.strip(), charts
 
             except Exception as exc:
                 logger.error(f"Instruction-driven research failed for {ticker}: {exc}")
-                return ticker.strip().upper(), None
+                return ticker.strip().upper(), None, []
 
+        all_chart_specs: list[dict] = []
         effective_tickers = tickers if tickers else ["GENERAL"]
         with ThreadPoolExecutor(max_workers=min(MAX_TICKER_WORKERS, len(effective_tickers))) as ex:
             futures = {ex.submit(_analyze, t): t for t in effective_tickers}
             for future in as_completed(futures):
-                ticker_sym, result = future.result()
+                ticker_sym, result, charts = future.result()
                 if result:
                     outputs[ticker_sym] = result
+                all_chart_specs.extend(charts)
 
-        return outputs, [role_key or template] if outputs else []
+        return outputs, [role_key or template] if outputs else [], all_chart_specs
 
     @staticmethod
     def _format_financial_data(ticker: str, stock_info: dict, financials: dict, key_metrics: Optional[dict] = None) -> str:
@@ -1247,6 +1370,7 @@ Return ONLY valid JSON. No preamble, no markdown fences."""
             "alert_level": "none",
             "tickers_analyzed": [],
             "agents_used": [],
+            "chart_specs": [],
             "error": error,
         }
 

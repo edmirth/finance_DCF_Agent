@@ -27,6 +27,7 @@ import {
   type TaskStatus,
 } from '../api';
 import type { AgentRun, AlertLevel, HeartbeatRun, ScheduledAgent } from '../types';
+import { ReportChart } from '../components/ReportChart';
 import { roleMetaForAgent } from '../agentRoles';
 import { compareApiDatesDesc, formatApiDateTime, formatRelativeApiTime, parseApiDate } from '../utils/time';
 import { stripMarkdown } from '../utils/markdown';
@@ -225,6 +226,27 @@ function RunRow({ run }: { run: AgentRun }) {
               <span>Research in progress.</span>
             </div>
           )}
+
+          {run.chart_specs && (() => {
+            try {
+              const charts = JSON.parse(run.chart_specs);
+              if (Array.isArray(charts) && charts.length > 0) {
+                return (
+                  <div className="mt-6 border-t border-slate-100 pt-6">
+                    <p className="mb-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Charts</p>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {charts.map((chart: any) => (
+                        <ReportChart key={chart.id} {...chart} />
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+            } catch {
+              /* invalid JSON — silently skip */
+            }
+            return null;
+          })()}
         </div>
       )}
     </div>

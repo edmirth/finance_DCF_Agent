@@ -206,6 +206,7 @@ def _run_to_dict(run: AgentRun) -> dict:
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "error": run.error,
+        "chart_specs": getattr(run, "chart_specs", None),
     }
 
 
@@ -753,6 +754,7 @@ async def _execute_run_background(
             run.agents_used = json.dumps(outcome.get("agents_used", []))
             run.completed_at = datetime.now(timezone.utc)
             run.error = outcome.get("error")
+            run.chart_specs = json.dumps(outcome.get("chart_specs") or [])
 
         result2 = await db.execute(
             select(ScheduledAgent).where(ScheduledAgent.id == agent_id)

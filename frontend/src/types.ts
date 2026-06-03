@@ -383,6 +383,7 @@ export interface AgentRun {
   started_at: string;
   completed_at?: string;
   error?: string;
+  chart_specs?: string | null;
   // inbox-only: joined from scheduled_agents
   agent_name?: string;
 }
