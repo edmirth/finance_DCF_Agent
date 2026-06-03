@@ -436,6 +436,7 @@ export interface ScheduledAgentPayload {
   tickers: string[];
   topics: string[];
   instruction: string;
+  system_prompt_override?: string | null;
   schedule_label: string;
   manager_agent_id?: string;
   delivery_email?: string;

@@ -516,6 +516,9 @@ class AgentRunnerService:
         outputs: dict[str, str] = {}
         fetcher = FinancialDataFetcher()
         web_research = WebResearchService()
+        system_prompt_override: Optional[str] = (
+            getattr(agent_config, "system_prompt_override", None) or None
+        )
         role_profile = resolve_role_prompt_profile(
             template=template,
             role_key=role_key,
@@ -524,9 +527,11 @@ class AgentRunnerService:
         )
         intent_profile = infer_research_intent(instruction, tickers)
         role_family_label = (role_family or "").strip()
+        concrete_tickers = [t for t in tickers if str(t).strip().upper() != "GENERAL"]
         assignment_scope = "multi-company / theme work" if (
-            intent_profile.key in {"industry_map", "peer_comparison"}
-            or len([ticker for ticker in tickers if str(ticker).strip().upper() != "GENERAL"]) > 1
+            not concrete_tickers
+            or intent_profile.key in {"industry_map", "peer_comparison"}
+            or len(concrete_tickers) > 1
         ) else "single-company work"
 
         def _validation_error(
@@ -553,9 +558,164 @@ class AgentRunnerService:
                 )
             return None
 
+        def _analyze_general_screen() -> tuple[str, Optional[str]]:
+            """Handle screening/discovery requests where no specific ticker is set."""
+            try:
+                focus = instruction[:200] if instruction else "investment opportunities"
+                screen_context = ""
+                try:
+                    screen_context = web_research.research_text(
+                        f"{role_profile.web_query_hint} {focus} {intent_profile.search_hint}",
+                        topic="finance",
+                        max_results=6,
+                        extract_top_k=3,
+                        time_range="month",
+                    )
+                except Exception as _e:
+                    logger.warning(f"Web research failed for GENERAL screen: {_e}")
+
+                browser_section = f"\nCURRENT WEB RESEARCH:\n{screen_context}" if screen_context else ""
+                prompt = f"""You are the {role_profile.title}.
+
+ROLE FAMILY: {role_family_label or "coverage"}
+ROLE MANDATE: {role_profile.mandate}
+ANALYST LENS: {role_profile.lens}
+
+ISSUE INTENT: {intent_profile.title}
+ASSIGNMENT SCOPE: universe / theme screen — no single company in scope
+
+USER ASSIGNMENT:
+
+{instruction or f"Identify investment opportunities matching the mandate above."}
+{browser_section}
+
+This is a universe or theme-level screening request. Your job is to produce a structured
+candidate identification report.
+
+Rules:
+- Use the web research above as your primary data source for naming and ranking candidates.
+- Do NOT fabricate financial figures. If you cite a metric (revenue, P/E, margin), it must
+  appear in the web research context above. If you cannot source a figure, say "verify via run."
+- Produce a ranked shortlist of 5-8 candidates with a 1-2 sentence thesis per name and
+  the screening criteria each satisfies.
+- Conclude with an "Agent Suggestions" section listing 3-5 specific tickers the user should
+  run a per-ticker deep-dive analysis on next.
+- Do not include internal fields such as task type, priority, or resolved scope.
+- 400-700 words."""
+
+                response = self._anthropic.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=60.0,
+                )
+                return "SCREEN", response.content[0].text.strip()
+            except Exception as exc:
+                logger.error(f"General screen analysis failed: {exc}")
+                return "SCREEN", None
+
+        # Templates whose instruments (indices, FX, rates, commodities) have no
+        # equity financials in Financial Datasets.  Skip the equity fetch/validation
+        # gate and drive the report entirely from web research.
+        _WEBRESEARCH_ONLY_TEMPLATES = {"macro_analyst", "sentiment_analyst"}
+
+        def _analyze_macro(ticker_upper: str) -> tuple[str, Optional[str]]:
+            """Web-research + FRED-driven analysis for macro instruments and sentiment tickers."""
+            try:
+                from data.fred_client import get_fred_client
+                focus = instruction[:200] if instruction else f"{ticker_upper} analysis"
+
+                # --- FRED hard data ---
+                fred_block = ""
+                try:
+                    fred_block = get_fred_client().get_macro_context_block(ticker_upper)
+                except Exception as _e:
+                    logger.warning(f"FRED fetch failed for {ticker_upper}: {_e}")
+
+                # --- Tavily narrative context ---
+                macro_context = ""
+                try:
+                    macro_context = web_research.research_text(
+                        (
+                            f"{ticker_upper} {role_profile.web_query_hint} "
+                            f"{intent_profile.search_hint} {focus}"
+                        ),
+                        topic="finance",
+                        max_results=6,
+                        extract_top_k=3,
+                        time_range="month",
+                    )
+                except Exception as _e:
+                    logger.warning(f"Web research failed for macro ticker {ticker_upper}: {_e}")
+
+                fred_section = f"\nLIVE MACRO DATA (FRED):\n{fred_block}" if fred_block else ""
+                browser_section = f"\nCURRENT WEB RESEARCH:\n{macro_context}" if macro_context else ""
+
+                if system_prompt_override:
+                    prompt = (
+                        f"{system_prompt_override}\n\n"
+                        f"INSTRUMENT: {ticker_upper}"
+                        f"{fred_section}"
+                        f"{browser_section}"
+                    )
+                else:
+                    prompt = f"""You are the {role_profile.title}.
+
+ROLE FAMILY: {role_family_label or "macro"}
+ROLE MANDATE: {role_profile.mandate}
+ANALYST LENS: {role_profile.lens}
+
+ISSUE INTENT: {intent_profile.title}
+INTENT MANDATE: {intent_profile.mandate}
+ASSIGNMENT SCOPE: macro / market-level analysis
+
+USER ASSIGNMENT:
+
+{instruction or f"Provide a comprehensive macro analysis for {ticker_upper}."}
+
+INSTRUMENT: {ticker_upper}
+{fred_section}
+{browser_section}
+
+You are analyzing a macro instrument, market index, currency, commodity, or rate —
+NOT a single equity. Do not look for income statements or balance sheets.
+
+ROLE FOCUS QUESTIONS:
+{format_bullets(role_profile.focus_questions)}
+
+Rules:
+- Use FRED data above for hard numbers (yields, spreads, CPI, payrolls, etc.).
+  Cite specific values when making rate or inflation claims.
+- Use the web research for narrative context, recent events, and forward guidance.
+- If the assignment asks for correlations, tables, or multi-instrument comparisons,
+  build them from the FRED figures. If a figure is unavailable, say so explicitly.
+- Lead with the most actionable macro signal (RISK-ON / RISK-OFF / NEUTRAL) and why.
+- In Agent Suggestions, include 3-5 follow-up angles or instruments the user should examine.
+- {role_profile.report_emphasis}
+- Do not include internal fields such as task type, priority, or resolved scope.
+- 400-700 words."""
+
+                response = self._anthropic.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=60.0,
+                )
+                return ticker_upper, response.content[0].text.strip()
+            except Exception as exc:
+                logger.error(f"Macro analysis failed for {ticker_upper}: {exc}")
+                return ticker_upper, None
+
         def _analyze(ticker: str) -> tuple[str, Optional[str]]:
             try:
                 ticker_upper = ticker.strip().upper()
+
+                if ticker_upper == "GENERAL":
+                    return _analyze_general_screen()
+
+                if template in _WEBRESEARCH_ONLY_TEMPLATES:
+                    return _analyze_macro(ticker_upper)
+
                 stock_info = fetcher.get_stock_info(ticker_upper) or {}
                 financials = fetcher.get_financial_statements(ticker_upper) or {}
                 key_metrics = fetcher.get_key_metrics(ticker_upper) or {}
@@ -592,7 +752,17 @@ class AgentRunnerService:
                         "Explain how this company fits into the wider map and what should be compared across the full set.\n"
                     )
 
-                prompt = f"""You are the {role_profile.title}.
+                if system_prompt_override:
+                    prompt = (
+                        f"{system_prompt_override}\n\n"
+                        f"TICKER: {ticker_upper}\n"
+                        f"COMPANY: {stock_info.get('company_name', ticker_upper)}\n"
+                        f"SECTOR: {stock_info.get('sector', 'Unknown')}\n\n"
+                        f"HISTORICAL FINANCIALS:\n{data_block}"
+                        f"{browser_section}"
+                    )
+                else:
+                    prompt = f"""You are the {role_profile.title}.
 
 ROLE FAMILY: {role_family_label or "coverage"}
 ROLE MANDATE: {role_profile.mandate}
@@ -645,8 +815,9 @@ Rules:
                 logger.error(f"Instruction-driven research failed for {ticker}: {exc}")
                 return ticker.strip().upper(), None
 
-        with ThreadPoolExecutor(max_workers=min(MAX_TICKER_WORKERS, len(tickers) or 1)) as ex:
-            futures = {ex.submit(_analyze, t): t for t in tickers}
+        effective_tickers = tickers if tickers else ["GENERAL"]
+        with ThreadPoolExecutor(max_workers=min(MAX_TICKER_WORKERS, len(effective_tickers))) as ex:
+            futures = {ex.submit(_analyze, t): t for t in effective_tickers}
             for future in as_completed(futures):
                 ticker_sym, result = future.result()
                 if result:
@@ -832,8 +1003,13 @@ Rules:
 
     def _synthesize(self, raw_outputs: dict[str, str], agent_config) -> dict:
         """Combine agent outputs into a structured digest using Haiku."""
+        def _to_str(v) -> str:
+            if isinstance(v, list):
+                return "\n\n".join(str(item).strip() for item in v if item)
+            return str(v) if v is not None else ""
+
         sections = "\n\n".join(
-            f"### {key}\n{value[:3000]}"  # cap per section to keep prompt manageable
+            f"### {key}\n{_to_str(value)[:3000]}"  # cap per section to keep prompt manageable
             for key, value in raw_outputs.items()
         )
 
@@ -855,15 +1031,11 @@ Rules:
         topics = json.loads(raw_topics or "[]") if isinstance(raw_topics, str) else (raw_topics or [])
         topics_str = ", ".join(topics) if topics else ""
 
-        prompt = f"""You are synthesizing investment research findings for a retail investor.
-
-AGENT ROLE: {role_profile.title}
+        shared_context = f"""AGENT ROLE: {role_profile.title}
 ROLE MANDATE: {role_profile.mandate}
 ROLE LENS: {role_profile.lens}
 ANALYSIS INTENT: {intent_profile.title}
 INTENT MANDATE: {intent_profile.mandate}
-REQUIRED REPORT SECTIONS:
-{format_required_sections(intent_profile)}
 
 INVESTOR INSTRUCTION / THESIS:
 {instruction or "No specific instruction — provide general findings."}
@@ -873,30 +1045,75 @@ PREVIOUS RUN SUMMARY (for detecting material changes):
 {last_summary or "No previous run — this is the first run."}
 
 AGENT RESEARCH OUTPUTS:
-{sections}
+{sections}"""
 
-Produce a JSON object with these exact keys:
+        # --- Call 1: small structured JSON (no freeform text → no newline escaping issues) ---
+        meta_prompt = f"""{shared_context}
+
+Produce a JSON object with ONLY these four keys — no other text:
 {{
   "summary": "2-3 sentence plain-English digest of the most important findings",
-  "key_findings": ["3-5 concrete, specific findings with numbers where available"],
-  "material_change": true or false (true if something significant changed vs previous run, or first run with notable findings),
-  "alert_level": "high" | "medium" | "low" | "none",
-  "full_report": "A polished markdown investment research report written from the {role_profile.title} lens. Use the required sections above, preserve role-specific analysis, and include a compact comparison table when multiple companies or an industry/theme are covered. In Agent Suggestions, add 3-5 follow-up angles the user may not have asked for but should consider based on the numbers, risks, or comparisons. Use real numbers. Do not quote the raw user request. Do not include task type, priority, current issue, resolved scope, or internal process notes. No emojis. No ASCII borders."
+  "key_findings": ["finding 1", "finding 2", "finding 3"],
+  "material_change": true,
+  "alert_level": "high"
 }}
 
-Return ONLY the JSON object — no preamble, no explanation."""
+Rules:
+- summary: one escaped string, no newlines inside the value
+- key_findings: array of short strings (one line each, no embedded newlines)
+- material_change: JSON boolean (true/false)
+- alert_level: one of "high", "medium", "low", "none"
+Return ONLY the JSON object — no preamble, no explanation, no markdown fences."""
+
+        # --- Call 2: full report as plain markdown (no JSON quoting needed) ---
+        report_prompt = f"""{shared_context}
+
+REQUIRED REPORT SECTIONS:
+{format_required_sections(intent_profile)}
+
+Write a polished markdown investment research report from the {role_profile.title} lens.
+- Use the required sections above.
+- Include a compact comparison table when multiple companies or a theme are covered.
+- In Agent Suggestions, add 3-5 follow-up angles based on the numbers, risks, or comparisons.
+- Use real numbers. No emojis. No ASCII borders.
+- Do not quote the raw user request or include internal process notes.
+- 400-700 words.
+Return ONLY the markdown report — no JSON, no preamble."""
 
         try:
-            response = self._anthropic.messages.create(
+            meta_response = self._anthropic.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-                timeout=90.0,
+                max_tokens=512,
+                messages=[{"role": "user", "content": meta_prompt}],
+                timeout=60.0,
             )
-            text = response.content[0].text.strip()
-            parsed = _extract_json_object(text)
+            meta_text = meta_response.content[0].text.strip()
+            parsed = _extract_json_object(meta_text)
             if parsed is None:
                 raise ValueError("Synthesis response did not contain valid JSON")
+
+            # Sanitize: Haiku occasionally returns string fields as arrays
+            for _str_field in ("summary",):
+                _val = parsed.get(_str_field)
+                if isinstance(_val, list):
+                    parsed[_str_field] = " ".join(str(v).strip() for v in _val if v)
+                elif _val is not None and not isinstance(_val, str):
+                    parsed[_str_field] = str(_val)
+            raw_findings = parsed.get("key_findings") or []
+            parsed["key_findings"] = [
+                str(item).strip()
+                for item in (raw_findings if isinstance(raw_findings, list) else [])
+                if str(item).strip()
+            ]
+
+            # Fetch the full report separately as plain markdown
+            report_response = self._anthropic.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2048,
+                messages=[{"role": "user", "content": report_prompt}],
+                timeout=90.0,
+            )
+            parsed["full_report"] = report_response.content[0].text.strip()
             return parsed
         except Exception as exc:
             logger.error(f"Synthesis Haiku call failed: {exc}")
@@ -906,7 +1123,7 @@ Return ONLY the JSON object — no preamble, no explanation."""
             summaries: list[str] = []
 
             for key, value in raw_outputs.items():
-                cleaned = _clean_report_for_display(value, key)
+                cleaned = _clean_report_for_display(_to_str(value), key)
                 if not cleaned:
                     continue
                 cleaned_sections.append((key, cleaned))

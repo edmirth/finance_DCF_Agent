@@ -349,6 +349,7 @@ export interface ScheduledAgent {
   tickers: string[];
   topics: string[];
   instruction: string;
+  system_prompt_override?: string | null;
   schedule_label: ScheduleLabel;
   manager_agent_id?: string | null;
   manager_agent_name?: string | null;

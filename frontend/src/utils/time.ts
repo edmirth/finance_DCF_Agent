@@ -59,6 +59,12 @@ export function formatApiDate(
   return parsed.toLocaleDateString('en-US', options);
 }
 
+export function formatHHMM(value?: string | null): string {
+  const parsed = parseApiDate(value);
+  if (!parsed) return '--:--';
+  return parsed.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 export function compareApiDatesDesc(left?: string | null, right?: string | null): number {
   const leftTs = parseApiDate(left)?.getTime() ?? 0;
   const rightTs = parseApiDate(right)?.getTime() ?? 0;

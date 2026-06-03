@@ -178,6 +178,7 @@ class ScheduledAgent(Base):
     tickers: Mapped[str] = mapped_column(Text, default="[]")        # JSON array of ticker strings
     topics: Mapped[str] = mapped_column(Text, default="[]")         # JSON array of topic strings
     instruction: Mapped[str] = mapped_column(Text, default="")      # User's thesis / instruction
+    system_prompt_override: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Replaces generated prompt when set
     # Schedule: daily_morning | pre_market | weekly_monday | weekly_friday | monthly
     schedule_label: Mapped[str] = mapped_column(String(50), default="weekly_monday")
     role_key: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)

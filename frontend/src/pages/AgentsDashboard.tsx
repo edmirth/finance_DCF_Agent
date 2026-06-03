@@ -22,7 +22,7 @@ import {
 } from '../api';
 import { roleMetaForAgent } from '../agentRoles';
 import type { InboxItem, ScheduledAgent } from '../types';
-import { compareApiDatesDesc, formatRelativeApiTime } from '../utils/time';
+import { compareApiDatesDesc, formatHHMM, formatRelativeApiTime } from '../utils/time';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -47,14 +47,6 @@ function displayTicker(ticker: string): string {
   return ticker === 'GENERAL' ? 'General' : ticker;
 }
 
-function agentInitials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('') || 'AG';
-}
 
 type AgentWorkload = {
   openCount: number;
@@ -459,26 +451,24 @@ function SectionHeader({ title }: { title: string }) {
 function ActivityRow({
   label,
   body,
-  time,
-  initials,
+  rawTime,
 }: {
   label: string;
   body: string;
-  time: string;
-  initials: string;
+  rawTime: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-4 py-4 last:border-b-0">
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-medium text-slate-600">
-          {initials}
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-slate-900">{label}</p>
-          <p className="mt-1 line-clamp-1 text-sm text-slate-500">{body}</p>
-        </div>
-      </div>
-      <span className="flex-shrink-0 text-sm text-slate-400">{time}</span>
+    <div className="flex items-start gap-5 border-b border-slate-100 px-5 py-5 last:border-b-0">
+      <span
+        className="flex-shrink-0 pt-px text-sm text-slate-400"
+        style={{ fontFamily: "'IBM Plex Mono', monospace", width: '3.25rem' }}
+      >
+        {formatHHMM(rawTime)}
+      </span>
+      <p className="text-sm leading-snug text-slate-700">
+        <span className="font-semibold text-slate-900">{label}</span>
+        {' '}{body}
+      </p>
     </div>
   );
 }
@@ -587,26 +577,26 @@ export default function AgentsDashboard() {
       label: item.agent_name,
       body:
         item.status === 'running'
-          ? 'Run in progress'
-          : item.findings_summary || item.error || 'Run completed',
-      time: formatRelativeApiTime(item.started_at),
-      initials: agentInitials(item.agent_name),
+          ? 'run in progress'
+          : item.findings_summary || item.error || 'run completed',
+      rawTime: item.started_at,
     }));
 
-    if (rows.length >= 8) return rows.slice(0, 8);
+    if (rows.length >= 10) return rows.slice(0, 10);
 
     const supplemental = agents
       .filter((agent) => agent.is_active)
-      .slice(0, 8 - rows.length)
+      .slice(0, 10 - rows.length)
       .map((agent) => ({
         id: `active-${agent.id}`,
         label: agent.name,
-        body: agent.last_run_summary || 'Active and monitoring',
-        time: formatRelativeApiTime(agent.updated_at),
-        initials: agentInitials(agent.name),
+        body: agent.last_run_summary
+          ? stripMarkdown(agent.last_run_summary).slice(0, 80)
+          : 'active and monitoring',
+        rawTime: agent.updated_at,
       }));
 
-    return [...rows, ...supplemental].slice(0, 8);
+    return [...rows, ...supplemental].slice(0, 10);
   }, [agents, inboxItems]);
 
   const activeCount = agents.filter((agent) => agent.is_active).length;
@@ -660,7 +650,7 @@ export default function AgentsDashboard() {
   }, [allTasks]);
 
   return (
-    <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+    <div className="flex min-h-screen bg-slate-50" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
       {toast && (
         <div
           className={`fixed bottom-6 right-6 z-50 rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg transition-all duration-300 ${
@@ -671,7 +661,8 @@ export default function AgentsDashboard() {
         </div>
       )}
 
-      <div className="mx-auto w-full max-w-6xl px-6 py-12 lg:px-10">
+      {/* Main content — scrolls normally */}
+      <div className="min-w-0 flex-1 px-6 py-12 lg:px-10">
         <div className="mb-10">
           <h1 className="mb-1 text-3xl font-bold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
             Dashboard
@@ -688,7 +679,7 @@ export default function AgentsDashboard() {
             <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
           </div>
         ) : (
-          <>
+          <div className="space-y-10">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <LeaderCard workload={ceoWorkload} />
               {agents.map((agent) => (
@@ -703,44 +694,50 @@ export default function AgentsDashboard() {
               ))}
             </div>
 
-            <div className="mt-10 grid items-start gap-8 lg:grid-cols-2">
-              <div className="min-w-0">
-                <SectionHeader title="Recent Activity" />
-                <div className="min-h-[360px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-                  {recentActivity.length === 0 ? (
-                    <div className="px-4 py-12 text-center text-sm text-slate-500">
-                      No agent activity yet.
-                    </div>
-                  ) : (
-                    recentActivity.map((item) => (
-                      <ActivityRow
-                        key={item.id}
-                        label={item.label}
-                        body={item.body}
-                        time={item.time}
-                        initials={item.initials}
-                      />
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="min-w-0">
-                <SectionHeader title="Recent Tasks" />
-                <div className="min-h-[360px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-                  {recentTasks.length === 0 ? (
-                    <div className="px-4 py-12 text-center text-sm text-slate-500">
-                      No tasks yet.
-                    </div>
-                  ) : (
-                    recentTasks.slice(0, 10).map((task) => (
-                      <TaskRow key={task.id} task={task} />
-                    ))
-                  )}
-                </div>
+            <div>
+              <SectionHeader title="Recent Tasks" />
+              <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+                {recentTasks.length === 0 ? (
+                  <div className="px-4 py-12 text-center text-sm text-slate-500">
+                    No tasks yet.
+                  </div>
+                ) : (
+                  recentTasks.slice(0, 10).map((task) => (
+                    <TaskRow key={task.id} task={task} />
+                  ))
+                )}
               </div>
             </div>
-          </>
+          </div>
+        )}
+      </div>
+
+      {/* Activity panel — full-height right sidebar, flush to edge */}
+      <div
+        className="sticky top-0 hidden w-96 flex-shrink-0 border-l border-slate-200 bg-white xl:flex xl:flex-col"
+        style={{ height: '100vh', overflowY: 'auto' }}
+      >
+        <div className="border-b border-slate-100 px-6 pb-4 pt-6">
+          <h2
+            className="text-xs font-semibold text-slate-400"
+            style={{ letterSpacing: '0.15em', fontFamily: "'IBM Plex Mono', monospace" }}
+          >
+            ACTIVITY
+          </h2>
+        </div>
+        {recentActivity.length === 0 ? (
+          <div className="px-6 py-12 text-center text-sm text-slate-500">
+            No agent activity yet.
+          </div>
+        ) : (
+          recentActivity.map((item) => (
+            <ActivityRow
+              key={item.id}
+              label={item.label}
+              body={item.body}
+              rawTime={item.rawTime}
+            />
+          ))
         )}
       </div>
     </div>

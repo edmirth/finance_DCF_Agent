@@ -475,9 +475,11 @@ def _issue_output_content(task: ResearchTask, agent: ScheduledAgent | None, outc
         )
     else:
         report_heading = f"{role_title} output"
-    raw_report = (outcome.get("report") or "").strip()
+    _raw_report_val = outcome.get("report") or ""
+    raw_report = ("\n\n".join(str(v) for v in _raw_report_val) if isinstance(_raw_report_val, list) else str(_raw_report_val)).strip()
     report = _normalize_report_markdown(_strip_duplicate_heading_line(raw_report, scope_label))
-    summary = (outcome.get("findings_summary") or "").strip()
+    _raw_summary_val = outcome.get("findings_summary") or ""
+    summary = (("\n".join(str(v) for v in _raw_summary_val) if isinstance(_raw_summary_val, list) else str(_raw_summary_val))).strip()
     if not summary or summary == "Research completed. See full report for details.":
         summary = _extract_report_summary(report)
     key_findings = [str(item).strip() for item in (outcome.get("key_findings") or []) if str(item).strip()]
@@ -524,10 +526,11 @@ def _render_issue_output_chat_summary(
             "Open the **Documents** tab for the saved failure output."
         )
 
-    summary = (outcome.get("findings_summary") or "").strip() or (
+    _fs = outcome.get("findings_summary") or ""
+    summary = (("\n".join(str(v) for v in _fs) if isinstance(_fs, list) else str(_fs))).strip() or (
         "I completed the first pass and saved the issue output."
     )
-    key_findings = [item.strip() for item in (outcome.get("key_findings") or []) if str(item).strip()]
+    key_findings = [str(item).strip() for item in (outcome.get("key_findings") or []) if str(item).strip()]
     findings_block = "\n".join(f"- {item}" for item in key_findings[:3])
     parts = [
         "I finished the first pass on this issue.",

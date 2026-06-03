@@ -168,7 +168,7 @@ async def init_db() -> None:
             pass
         except Exception as e:
             logger.error(f"Unexpected error creating ix_scheduled_agents_is_active index: {e}")
-        for _col in ["role_key", "role_title", "role_family", "manager_agent_id"]:
+        for _col in ["role_key", "role_title", "role_family", "manager_agent_id", "system_prompt_override"]:
             try:
                 await conn.execute(text(f"ALTER TABLE scheduled_agents ADD COLUMN {_col} TEXT"))
             except OperationalError as e:

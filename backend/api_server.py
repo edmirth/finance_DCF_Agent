@@ -9,6 +9,7 @@ import asyncio
 import logging
 import threading
 import uuid as uuid_mod
+from pathlib import Path
 from collections import OrderedDict
 from typing import Optional, AsyncGenerator, Any, Dict, List
 from datetime import datetime, timedelta, timezone
@@ -2007,6 +2008,23 @@ async def _run_task_chat_reply(
         f"You are the {role_title} in a finance research firm.\n"
         f"Your job is to respond inside one issue workspace.\n"
         f"Stay focused on the specific issue and give concrete next-step guidance.\n"
+        f"\n"
+        f"PLATFORM CAPABILITIES:\n"
+        f"This platform has the Financial Datasets AI API (income statements, balance sheets, cash flow,\n"
+        f"key ratios, real-time quotes for thousands of US-listed equities), a stock screener, and web search.\n"
+        f"When you run a heartbeat or analysis run, you have full access to live financial data — you are NOT\n"
+        f"limited to training knowledge during runs. This chat interface is for clarification and guidance;\n"
+        f"the actual data-fetching happens when the issue run executes.\n"
+        f"\n"
+        f"CRITICAL RULES:\n"
+        f"- NEVER say 'I cannot run a live database query', 'I lack Bloomberg/FactSet access', or any similar\n"
+        f"  refusal claiming the platform lacks data. It does not. The data is available during runs.\n"
+        f"- If the user asks for fresh analysis, screening, or data not already in the saved artifacts:\n"
+        f"  tell them what the next run will fetch and produce, then suggest triggering the run.\n"
+        f"- NEVER produce a list of company names or financial figures from training knowledge without\n"
+        f"  explicitly labeling them as unverified estimates and strongly recommending a fresh run instead.\n"
+        f"- If saved artifacts exist, reference them. If not, explain what a run would deliver.\n"
+        f"\n"
         f"Format every reply as clean Markdown for a professional research UI:\n"
         f"- Use short `###` section headings.\n"
         f"- Use bullets for lists and numbered steps.\n"
@@ -2406,6 +2424,12 @@ async def run_task_now(task_id: str, db: AsyncSession = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Assigned agent no longer exists")
         if not agent.is_active:
             raise HTTPException(status_code=409, detail=f"{agent.role_title or agent.name} is paused")
+        if task.status in ("failed", "in_review"):
+            task.status = "pending"
+            task.run_id = None
+            task.error = None
+            task.updated_at = datetime.now(timezone.utc)
+            await db.flush()
         dispatch_result = await _dispatch_agent_for_task(
             db,
             task,
@@ -2750,9 +2774,10 @@ if __name__ == "__main__":
     logger.info("Available agents: Equity Analyst, Finance Q&A, Market Analyst, Portfolio Analyzer")
 
     uvicorn.run(
-        "api_server:app",
+        "backend.api_server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
+        reload_dirs=[str(Path(__file__).parent.parent)],
         log_level="info"
     )

@@ -1237,7 +1237,7 @@ async def _dispatch_agent_for_task(
     await db.refresh(task)
     if task.status == "cancelled":
         return {"run_id": None, "reused": False, "skipped": True}
-    if task.run_id:
+    if task.run_id and task.status == "running":
         # Another dispatch beat us to it; bail out to avoid a duplicate run.
         return {"run_id": task.run_id, "reused": True, "skipped": False}
 

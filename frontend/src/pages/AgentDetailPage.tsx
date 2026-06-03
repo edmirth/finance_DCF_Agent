@@ -31,7 +31,7 @@ import { roleMetaForAgent } from '../agentRoles';
 import { compareApiDatesDesc, formatApiDateTime, formatRelativeApiTime, parseApiDate } from '../utils/time';
 import { stripMarkdown } from '../utils/markdown';
 
-type AgentTab = 'dashboard' | 'instructions';
+type AgentTab = 'dashboard' | 'instructions' | 'system_prompt';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   daily_morning: 'Daily at 7am',
@@ -245,6 +245,9 @@ export default function AgentDetailPage() {
   const [editingInstruction, setEditingInstruction] = useState(false);
   const [draftInstruction, setDraftInstruction] = useState('');
   const [savingInstruction, setSavingInstruction] = useState(false);
+  const [editingSystemPrompt, setEditingSystemPrompt] = useState(false);
+  const [draftSystemPrompt, setDraftSystemPrompt] = useState('');
+  const [savingSystemPrompt, setSavingSystemPrompt] = useState(false);
   const [editingTickers, setEditingTickers] = useState(false);
   const [draftTickers, setDraftTickers] = useState<string[]>([]);
   const [tickerInput, setTickerInput] = useState('');
@@ -356,6 +359,34 @@ export default function AgentDetailPage() {
       setError('Failed to save the agent instruction.');
     } finally {
       setSavingInstruction(false);
+    }
+  };
+
+  const beginEditingSystemPrompt = () => {
+    setDraftSystemPrompt(agent?.system_prompt_override || '');
+    setEditingSystemPrompt(true);
+  };
+
+  const cancelEditingSystemPrompt = () => {
+    setDraftSystemPrompt('');
+    setEditingSystemPrompt(false);
+  };
+
+  const saveSystemPrompt = async () => {
+    if (!agent) return;
+    setSavingSystemPrompt(true);
+    setError(null);
+    try {
+      const updated = await updateScheduledAgent(agent.id, {
+        system_prompt_override: draftSystemPrompt.trim() || null,
+      });
+      setAgent(updated);
+      setEditingSystemPrompt(false);
+      setNotice(draftSystemPrompt.trim() ? 'System prompt saved.' : 'System prompt cleared — using default.');
+    } catch {
+      setError('Failed to save the system prompt.');
+    } finally {
+      setSavingSystemPrompt(false);
     }
   };
 
@@ -488,6 +519,7 @@ export default function AgentDetailPage() {
           {[
             ['dashboard', 'Dashboard'],
             ['instructions', 'Instructions'],
+            ['system_prompt', 'System Prompt'],
           ].map(([key, label]) => {
             const isActive = tab === key;
             return (
@@ -802,6 +834,99 @@ export default function AgentDetailPage() {
                     </ReactMarkdown>
                   ) : (
                     <p className="text-sm text-slate-500">No instruction defined for this agent yet.</p>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {tab === 'system_prompt' && (
+          <div className="mt-8 grid gap-6 xl:grid-cols-[280px,1fr]">
+            <aside className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="border-b border-slate-100 px-2 pb-3">
+                <h2 className="text-lg font-semibold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
+                  System Prompt
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">Override the default role behaviour entirely.</p>
+              </div>
+              <div className="mt-3 space-y-2 px-2 text-sm text-slate-500">
+                <p>
+                  When set, this prompt <strong className="text-slate-700">replaces</strong> the built-in role lens, mandate, and focus
+                  questions. The agent still receives live financial data and web research — your prompt controls how it reasons and
+                  what it produces.
+                </p>
+                <p>Leave blank to use the default role behaviour.</p>
+              </div>
+            </aside>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
+                <div>
+                  <h2 className="text-2xl font-semibold text-slate-900" style={{ letterSpacing: '-0.03em' }}>
+                    System Prompt
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {agent?.system_prompt_override?.trim()
+                      ? 'Custom prompt active — default role is overridden.'
+                      : 'No override set — using default role.'}
+                  </p>
+                </div>
+                {editingSystemPrompt ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={cancelEditingSystemPrompt}
+                      disabled={savingSystemPrompt}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveSystemPrompt}
+                      disabled={savingSystemPrompt}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {savingSystemPrompt ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      Save
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={beginEditingSystemPrompt}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+                  >
+                    {agent?.system_prompt_override?.trim() ? 'Edit' : 'Add override'}
+                  </button>
+                )}
+              </div>
+
+              {editingSystemPrompt ? (
+                <div className="mt-6">
+                  <p className="mb-3 text-xs text-slate-500">
+                    Write your prompt as plain text or markdown. The agent will receive this followed by the ticker, company name, financial data, and web research. Clear the field and save to revert to the default role.
+                  </p>
+                  <textarea
+                    value={draftSystemPrompt}
+                    onChange={(e) => setDraftSystemPrompt(e.target.value)}
+                    placeholder={`Example:\nYou are a forensic accounting specialist focused on earnings quality.\nFor every ticker, check for revenue recognition red flags, working capital deterioration, and accrual ratio trends.\nAlways produce a numeric accrual ratio and flag any YoY change greater than 3pp.`}
+                    className="min-h-[480px] w-full rounded-3xl border border-slate-200 bg-slate-50 px-5 py-4 font-mono text-sm leading-7 text-slate-800 outline-none transition focus:border-slate-300"
+                    spellCheck={false}
+                  />
+                </div>
+              ) : (
+                <div className="mt-6">
+                  {agent?.system_prompt_override?.trim() ? (
+                    <pre className="whitespace-pre-wrap rounded-3xl border border-slate-200 bg-slate-50 px-5 py-4 font-mono text-sm leading-7 text-slate-800">
+                      {agent.system_prompt_override}
+                    </pre>
+                  ) : (
+                    <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center">
+                      <p className="text-sm font-medium text-slate-500">No system prompt override set.</p>
+                      <p className="mt-1 text-xs text-slate-400">This agent is using its built-in role definition.</p>
+                    </div>
                   )}
                 </div>
               )}

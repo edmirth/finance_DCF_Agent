@@ -77,6 +77,7 @@ class ScheduledAgentCreate(BaseModel):
     tickers: List[str] = []
     topics: List[str] = []
     instruction: str = ""
+    system_prompt_override: Optional[str] = None
     schedule_label: str = "weekly_monday"  # daily_morning | pre_market | weekly_monday | ...
     manager_agent_id: Optional[str] = None
     delivery_email: Optional[str] = None
@@ -90,6 +91,7 @@ class ScheduledAgentUpdate(BaseModel):
     tickers: Optional[List[str]] = None
     topics: Optional[List[str]] = None
     instruction: Optional[str] = None
+    system_prompt_override: Optional[str] = None
     schedule_label: Optional[str] = None
     manager_agent_id: Optional[str] = None
     delivery_email: Optional[str] = None
@@ -121,6 +123,7 @@ def _agent_to_dict(
         "tickers": json.loads(agent.tickers or "[]"),
         "topics": json.loads(agent.topics or "[]"),
         "instruction": agent.instruction,
+        "system_prompt_override": agent.system_prompt_override,
         "schedule_label": agent.schedule_label,
         "manager_agent_id": agent.manager_agent_id,
         "manager_agent_name": manager_name,
@@ -340,6 +343,7 @@ async def create_scheduled_agent(
         tickers=json.dumps(tickers),
         topics=json.dumps(payload.topics),
         instruction=payload.instruction,
+        system_prompt_override=payload.system_prompt_override or None,
         schedule_label=schedule_label,
         manager_agent_id=manager_agent_id,
         delivery_email=payload.delivery_email,
@@ -413,6 +417,8 @@ async def update_scheduled_agent(
         agent.topics = json.dumps(payload.topics)
     if payload.instruction is not None:
         agent.instruction = payload.instruction
+    if "system_prompt_override" in payload.model_fields_set:
+        agent.system_prompt_override = payload.system_prompt_override or None
     if payload.schedule_label is not None:
         try:
             agent.schedule_label = _validate_schedule_label(payload.schedule_label)
@@ -709,6 +715,7 @@ async def _execute_run_background(
             self.tickers = json.dumps(d["tickers"])
             self.topics = json.dumps(d["topics"])
             self.instruction = d["instruction"]
+            self.system_prompt_override = d.get("system_prompt_override")
             self.schedule_label = d["schedule_label"]
             self.delivery_email = d["delivery_email"]
             self.last_run_summary = d["last_run_summary"]
