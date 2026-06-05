@@ -516,7 +516,7 @@ def _build_task_review_prompt(
         selected_agents = []
 
     lines = [
-        "A new issue has been filed and needs to be staffed. Review and act immediately.",
+        "A new research issue has been filed. You MUST staff it right now.",
         f"Title: {task.title}",
         f"Ticker: {task.ticker or 'Not specified'}",
         f"Task type: {task.task_type}",
@@ -526,10 +526,12 @@ def _build_task_review_prompt(
         f"Description: {task.notes or 'No description provided.'}",
         f"Current staffing: {', '.join(selected_agents) if selected_agents else 'Unstaffed — needs an agent'}",
         "",
-        "Your job is to staff this issue RIGHT NOW. Decision rules:",
-        "1. If any active agent on your team can cover this issue, DELEGATE to them immediately. Use their exact [id:...] from the team list.",
-        "2. Only propose a hire if NO active agent can cover this. Do not propose a hire if an existing agent can do it.",
-        "3. Do NOT answer directly — this issue needs an agent to run research, not a chat response.",
+        "You have EXACTLY TWO valid responses for a research issue:",
+        "  DELEGATE — pick an active agent from your team whose role covers this work. Use their exact [id:...] from the team list.",
+        "  PROPOSE  — if no active agent on your team can cover this, propose hiring one from the role catalog.",
+        "",
+        "NEVER answer a research issue directly. NEVER close it without dispatching an agent or proposing a hire.",
+        "If you are uncertain which agent fits, pick the closest match and delegate. Err toward action.",
     ]
     return "\n".join(lines)
 
@@ -1126,17 +1128,47 @@ async def _run_cio_task_review(
                 metadata={"event": "ceo_review_deferred_active_run", "run_id": task.run_id},
             )
         else:
-            task.status = "done"
-            task.error = None
-            task.completed_at = task.completed_at or now
-            task.updated_at = now
-            await _append_issue_activity(
-                db,
-                task.id,
-                "CEO reviewed this issue directly and closed it with a final answer.",
-                author_label="CEO",
-                metadata={"event": "ceo_review_completed"},
+            # Check whether the CEO responded with an error/explanation rather than
+            # a genuine final answer — in that case keep the issue open for follow-up.
+            msg_lower = (response.message or "").lower()
+            routing_failed = any(
+                marker in msg_lower
+                for marker in (
+                    "delegation was skipped",
+                    "could not be found",
+                    "is paused",
+                    "already exists",
+                    "no active agent",
+                    "no agent",
+                    "cannot cover",
+                    "unable to",
+                    "failed to",
+                )
             )
+            if routing_failed:
+                task.status = "in_review"
+                task.error = "CEO could not route this issue. Review the CEO response and retry or assign manually."
+                task.completed_at = None
+                task.updated_at = now
+                await _append_issue_activity(
+                    db,
+                    task.id,
+                    "CEO could not staff this issue — it needs manual review or a new hire.",
+                    author_label="CEO",
+                    metadata={"event": "ceo_routing_failed"},
+                )
+            else:
+                task.status = "done"
+                task.error = None
+                task.completed_at = task.completed_at or now
+                task.updated_at = now
+                await _append_issue_activity(
+                    db,
+                    task.id,
+                    "CEO reviewed this issue directly and closed it with a final answer.",
+                    author_label="CEO",
+                    metadata={"event": "ceo_review_completed"},
+                )
     return response
 
 
@@ -1748,6 +1780,22 @@ async def _approve_hire_proposal(
     return agent
 
 
+async def _find_agent_for_role(db: AsyncSession, action: "CioAction") -> Optional[ScheduledAgent]:
+    """Return the best active agent that matches a propose_hire action's role/template."""
+    result = await db.execute(
+        select(ScheduledAgent).where(ScheduledAgent.is_active.is_(True))
+    )
+    agents = result.scalars().all()
+    role_key = (action.role_key or "").strip() or None
+    template = (action.template or "").strip() or None
+    for agent in agents:
+        if role_key and agent.role_key == role_key:
+            return agent
+        if template and agent.template == template:
+            return agent
+    return None
+
+
 async def _run_cio_response(
     db: AsyncSession,
     messages: list[dict],
@@ -1776,9 +1824,44 @@ async def _run_cio_response(
                 action.proposal_id = proposal.id
                 action.proposal_status = proposal.status
             except HTTPException as exc:
-                logger.warning("Failed to persist CIO hire proposal: %s", exc.detail)
-                message = f"{message}\n\n{exc.detail}"
-                action = None
+                if exc.status_code == 409 and "matching active agent already exists" in (exc.detail or ""):
+                    # A compatible agent already exists — find it and delegate instead
+                    existing = await _find_agent_for_role(db, action)
+                    if existing and existing.is_active and source_task_id:
+                        task_res = await db.execute(
+                            select(ResearchTask).where(ResearchTask.id == source_task_id)
+                        )
+                        task_obj = task_res.scalar_one_or_none()
+                        if task_obj:
+                            await _dispatch_agent_for_task(
+                                db, task_obj, existing,
+                                trigger_type="delegated",
+                                initiated_by="CEO",
+                                note=f"Auto-delegated: {existing.role_title or existing.name} already covers this role.",
+                            )
+                            action = CioAction(
+                                type="delegate",
+                                agent_id=existing.id,
+                                agent_name=existing.role_title or existing.name,
+                                reason=f"{existing.role_title or existing.name} already covers this role.",
+                            )
+                            message = (
+                                f"{message}\n\n"
+                                f"I found that **{existing.role_title or existing.name}** already covers this — "
+                                f"delegating to them instead of proposing a duplicate hire."
+                            )
+                        else:
+                            logger.warning("Hire 409 auto-delegate: source task %s not found", source_task_id)
+                            message = f"{message}\n\n{exc.detail}"
+                            action = None
+                    else:
+                        logger.warning("Hire 409 but no active matching agent found to delegate to")
+                        message = f"{message}\n\n{exc.detail}"
+                        action = None
+                else:
+                    logger.warning("Failed to persist CIO hire proposal: %s", exc.detail)
+                    message = f"{message}\n\n{exc.detail}"
+                    action = None
         elif action and action.type == "delegate" and source_task_id and action.agent_id:
             task_result = await db.execute(select(ResearchTask).where(ResearchTask.id == source_task_id))
             task = task_result.scalar_one_or_none()
